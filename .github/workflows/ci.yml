@@ -143,7 +143,7 @@ jobs:
   # which is the question whose answer used to arrive too late.
 
   macos:
-    name: macOS build (no packaging, no tests)
+    name: macOS build + ctest (no packaging)
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -165,28 +165,19 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DPOM2_ENABLE_TESTS=ON
           cmake --build build --parallel 3
-          # Tests are BUILT (they are first-party code and their portability
-          # matters) even though they are not RUN — see the note below.
 
-      # NOT ctest — build only, deliberately, and this is the story.
-      #
-      # The first run of this job with `ctest` enabled came back 191/192: one
-      # failure, `disk_path_snapshot`, killed by SIGBUS on arm64 macOS. The
-      # same test is green on Linux, green under ASan+UBSan with leak
-      # detection, and green at every parallelism tried — so it is a real
-      # platform-specific finding, and finding it is exactly what a second
-      # platform is for.
-      #
-      # It is also not something to hold this job hostage to. The job's job is
-      # "does the tree still compile for that toolchain", which is the question
-      # whose answer used to arrive at tag time; a permanently red CI answers
-      # nothing and trains people to stop looking. And the alternative — an
-      # exclusion for the one failing test — is the papering-over this project
-      # refuses on principle (see w5100_udp_recv in TODO.md).
-      #
-      # So: the compile check ships and stays green, and the finding is filed
-      # in TODO.md with its signature. Re-enable this step in the same commit
-      # that fixes it.
+      # This step earned its place the first time it ran: 191/192, with
+      # `disk_path_snapshot` killed by SIGBUS on arm64 macOS and green
+      # everywhere else. It was a real app bug — the Disk II insert path
+      # stacked three ~242 KB DiskImage temporaries, which fits Linux's 8 MB
+      # thread stack and not macOS's 512 KB one, and the AI server's HTTP
+      # thread takes exactly that path. Fixed 2026-08-23 (CHANGELOG), pinned
+      # by `diskii_insert_thread_stack` on every platform. The step was
+      # build-only in between rather than excluding the one test: a test
+      # skipped to keep CI green is a test that has stopped meaning anything.
+      - name: Run ctest
+        working-directory: build
+        run: ctest --output-on-failure --parallel 3
 
   windows:
     name: Windows build (no packaging)

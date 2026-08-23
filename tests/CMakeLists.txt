@@ -5037,6 +5037,33 @@ endif()
 add_test(NAME disk_path_snapshot COMMAND test_disk_path_snapshot)
 set_tests_properties(disk_path_snapshot PROPERTIES TIMEOUT 15)
 
+# ─── Disk II insert path on a 512 KB thread stack ────────────────────────
+# Pins the 2026-08-23 arm64-macOS SIGBUS: the insert chain used to stack
+# three ~242 KB DiskImage temporaries, overflowing macOS's 512 KB default
+# std::thread stack (the AI server's HTTP thread crashed the real app). The
+# test forces a 512 KB pthread stack so the regression fails on Linux too.
+add_executable(test_diskii_insert_thread_stack
+    diskii_insert_thread_stack_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_diskii_insert_thread_stack PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_diskii_insert_thread_stack PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_diskii_insert_thread_stack PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_diskii_insert_thread_stack PRIVATE winmm)
+endif()
+
+add_test(NAME diskii_insert_thread_stack COMMAND test_diskii_insert_thread_stack)
+set_tests_properties(diskii_insert_thread_stack PROPERTIES TIMEOUT 15)
+
 # ─── Mockingboard emuCycles timeline test ──────────────────────────────
 # The two ways the cycle-stamped stream stops describing the machine: a
 # backward jump of the cycle counter (rewind / snapshot load), which used

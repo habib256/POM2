@@ -129,28 +129,19 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   Numbers: [PERFORMANCE § 8.3](docs/PERFORMANCE.md)
   → [DEV](DEV.md#debugger-debuggerhcpp-debugger_imgui)
 
-- 🟠 **`disk_path_snapshot` dies with SIGBUS on arm64 macOS — found
-  2026-08-22, on the first CI run that ever executed the suite there.** 191 of
-  192 tests pass on `macos-15`; this one is killed by a bus error. It is green
-  on Linux at every parallelism tried, green under ASan+UBSan with
-  `detect_leaks=1`, and green under TSan's subset — so this is a genuine
-  platform difference, not a flake, and it is the first thing the new macOS CI
-  job found. Not fixed because it cannot be reproduced from a Linux box, and
-  not papered over with an exclusion: a test skipped to keep CI green is a test
-  that has stopped meaning anything.
-  What is known: the test deliberately holds a `const std::string&` handed back
-  by `DiskIICard::getDiskPath()` across an `insertDisk`/`ejectDisk`, asserting
-  the reference *follows* the mutation — that is the property it exists to pin
-  (a reference is not a snapshot; copy by value). Case 2 then runs a 200-write
-  / 20 000-read loop across two threads under a plain `std::mutex`. Either half
-  could be the one that faults. First things to try on a Mac: run the two cases
-  separately to see which one dies; build the test with
-  `-DPOM2_SANITIZE=address` and again with `thread`, which is where a
-  reference into a reallocated buffer would show up; and check whether the
-  fault survives with case 2's thread count reduced to one.
-  Until then the macOS CI job builds everything, including the tests, and runs
-  none of them — the step is commented in `ci.yml` with the reason. Re-enable
-  it in the same commit that fixes this.
+- ✅ **`disk_path_snapshot` SIGBUS on arm64 macOS — found 2026-08-22, DONE
+  2026-08-23.** Neither half of the test was at fault: `lldb` put the fault in
+  `___chkstk_darwin` under `DiskImage::loadFile` on the writer thread — a
+  **stack overflow**. `sizeof(DiskImage)` is 247 480 B (in-object track
+  buffers) and the insert chain stacked three temporaries (`insertDisk` →
+  `prepareDisk` → `loadFile`, ~725 KB), which fits a Linux thread's 8 MB and
+  not a macOS `std::thread`'s 512 KB. The AI control server's HTTP thread
+  takes the same path, so this was a real app crash on macOS, not a test
+  artefact. The six temporaries are heap-allocated now; the object's layout
+  (and the LSS hot path) is untouched. Pinned by `diskii_insert_thread_stack`
+  on an explicit 512 KB pthread stack so it fails on Linux too; verified
+  falsifiable (exit 138 without the fix). macOS CI runs `ctest` again.
+  → `CHANGELOG.md` 2026-08-23.
 
 - 🔵 **`w5100_udp_recv` loses a loopback datagram about once in 25 runs —
   seen 2026-08-22.** `testFittingDatagramLandsWhole` polls for 2 s and

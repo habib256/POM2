@@ -41,6 +41,13 @@
 #include <string>
 #include <vector>
 
+/// NOTE — sizeof(DiskImage) is ~242 KB: the track buffers live IN the object
+/// (`tracks`, below), which is what keeps the LSS hot path indirection-free.
+/// Never declare one on the stack of a secondary thread — macOS gives a
+/// std::thread 512 KB total, and the insert path already stacks one temporary
+/// per frame (insertDisk → prepareDisk → loadFile), which is how the AI
+/// control server's HTTP thread SIGBUSed on arm64 macOS (2026-08-23).
+/// Heap-allocate temporaries (`std::make_unique<DiskImage>()`) instead.
 class DiskImage
 {
 public:
