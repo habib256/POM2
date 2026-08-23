@@ -122,10 +122,13 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   byte. Of the two caveats this item used to list, **one did not exist**:
   Language-Card paging does not rewrite `writable[]` at all — `markRomRegion`
   is its only mutator and the LC has its own path — so the shadow only had to
-  survive that one function. **Read watchpoints remain unimplemented and the
-  API still accepts a Read watch that never fires**: `memRead`'s fast path has
-  no per-address table to hide one in, which is the whole reason the write half
-  was free. The panel offers writes only.
+  survive that one function. **Read watchpoints remain unimplemented**:
+  `memRead`'s fast path has no per-address table to hide one in, which is the
+  whole reason the write half was free. The panel offers writes only, and
+  since 2026-08-23 the API no longer pretends otherwise: `setWatchpoint`
+  keeps only the Write bit, so a Read request arms nothing and
+  `watchpointAt` says so (pinned in `debugger` case 1) — storing the request
+  verbatim promised a stop that never came.
   Numbers: [PERFORMANCE § 8.3](docs/PERFORMANCE.md)
   → [DEV](DEV.md#debugger-debuggerhcpp-debugger_imgui)
 
@@ -551,6 +554,19 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 - 🟢 **AY Port A read mask by DDR** (R14/R15) — academic.
 
 ### [Storage] disks & images
+
+- 🟢 **`DiskImage` is a 242 KB object, and the stack-overflow class is only
+  patched, not closed.** *1 d, measure first.* The 2026-08-23 macOS SIGBUS
+  fix heap-allocates the six insert-path temporaries; any future
+  `DiskImage` local on a secondary thread (512 KB on macOS) reintroduces the
+  crash, and `diskii_insert_thread_stack` only pins the insert path. Closing
+  the class means moving `tracks` (35 × 6656 B, in-object) to the heap —
+  which also turns every `DiskImage` move (the install under `stateMutex`)
+  from a 233 KB memcpy into a pointer swap. It adds one indirection to the
+  bit-stream rebuild and to `writeFlux`, neither per-nibble-hot, but the
+  LSS is the emulator's hottest disk code: interleaved best-of-9 on the
+  three `pom2_bench` workloads (PERFORMANCE § 8) before and after, or not
+  at all. Until then the NOTE on `class DiskImage` is the only guard.
 
 - 🟢 **Empty Disk II drive: the two write-protect answers disagreed — ✅
   RESOLVED 2026-08-22.** Write-protect is ONE wire and POM2 offered two

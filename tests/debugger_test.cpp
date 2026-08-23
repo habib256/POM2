@@ -131,6 +131,22 @@ void testBreakpointBookkeeping()
     assert(!dbg.armed() && dbg.breakpointCount() == 0);
     assert(!dbg.hasBreakpoint(0x0302));
 
+    // A watchpoint the machine cannot fire must not be reported as armed:
+    // only the Write half has a hook (Debugger.h), so a Read request arms
+    // nothing and ReadWrite degrades to Write. Pre-fix the API stored the
+    // request verbatim and watchpointAt() promised a stop that never came.
+    dbg.setWatchpoint(0x0300, pom2::Debugger::Read);
+    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::None);
+    assert(dbg.watchpointCount() == 0 && !dbg.armed());
+    dbg.setWatchpoint(0x0300, pom2::Debugger::ReadWrite);
+    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::Write);
+    assert(dbg.watchpointCount() == 1 && dbg.armed());
+    // Downgrading an armed Write watch to Read must REMOVE it, not leave a
+    // phantom that keeps the count (and the CPU's slow loop) alive.
+    dbg.setWatchpoint(0x0300, pom2::Debugger::Read);
+    assert(dbg.watchpointAt(0x0300) == pom2::Debugger::None);
+    assert(dbg.watchpointCount() == 0 && !dbg.armed());
+
     std::printf("[ OK ] breakpoint bookkeeping\n");
 }
 
