@@ -214,6 +214,12 @@ MainWindow::MainWindow(bool forceIIPlus)
         st.memory().memWrite(a, v);
     });
 
+    // Bind every panel in the catalog to its flag BEFORE anything reads or
+    // writes panel state: the menus, the palette, the settings round-trip and
+    // the browser build's chrome-light startup are all derived from those
+    // bindings, and an unbound panel is a menu row that toggles nothing.
+    registerPanels();
+
     // Load any persisted runtime config. Missing/malformed file → use
     // defaults; the fields below honour the saved values when present.
     settings->load();
@@ -317,7 +323,7 @@ MainWindow::MainWindow(bool forceIIPlus)
         // First-launch newcomer with no firmware: greet them with the
         // Welcome panel (folders + expected filenames + Reload button)
         // instead of leaving them staring at a bare "NO ROM" screen.
-        showWelcomePanel = true;
+        show(pom2::PanelId::Welcome) = true;
     }
     controller->memory().loadCharRom(charRomPath.c_str(),
                                      pom2::charRomBank(charRomLocale));
@@ -444,18 +450,12 @@ MainWindow::MainWindow(bool forceIIPlus)
                 lastColorHiResMode_ = m;
         }
 
-        showDiskPanel      = settings->getBool ("show_disk_panel", showDiskPanel);
-        showDisk35Panel    = settings->getBool ("show_disk35_panel", showDisk35Panel);
-        showDiskLibrary    = settings->getBool ("show_disk_library", showDiskLibrary);
-        showHdvPanel       = settings->getBool ("show_hdv_panel",  showHdvPanel);
-        showSmartPortPanel = settings->getBool ("show_smartport_panel", showSmartPortPanel);
-        showFujiNetPanel   = settings->getBool ("show_fujinet_panel",   showFujiNetPanel);
-        showSlotConfigPanel = settings->getBool ("show_slot_config", showSlotConfigPanel);
-        showMediaPanel      = settings->getBool ("show_media_panel", showMediaPanel);
-        showRomStatusPanel  = settings->getBool ("show_rom_status", showRomStatusPanel);
-        showAbstractionPanel = settings->getBool ("show_abstraction", showAbstractionPanel);
-        showKeyboardPanel   = settings->getBool ("show_keyboard", showKeyboardPanel);
-        showFloppyEmu      = settings->getBool ("show_floppy_emu", showFloppyEmu);
+        // Panel visibility: one loop over the registry (MainWindow_Panels.cpp)
+        // instead of the 32 hand-written lines that used to live here — and
+        // the 32 that mirrored them in the save path, which is where they
+        // drifted: seven panels the palette could open had no key at all, so
+        // the user opened them and they were gone next launch.
+        loadPanelVisibility();
         // Floppy Emu: restore the emulation mode + SD-card root (its NVRAM).
         {
             pom2::FloppyEmuMode fm;
@@ -482,9 +482,6 @@ MainWindow::MainWindow(bool forceIIPlus)
             }
             floppyEmu->setSdRoot(sd);
         }
-        showCassetteDeck   = settings->getBool ("show_cassette",   showCassetteDeck);
-        showHgrPaintEditor = settings->getBool ("show_hgr_paint",  showHgrPaintEditor);
-        showHgrSpriteEditor = settings->getBool("show_hgr_sprite", showHgrSpriteEditor);
         {
             hgrpaint::HgrPaintEditor::Session hs;
             hs.mode       = settings->getInt   ("hgr_paint_mode",  0);
@@ -496,25 +493,10 @@ MainWindow::MainWindow(bool forceIIPlus)
             hs.browserDir = settings->getString("hgr_paint_dir",   "");
             hgrPaintEditor->restoreSession(hs);
         }
-        showRewindBar      = settings->getBool ("show_rewind",     showRewindBar);
         controller->rewind().setEnabled(settings->getBool("rewind_enabled", false));
-        showJoystickPanel  = settings->getBool ("show_joystick",   showJoystickPanel);
         joystick->binding().squareGate =
             settings->getBool("joystick_square_gate",
                               joystick->binding().squareGate);
-        showMouseInspector = settings->getBool ("show_mouse_inspector",
-                                                 showMouseInspector);
-        showChatMauvePanel = settings->getBool ("show_chatmauve",  showChatMauvePanel);
-        showMockingboardPanel = settings->getBool ("show_mockingboard",
-                                                  showMockingboardPanel);
-        showPhasorPanel    = settings->getBool ("show_phasor",     showPhasorPanel);
-        showEchoPlusPanel  = settings->getBool ("show_echoplus",   showEchoPlusPanel);
-        showAudioMixer     = settings->getBool ("show_mixer",      showAudioMixer);
-        showSscPanel       = settings->getBool ("show_ssc",        showSscPanel);
-        showEthernetPanel  = settings->getBool ("show_ethernet",   showEthernetPanel);
-        showPrinterPanel   = settings->getBool ("show_printer",    showPrinterPanel);
-        showImageWriterPanel =
-            settings->getBool("show_imagewriter", showImageWriterPanel);
         // Paper + raster density survive a restart; the printed sheets
         // themselves deliberately do not (they are output, like the spool).
         {
@@ -600,10 +582,6 @@ MainWindow::MainWindow(bool forceIIPlus)
         // //c, which never had a slot to host a ThunderClock card).
         controller->noSlotClock().setEnabled(
             settings->getBool("nsclock_enable", true));
-        showNoSlotClockPanel = settings->getBool("show_nsclock",
-                                                 showNoSlotClockPanel);
-        showNtscSettings   = settings->getBool("show_ntsc",
-                                               showNtscSettings);
         // Composite-NTSC shader params (saved under ntsc_*). We can't
         // call ntscFx->setParams() yet because the postprocessor is
         // lazy-constructed in drawScreenImage; stash them into a
@@ -657,9 +635,6 @@ MainWindow::MainWindow(bool forceIIPlus)
         }
         crtEffectsEnabled = settings->getBool("crt_effects_enabled",
                                               crtEffectsEnabled);
-        show3dVoxel_      = settings->getBool("show_3d_voxel", show3dVoxel_);
-        showVoxelSettings_ = settings->getBool("show_voxel_settings",
-                                               showVoxelSettings_);
         // Own the renderer up-front (ctor is GL-free; initialize() stays lazy)
         // so the settings panel and persistence can bind to its tunables even
         // before the 3D view is first toggled on.
@@ -704,17 +679,13 @@ MainWindow::MainWindow(bool forceIIPlus)
         // still open panels from the menus after boot.
         display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
         lastColorHiResMode_ = Apple2Display::HiResMode::ColorCompMedium;
-        showDiskPanel = showDisk35Panel = showDiskLibrary = false;
-        showHdvPanel = showSmartPortPanel = showSlotConfigPanel = false;
-        showMediaPanel = showRomStatusPanel = false;
-        showFloppyEmu = showCassetteDeck = showJoystickPanel = false;
-        showMouseInspector = showChatMauvePanel = false;
-        showMockingboardPanel = showPhasorPanel = showEchoPlusPanel = false;
-        showAudioMixer = showSscPanel = showPrinterPanel = false;
-        showImageWriterPanel = false;
-        showNoSlotClockPanel = showNtscSettings = showAiControlPanel = false;
-        showVoxelSettings_ = false;
-        showMemViewer = showMemoryBar = showMemoryBarH = showMemoryGrid = false;
+        // Was 28 assignments naming 28 panels, which meant every panel added
+        // after it was written stayed open on the browser build — the list
+        // could only rot in one direction. The registry knows all of them.
+        hideAllPanels();
+        // …except the greeting a browser user with no ROM still needs: the
+        // constructor opened it above, and chrome-light is about chrome.
+        if (!romLoaded_) show(pom2::PanelId::Welcome) = true;
 #endif
     }
 
@@ -793,7 +764,6 @@ MainWindow::MainWindow(bool forceIIPlus)
     aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
     aiServer->setAuthToken(aiTokenInput);
     aiServer->setProfileLabel(std::string(pom2::profileConfig(activeProfile).displayName));
-    showAiControlPanel = settings->getBool("show_ai_control", showAiControlPanel);
     if (settings->getBool("ai_control_enable", false)) {
         aiServer->start(static_cast<uint16_t>(aiPortInput));
     }
@@ -1039,8 +1009,6 @@ MainWindow::~MainWindow()
     settings->setBool  ("ai_control_enable", aiServer->isRunning());
     settings->setInt   ("ai_control_port",   aiServer->getPort());
     settings->setString("ai_control_token",  aiTokenInput);
-    settings->setBool  ("show_ai_control",   showAiControlPanel);
-
     // Persist the per-slot card mapping so changes via the Slot
     // Configuration panel survive a restart. Slots the ACTIVE profile forces
     // (//c/+ on-board SSC/Mouse/SmartPort/Disk II, and the empty virtual slots
@@ -1092,24 +1060,10 @@ MainWindow::~MainWindow()
         }
         settings->setString("applewin_submode", sub);
     }
-    settings->setBool  ("show_disk_panel", showDiskPanel);
-    settings->setBool  ("show_disk35_panel", showDisk35Panel);
-    settings->setBool  ("show_disk_library", showDiskLibrary);
-    settings->setBool  ("show_hdv_panel",  showHdvPanel);
-    settings->setBool  ("show_smartport_panel", showSmartPortPanel);
-    settings->setBool  ("show_fujinet_panel",   showFujiNetPanel);
-    settings->setBool  ("show_slot_config", showSlotConfigPanel);
-    settings->setBool  ("show_media_panel", showMediaPanel);
-    settings->setBool  ("show_rom_status", showRomStatusPanel);
-    settings->setBool  ("show_abstraction", showAbstractionPanel);
-    settings->setBool  ("show_keyboard", showKeyboardPanel);
-    settings->setBool  ("show_floppy_emu", showFloppyEmu);
+    savePanelVisibility();
     settings->setString("floppyemu_mode",
                         pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
     settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
-    settings->setBool  ("show_cassette",   showCassetteDeck);
-    settings->setBool  ("show_hgr_paint",  showHgrPaintEditor);
-    settings->setBool  ("show_hgr_sprite", showHgrSpriteEditor);
     {
         const auto hs = hgrPaintEditor->session();
         settings->setInt   ("hgr_paint_mode",  hs.mode);
@@ -1120,19 +1074,7 @@ MainWindow::~MainWindow()
         settings->setInt   ("hgr_paint_pipe",  hs.canvasPipeline);
         settings->setString("hgr_paint_dir",   hs.browserDir);
     }
-    settings->setBool  ("show_rewind",     showRewindBar);
     settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
-    settings->setBool  ("show_joystick",   showJoystickPanel);
-    settings->setBool  ("show_mouse_inspector", showMouseInspector);
-    settings->setBool  ("show_chatmauve",  showChatMauvePanel);
-    settings->setBool  ("show_mockingboard", showMockingboardPanel);
-    settings->setBool  ("show_phasor",       showPhasorPanel);
-    settings->setBool  ("show_echoplus",     showEchoPlusPanel);
-    settings->setBool  ("show_mixer",      showAudioMixer);
-    settings->setBool  ("show_ssc",        showSscPanel);
-    settings->setBool  ("show_ethernet",  showEthernetPanel);
-    settings->setBool  ("show_printer",    showPrinterPanel);
-    settings->setBool  ("show_imagewriter", showImageWriterPanel);
     settings->setInt   ("imagewriter_paper",
                         static_cast<int>(imageWriter->paperSize()));
     settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
@@ -1153,9 +1095,7 @@ MainWindow::~MainWindow()
         settings->setBool("grappler_msb_software",
                           grapplerCard->msbSoftwareControl());
     }
-    settings->setBool  ("show_nsclock",    showNoSlotClockPanel);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
-    settings->setBool  ("show_ntsc",       showNtscSettings);
     if (ntscFx) {
         const auto& p = ntscFx->getParams();
         settings->setFloat("ntsc_brightness",  p.brightness);
@@ -1175,8 +1115,6 @@ MainWindow::~MainWindow()
         settings->setBool ("ntsc_text_sharp",  p.textSharp);
     }
     settings->setBool  ("crt_effects_enabled", crtEffectsEnabled);
-    settings->setBool  ("show_3d_voxel", show3dVoxel_);
-    settings->setBool  ("show_voxel_settings", showVoxelSettings_);
     if (voxel3d_) {
         settings->setFloat("voxel_depth",       voxel3d_->voxelDepth);
         settings->setFloat("voxel_colorshift",  voxel3d_->colorShift);
@@ -2521,11 +2459,6 @@ void MainWindow::renderCommandPalette()
         c.checked  = checked;
         cmds.push_back(std::move(c));
     };
-    // Panel toggles all follow the same shape, so keep them one-liners.
-    auto panel = [&add](const char* id, const char* label, bool* flag,
-                        bool enabled = true) {
-        add(id, "Panel", label, "", enabled, flag && *flag);
-    };
 
     const auto mode = controller->getMode();
 
@@ -2621,54 +2554,14 @@ void MainWindow::renderCommandPalette()
     }
 
     // ── Panels ───────────────────────────────────────────────────────────
-    panel("panel.disklibrary", "Disk Library",            &showDiskLibrary);
-    panel("panel.diskii",      "Disk II drive",           &showDiskPanel);
-    panel("panel.disk35",      "Disk 3.5\" drive",        &showDisk35Panel);
-    panel("panel.hdv",         "HDV / ProDOS volume",     &showHdvPanel);
-    panel("panel.smartport",   "SmartPort configuration", &showSmartPortPanel,
-          smartPortCard != nullptr);
-    panel("panel.fujinet",     "FujiNet (SP over SLIP)",  &showFujiNetPanel,
-          fujiNetCard != nullptr);
-    panel("panel.floppyemu",   "Floppy Emu (BMOW)",       &showFloppyEmu);
-    panel("panel.cassette",    "Cassette deck",           &showCassetteDeck);
-    panel("panel.slotconfig",  "Slot configuration",      &showSlotConfigPanel);
-    panel("panel.media",       "Internal disks & media",  &showMediaPanel);
-    panel("panel.romstatus",   "ROM status",              &showRomStatusPanel);
-    panel("panel.abstraction", "Abstraction levels (LLE/HLE)",
-          &showAbstractionPanel);
-    panel("panel.keyboard",    "Apple //e keyboard",      &showKeyboardPanel);
-    panel("panel.mockingboard","Mockingboard",            &showMockingboardPanel);
-    panel("panel.phasor",      "Phasor",                  &showPhasorPanel,
-          phasorCard != nullptr);
-    panel("panel.echoplus",    "Echo+ speech",            &showEchoPlusPanel,
-          echoPlusCard != nullptr);
-    panel("panel.mixer",       "Audio mixer",             &showAudioMixer);
-    panel("panel.ssc",         "Super Serial",            &showSscPanel,
-          !sscCards.empty());
-    panel("panel.ethernet",    "Ethernet (Uthernet)",     &showEthernetPanel,
-          uthernetCard != nullptr || uthernetIICard != nullptr);
-    panel("panel.printer",     "Printer",                 &showPrinterPanel,
-          printerCard != nullptr);
-    panel("panel.imagewriter", "ImageWriter II printout",  &showImageWriterPanel);
-    panel("panel.chatmauve",   "Le Chat Mauve",           &showChatMauvePanel);
-    panel("panel.joystick",    "Joystick / paddles",      &showJoystickPanel);
-    panel("panel.mouse",       "Mouse inspector",         &showMouseInspector);
-    panel("panel.nsclock",     "No-Slot Clock",           &showNoSlotClockPanel);
-    panel("panel.memviewer",   "Memory viewer",           &showMemViewer);
-    panel("panel.debugger",    "Debugger",                &showDebugger);
-    panel("panel.membar",      "Memory map bar",          &showMemoryBar);
-    panel("panel.membarh",     "Memory map bar (horizontal)", &showMemoryBarH);
-    panel("panel.memgrid",     "Memory map grid",         &showMemoryGrid);
-    panel("panel.crt",         "CRT settings",            &showNtscSettings);
-    panel("panel.voxel",       "3D voxel view",           &show3dVoxel_);
-    panel("panel.voxelset",    "3D voxel settings",       &showVoxelSettings_);
-    panel("panel.hgrpaint",    "HGR Paint editor",        &showHgrPaintEditor);
-    panel("panel.hgrsprite",   "HGR Sprite editor",       &showHgrSpriteEditor);
-    panel("panel.rewind",      "Rewind (time-travel)",    &showRewindBar);
-    panel("panel.welcome",     "Welcome / quick start",   &showWelcomePanel);
-#ifndef __EMSCRIPTEN__
-    panel("panel.aicontrol",   "AI Control (HTTP)",       &showAiControlPanel);
-#endif
+    // One line, and it is the point of the exercise: this list used to be 38
+    // hand-written entries here and 38 more in runCommand's dispatch table,
+    // with a third copy of the same names in the menus. All three are now
+    // views of PanelCatalog.h + registerPanels().
+    forEachPanelCommand([&add](const char* id, const std::string& label,
+                               const char* shortcut, bool enabled, bool checked) {
+        add(id, "Panel", label, shortcut, enabled, checked);
+    });
 
     // ── Media ────────────────────────────────────────────────────────────
     add("media.ejectall", "Media", "Eject all disks");
@@ -2744,50 +2637,12 @@ void MainWindow::runCommand(const std::string& id)
     if (id == "ui.zoomout") { uiScale_ = std::clamp(uiScale_ - pom2::kUiScaleStep * 2.0f, pom2::kUiScaleMin, pom2::kUiScaleMax); applyUiTheme(); return; }
     if (id == "ui.zoom100") { uiScale_ = 1.0f; applyUiTheme(); return; }
 
-    // Panels — id → flag, one table so there's no second place to update.
-    struct PanelBinding { const char* id; bool* flag; };
-    const PanelBinding panels[] = {
-        { "panel.disklibrary",  &showDiskLibrary       },
-        { "panel.diskii",       &showDiskPanel         },
-        { "panel.disk35",       &showDisk35Panel       },
-        { "panel.hdv",          &showHdvPanel          },
-        { "panel.smartport",    &showSmartPortPanel    },
-        { "panel.fujinet",      &showFujiNetPanel      },
-        { "panel.floppyemu",    &showFloppyEmu         },
-        { "panel.cassette",     &showCassetteDeck      },
-        { "panel.slotconfig",   &showSlotConfigPanel   },
-        { "panel.media",        &showMediaPanel        },
-        { "panel.romstatus",    &showRomStatusPanel    },
-        { "panel.abstraction",  &showAbstractionPanel  },
-        { "panel.keyboard",     &showKeyboardPanel     },
-        { "panel.mockingboard", &showMockingboardPanel },
-        { "panel.phasor",       &showPhasorPanel       },
-        { "panel.echoplus",     &showEchoPlusPanel     },
-        { "panel.mixer",        &showAudioMixer        },
-        { "panel.ssc",          &showSscPanel          },
-        { "panel.ethernet",     &showEthernetPanel     },
-        { "panel.printer",      &showPrinterPanel      },
-        { "panel.imagewriter",  &showImageWriterPanel  },
-        { "panel.chatmauve",    &showChatMauvePanel    },
-        { "panel.joystick",     &showJoystickPanel     },
-        { "panel.mouse",        &showMouseInspector    },
-        { "panel.nsclock",      &showNoSlotClockPanel  },
-        { "panel.memviewer",    &showMemViewer         },
-        { "panel.debugger",     &showDebugger          },
-        { "panel.membar",       &showMemoryBar         },
-        { "panel.membarh",      &showMemoryBarH        },
-        { "panel.memgrid",      &showMemoryGrid        },
-        { "panel.crt",          &showNtscSettings      },
-        { "panel.voxel",        &show3dVoxel_          },
-        { "panel.voxelset",     &showVoxelSettings_    },
-        { "panel.hgrpaint",     &showHgrPaintEditor    },
-        { "panel.hgrsprite",    &showHgrSpriteEditor   },
-        { "panel.rewind",       &showRewindBar         },
-        { "panel.welcome",      &showWelcomePanel      },
-        { "panel.aicontrol",    &showAiControlPanel    },
-    };
-    for (const auto& b : panels)
-        if (id == b.id) { toggle(*b.flag); return; }
+    // Panels: one lookup in the registry. This used to be a 38-row table of
+    // id → &showXxx, kept in step by hand with the 38 rows that BUILT those
+    // commands 80 lines above and with the menu rows that toggle the same
+    // flags. `runPanelCommand` returns false for a non-panel id, so the
+    // handling below it is unchanged.
+    if (runPanelCommand(id)) return;
 
     if (id == "media.ejectall") { ejectAllDisks(); return; }
 }
@@ -2963,7 +2818,7 @@ void MainWindow::renderMenuBar()
     if (!ImGui::BeginMainMenuBar()) return;
 
     if (ImGui::BeginMenu("File")) {
-        ImGui::MenuItem("Disk Library (all formats)", nullptr, &showDiskLibrary);
+        panelMenuItem(pom2::PanelId::DiskLibrary);
         ImGui::Separator();
         // Disk II (slot 6) — frequent action, lifted out of the old
         // Hardware kitchen-sink. Panel still exposes its own insert/eject
@@ -3174,166 +3029,26 @@ void MainWindow::renderMenuBar()
             ImGui::EndMenu();
         }
         ImGui::Separator();
-        ImGui::MenuItem("Slot Configuration...", nullptr, &showSlotConfigPanel);
+        panelMenuItem(pom2::PanelId::SlotConfig);
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Devices")) {
-        // One flat 17-item list became hard to scan (audit 2026-05-31), so
-        // it is grouped under SeparatorText headers and every row carries a
-        // hover tooltip explaining what the panel does. `devItem` keeps the
-        // boilerplate (optional grey-out + tooltip) in one place; disabled
-        // rows still show their tip via AllowWhenDisabled so the user learns
-        // what a card *would* do before plugging it in Slot Config.
-        auto devItem = [](const char* label, bool* flag, const char* tip,
-                          bool enabled = true) {
-            if (!enabled) ImGui::BeginDisabled();
-            ImGui::MenuItem(label, nullptr, flag);
-            if (!enabled) ImGui::EndDisabled();
-            if (tip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", tip);
-        };
-
+        // One flat 17-item list became hard to scan (audit 2026-05-31), so it
+        // is grouped under SeparatorText headers. What used to follow was 25
+        // hand-written rows carrying each panel's label, tooltip, greyed-out
+        // condition and slot-number formatting — a third copy of facts the
+        // palette and the settings round-trip also held. They live in
+        // PanelCatalog.h now; this menu says only which groups it shows and
+        // in what order.
         ImGui::SeparatorText("Storage");
-        devItem("Internal Disks & Media...", &showMediaPanel,
-                "Every internal drive and mountable bay in one place. "
-                "Mount / Insert / Eject act immediately — the card-per-slot "
-                "list is Machine \xe2\x86\x92 Slot Configuration.");
-        devItem("Floppy Emu (BMOW)", &showFloppyEmu,
-                "BMOW Floppy Emu: SD-card image browser + OLED, emulated.");
-        devItem("Cassette deck", &showCassetteDeck,
-                "Load/save tape images (.wav) on II/II+/IIe.");
-        devItem("Disk II (slot 6)", &showDiskPanel,
-                "5.25\" drive panel: insert / eject / write-protect, drive LEDs.");
-        {
-            // Mirror the panel's dynamic title — slot N on //e with a
-            // Liron-class card, "//c+ on-board" on //c+.
-            std::string lbl = smartPortCard
-                ? "Disk 3.5\" (slot " + std::to_string(smartPortCard->getSlot()) + ")"
-                : std::string("Disk 3.5\" (//c+ on-board)");
-            devItem(lbl.c_str(), &showDisk35Panel,
-                    "800K 3.5\" drive (SmartPort / //c+ on-board IWM).");
-        }
-        {
-            const std::string lbl = "HDV (slot " +
-                std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
-            devItem(lbl.c_str(), &showHdvPanel,
-                    "ProDOS hard-disk image (.hdv/.2mg): mount / eject / boot.");
-        }
-        {
-            const std::string lbl = smartPortCard
-                ? "SmartPort Configuration (slot " +
-                      std::to_string(smartPortCard->getSlot()) + ")"
-                : std::string("SmartPort Configuration (no card plugged)");
-            devItem(lbl.c_str(), &showSmartPortPanel,
-                    "SmartPort units behind a Liron-class card (3.5\" + HDV volumes).",
-                    smartPortCard != nullptr);
-        }
-        {
-            const std::string lbl = fujiNetCard
-                ? "FujiNet (slot " + std::to_string(fujiNetCard->getSlot()) + ")"
-                : std::string("FujiNet (no card plugged)");
-            devItem(lbl.c_str(), &showFujiNetPanel,
-                    "FujiNet relay: transport, attached devices and call counters.",
-                    fujiNetCard != nullptr);
-        }
-
+        panelMenuGroup(pom2::PanelGroup::DevStorage);
         ImGui::SeparatorText("Sound");
-        devItem("Mockingboard (VIA + AY state)", &showMockingboardPanel,
-                "Mockingboard A/C: live 6522 VIA + AY-3-8910 PSG register view.");
-        {
-            const std::string lbl = phasorCard
-                ? "Phasor (slot " + std::to_string(phasorCard->getSlot()) + ")"
-                : std::string("Phasor (no card plugged)");
-            devItem(lbl.c_str(), &showPhasorPanel,
-                    "Applied Engineering Phasor: 2× VIA, 4× AY, mode soft-switch.",
-                    phasorCard != nullptr);
-        }
-        {
-            const std::string lbl = echoPlusCard
-                ? "Echo+ (slot " + std::to_string(echoPlusCard->getSlot()) + ")"
-                : std::string("Echo+ (no card plugged)");
-            devItem(lbl.c_str(), &showEchoPlusPanel,
-                    "Echo/Cricket SSI263 speech chip state.",
-                    echoPlusCard != nullptr);
-        }
-        devItem("Audio Mixer", &showAudioMixer,
-                "Per-source volume: speaker, Mockingboard/Phasor, speech, floppy.");
-
+        panelMenuGroup(pom2::PanelGroup::DevSound);
         ImGui::SeparatorText("Ports & cards");
-        // Super Serial — //c ships TWO (printer + modem), other profiles
-        // have at most one. Label shows actual slot(s) so the user knows
-        // which entry opens which port.
-        {
-            std::string lbl;
-            if (sscCards.empty()) {
-                lbl = "Super Serial (no card plugged)";
-            } else if (sscCards.size() == 1) {
-                lbl = "Super Serial (slot " +
-                      std::to_string(sscCards[0]->getSlot()) + ")";
-            } else {
-                lbl = "Super Serial (slots";
-                for (size_t i = 0; i < sscCards.size(); ++i) {
-                    lbl += (i == 0) ? " " : ", ";
-                    lbl += std::to_string(sscCards[i]->getSlot());
-                }
-                lbl += ")";
-            }
-            devItem(lbl.c_str(), &showSscPanel,
-                    "6551 ACIA serial port + telnet bridge (modem / printer).",
-                    !sscCards.empty());
-        }
-        // Ethernet — one entry covers both cards; the panel tabs between
-        // whichever are plugged.
-        {
-            std::string lbl = "Ethernet";
-            if (uthernetIICard && uthernetCard) {
-                lbl += " (Uthernet I slot " +
-                       std::to_string(uthernetCard->getSlot()) + ", II slot " +
-                       std::to_string(uthernetIICard->getSlot()) + ")";
-            } else if (uthernetIICard) {
-                lbl += " (Uthernet II, slot " +
-                       std::to_string(uthernetIICard->getSlot()) + ")";
-            } else if (uthernetCard) {
-                lbl += " (Uthernet I, slot " +
-                       std::to_string(uthernetCard->getSlot()) + ")";
-            } else {
-                lbl += " (no card plugged)";
-            }
-            devItem(lbl.c_str(), &showEthernetPanel,
-                    "Uthernet I / II state: host transport, MAC, W5100 sockets.",
-                    uthernetCard != nullptr || uthernetIICard != nullptr);
-        }
-        {
-            const std::string lbl = printerCard
-                ? "Printer (slot " + std::to_string(printerCard->getSlot()) + ")"
-                : std::string("Printer (no card plugged)");
-            devItem(lbl.c_str(), &showPrinterPanel,
-                    "Parallel printer card → text spool (.txt).",
-                    printerCard != nullptr);
-        }
-        // The ImageWriter is the *printer* hanging off whichever printer
-        // interface card is plugged, so it is always openable — an empty
-        // paper tray is a legitimate thing to look at.
-        devItem("ImageWriter II (printout)", &showImageWriterPanel,
-                "Rendered ImageWriter II output: pages, colour ribbon, PNG export.");
-        devItem("Le Chat Mauve (slot 7)", &showChatMauvePanel,
-                "Le Chat Mauve RGB / Eve video card controls.");
-        devItem("Joystick", &showJoystickPanel,
-                "Analog paddles / joystick mapping + push-buttons.");
-        devItem("Apple //e Keyboard", &showKeyboardPanel,
-                "A photo of the real //e keyboard, clickable. The keys a host\n"
-                "keyboard has nowhere to put — Open-Apple, Solid-Apple, the\n"
-                "//e's own Reset — are here, with the real legends.");
-
+        panelMenuGroup(pom2::PanelGroup::DevPorts);
         ImGui::SeparatorText("Inspectors & tools");
-        ImGui::MenuItem("Rewind (time-travel)", "F6", &showRewindBar);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Scrub back through machine state. Hold F6 to rewind live.");
-        devItem("Mouse Inspector", &showMouseInspector,
-                "Apple II Mouse Card state + host-cursor sync diagnostics.");
-        devItem("No-Slot Clock (DS1216E)", &showNoSlotClockPanel,
-                "Dallas DS1216E real-time clock hidden under the Monitor ROM.");
+        panelMenuGroup(pom2::PanelGroup::DevInspectors);
         ImGui::EndMenu();
     }
 
@@ -3356,21 +3071,13 @@ void MainWindow::renderMenuBar()
         // CRT glass sliders (scanlines / mask / barrel / persistence /
         // sharpness / BCS). The shared effect stack runs on every pipeline,
         // so this one panel governs the CRT look across all modes.
-        ImGui::MenuItem("CRT Settings (sliders)...", nullptr, &showNtscSettings);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Scanlines, shadow mask, barrel, phosphor curve,\n"
-                              "persistence, brightness/contrast/saturation.");
+        panelMenuItem(pom2::PanelId::Crt);
 
         // 3D voxel view (MicroM8 "Voxel Cube"): rebuild the screen as an
         // upright 4:3 slab of equal-depth cubes; left-drag orbits, middle-drag
         // pans, wheel zooms. Works on any colour mode.
-        ImGui::MenuItem("3D voxel view", nullptr, &show3dVoxel_);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("MicroM8-style cube renderer.\n"
-                              "Left-drag orbits, middle-drag pans, wheel zooms.");
-        ImGui::MenuItem("3D voxel settings...", nullptr, &showVoxelSettings_);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Depth, colour pop, fill, anti-alias, mono, per-colour depth.");
+        panelMenuItem(pom2::PanelId::Voxel);
+        panelMenuItem(pom2::PanelId::VoxelSettings);
 
         // ── Color pipeline ──────────────────────────────────────────────
         // How the Apple II bit stream becomes colour. One pick; the CRT
@@ -3558,12 +3265,12 @@ void MainWindow::renderMenuBar()
         }
         ImGui::Separator();
 
-        ImGui::MenuItem("Memory viewer",               nullptr, &showMemViewer);
-        ImGui::MenuItem("Debugger",                    nullptr, &showDebugger);
+        panelMenuItem(pom2::PanelId::MemViewer);
+        panelMenuItem(pom2::PanelId::Debugger);
         ImGui::Separator();
-        ImGui::MenuItem("Memory Map Bar",              nullptr, &showMemoryBar);
-        ImGui::MenuItem("Memory Map Bar (Horizontal)", nullptr, &showMemoryBarH);
-        ImGui::MenuItem("Memory Map Grid",             nullptr, &showMemoryGrid);
+        panelMenuItem(pom2::PanelId::MemBar);
+        panelMenuItem(pom2::PanelId::MemBarH);
+        panelMenuItem(pom2::PanelId::MemGrid);
         ImGui::EndMenu();
     }
 
@@ -3574,39 +3281,20 @@ void MainWindow::renderMenuBar()
             ImGui::SetTooltip("Fuzzy-search every menu item, panel and machine\n"
                               "action. Type \"mock\", \"amber\", \"eject\"...");
         ImGui::Separator();
-        ImGui::MenuItem("HGR Paint Editor", nullptr, &showHgrPaintEditor);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Paint directly into HGR/GR/DHGR video RAM through "
-                              "the real NTSC pipeline (image import included).");
-        ImGui::MenuItem("HGR Sprite Editor", nullptr, &showHgrSpriteEditor);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Draw HGR sprites on a scratch page, grab from / "
-                              "stamp to the live screen, export ca65 .byte tables.");
-#ifndef __EMSCRIPTEN__
-        // The AI Control HTTP server is compiled out under WASM
-        // (AiControlServer::start() returns false — no listening socket in
-        // the browser sandbox), so its entry is hidden there.
-        ImGui::MenuItem("AI Control (HTTP)...", nullptr, &showAiControlPanel);
-#endif
+        // The AI Control row hides itself under WASM — AiControlServer cannot
+        // open a listening socket in the browser sandbox. That used to be an
+        // #ifndef here; it is now one line in registerPanels(), where the rest
+        // of the panel's identity already lives.
+        panelMenuGroup(pom2::PanelGroup::Tools);
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Help")) {
-        ImGui::MenuItem("Welcome / Quick Start", nullptr, &showWelcomePanel);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Where to put ROMs/disks, keys, and signature features.");
-        ImGui::MenuItem("ROM Status...", nullptr, &showRomStatusPanel);
-        ImGui::MenuItem("Abstraction Levels (LLE / HLE)...", nullptr,
-                        &showAbstractionPanel);
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(
-                "What POM2 emulates as silicon and what it emulates as a\n"
-                "service, subsystem by subsystem — plus which level is\n"
-                "actually running (a missing ROM dump quietly demotes\n"
-                "several of them) and the four boundaries you can move.");
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Every ROM POM2 probes: present or missing, which\n"
-                              "dump resolved, and what breaks without it.");
+        // Three rows, and one of them used to be wrong: ROM Status's tooltip
+        // was attached to the Abstraction Levels item (two IsItemHovered
+        // blocks after the same MenuItem), so one row showed the other's tip
+        // and ROM Status showed none. Both now come from the catalog.
+        panelMenuGroup(pom2::PanelGroup::Help);
         ImGui::Separator();
         if (ImGui::MenuItem("About POM2")) showAbout = true;
         ImGui::EndMenu();
@@ -4205,7 +3893,7 @@ void MainWindow::drawScreenImage()
     // aspect is exact; replaces the flat blit (CRT glass computed above is
     // discarded when the 3D view wins). Falls back to the flat texture if the
     // GL renderer can't initialise.
-    if (show3dVoxel_) {
+    if (show(pom2::PanelId::Voxel)) {
         if (!voxel3d_) voxel3d_ = std::make_unique<pom2::Voxel3DRenderer>();
         // One voxel per live Apple II pixel (280 or 560 × 192) so the cube grid
         // captures the full image — half-res sampling visibly lost detail.
@@ -4262,7 +3950,7 @@ void MainWindow::drawScreenImage()
     // wheel zooms (MicroM8-style). All reference the Image item above
     // (IsItemHovered), so this must stay right after it. Mutates the
     // persistent `voxelCam_` the renderer reads.
-    if (show3dVoxel_ && screenHovered) {
+    if (show(pom2::PanelId::Voxel) && screenHovered) {
         if (ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
             const ImVec2 d = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
             ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
@@ -5179,7 +4867,7 @@ pom2::mousegrab::Context MainWindow::mouseGrabContext() const
     pom2::mousegrab::Context c;
     c.cardPlugged = (mouseCard != nullptr) || (mouseAwCard != nullptr);
     c.grabbed     = mouseGrabbed_;
-    c.voxelView   = show3dVoxel_;
+    c.voxelView   = show(pom2::PanelId::Voxel);
     // Hover, NOT rect containment. `screenHovered_` is ImGui's own z-order
     // aware verdict, captured next to the screen Image (renderScreenWindow).
     // A raw "is the cursor between screenRectMin and screenRectMax" test
@@ -5620,7 +5308,7 @@ void MainWindow::pollJoystickAndPushToMemory()
 // every re-plug, so they are only ever dereferenced inside the lock.
 void MainWindow::renderEthernetPanelWindow()
 {
-    if (!showEthernetPanel) return;
+    if (!show(pom2::PanelId::Ethernet)) return;
     if (!ethernetPanel) ethernetPanel = std::make_unique<pom2::Uthernet_ImGui>();
 
     pom2::Uthernet_ImGui::Snapshot snap;
@@ -5666,7 +5354,7 @@ void MainWindow::renderEthernetPanelWindow()
     }
 
     const auto action =
-        ethernetPanel->render("Ethernet###ethernetPanel", showEthernetPanel, snap);
+        ethernetPanel->render("Ethernet###ethernetPanel", show(pom2::PanelId::Ethernet), snap);
 
     if (action.requestResetU1 || action.requestResetU2 ||
         action.requestVirtualDns) {
@@ -5682,10 +5370,10 @@ void MainWindow::renderEthernetPanelWindow()
 
 void MainWindow::renderSscPanelWindow()
 {
-    if (!showSscPanel || sscCards.empty()) return;
+    if (!show(pom2::PanelId::Ssc) || sscCards.empty()) return;
 
     ImGui::SetNextWindowSize(ImVec2(480, 320), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Super Serial###sscPanel", &showSscPanel)) {
+    if (!ImGui::Begin("Super Serial###sscPanel", &show(pom2::PanelId::Ssc))) {
         ImGui::End();
         return;
     }
@@ -5834,12 +5522,12 @@ void MainWindow::renderSscPanelWindow()
 
 void MainWindow::renderPrinterPanelWindow()
 {
-    if (!showPrinterPanel || !printerCard) return;
+    if (!show(pom2::PanelId::Printer) || !printerCard) return;
 
     ImGui::SetNextWindowSize(ImVec2(560, 420), ImGuiCond_FirstUseEver);
     const std::string title = "Printer (slot " +
         std::to_string(printerCard->getSlot()) + ")###printerPanel";
-    if (!ImGui::Begin(title.c_str(), &showPrinterPanel)) {
+    if (!ImGui::Begin(title.c_str(), &show(pom2::PanelId::Printer))) {
         ImGui::End();
         return;
     }
@@ -6084,7 +5772,7 @@ void MainWindow::pumpImageWriter()
 
 void MainWindow::renderImageWriterWindow()
 {
-    if (!showImageWriterPanel || !imageWriter || !imageWriterPanel) return;
+    if (!show(pom2::PanelId::ImageWriter) || !imageWriter || !imageWriterPanel) return;
 
     pom2::ImageWriter_ImGui::HostInfo host;
 
@@ -6201,15 +5889,15 @@ void MainWindow::renderImageWriterWindow()
     host.canSaveFiles = false;   // MEMFS writes vanish on reload
 #endif
 
-    imageWriterPanel->render(&showImageWriterPanel, *imageWriter, host);
+    imageWriterPanel->render(&show(pom2::PanelId::ImageWriter), *imageWriter, host);
 }
 
 void MainWindow::renderAiControlPanelWindow()
 {
-    if (!showAiControlPanel) return;
+    if (!show(pom2::PanelId::AiControl)) return;
 
     ImGui::SetNextWindowSize(ImVec2(480, 320), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("AI Control (HTTP)", &showAiControlPanel)) {
+    if (!ImGui::Begin("AI Control (HTTP)", &show(pom2::PanelId::AiControl))) {
         ImGui::End();
         return;
     }
@@ -6332,7 +6020,7 @@ bool MainWindow::swapSlotCardVariant(const char* fromKey, const char* toKey)
 
 void MainWindow::renderAbstractionPanel()
 {
-    if (!showAbstractionPanel) return;
+    if (!show(pom2::PanelId::Abstraction)) return;
     if (!abstractionPanel)
         abstractionPanel = std::make_unique<pom2::AbstractionLevels_ImGui>();
 
@@ -6568,7 +6256,7 @@ void MainWindow::renderAbstractionPanel()
         snap.toggles.push_back(std::move(t));
     }
 
-    const Panel::Request req = abstractionPanel->render(&showAbstractionPanel,
+    const Panel::Request req = abstractionPanel->render(&show(pom2::PanelId::Abstraction),
                                                        snap);
     switch (req.toggle) {
         case pom2::AbsToggle::None:
@@ -6599,11 +6287,11 @@ void MainWindow::renderAbstractionPanel()
 
 void MainWindow::renderNoSlotClockPanelWindow()
 {
-    if (!showNoSlotClockPanel) return;
+    if (!show(pom2::PanelId::NoSlotClock)) return;
 
     ImGui::SetNextWindowSize(ImVec2(420, 200), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("No-Slot Clock (Dallas DS1216E)###nsclockPanel",
-                      &showNoSlotClockPanel)) {
+                      &show(pom2::PanelId::NoSlotClock))) {
         ImGui::End();
         return;
     }
@@ -6656,23 +6344,23 @@ void MainWindow::renderNoSlotClockPanelWindow()
 // (owned up-front at settings-load, so the panel works before the view is on).
 void MainWindow::renderVoxelSettingsWindow()
 {
-    if (!showVoxelSettings_) return;
+    if (!show(pom2::PanelId::VoxelSettings)) return;
     if (!voxel3d_) voxel3d_ = std::make_unique<pom2::Voxel3DRenderer>();
 
     ImGui::SetNextWindowSize(ImVec2(360, 300), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("3D Voxel View", &showVoxelSettings_)) {
+    if (!ImGui::Begin("3D Voxel View", &show(pom2::PanelId::VoxelSettings))) {
         ImGui::End();
         return;
     }
 
     // Quick enable toggle, mirroring the View-menu item so the panel is usable
     // stand-alone. Greys out the knobs while the 3D view is off.
-    ImGui::Checkbox("Enable 3D voxel view", &show3dVoxel_);
+    ImGui::Checkbox("Enable 3D voxel view", &show(pom2::PanelId::Voxel));
     ImGui::SameLine();
     ImGui::TextDisabled("(left-drag orbit · middle-drag pan · wheel zoom)");
     ImGui::Separator();
 
-    ImGui::BeginDisabled(!show3dVoxel_);
+    ImGui::BeginDisabled(!show(pom2::PanelId::Voxel));
 
     pom2::Voxel3DRenderer& v = *voxel3d_;
     ImGui::SliderFloat("Voxel depth",  &v.voxelDepth, 0.0f, 12.0f, "%.1f cells", ImGuiSliderFlags_AlwaysClamp);
@@ -6735,11 +6423,11 @@ void MainWindow::renderVoxelSettingsWindow()
 // defaults plus "Reset to defaults" are the only starting points now.
 void MainWindow::renderNtscSettingsWindow()
 {
-    if (!showNtscSettings) return;
+    if (!show(pom2::PanelId::Crt)) return;
 
     ImGui::SetNextWindowSize(ImVec2(380, 360), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("CRT Settings (Composite NTSC)",
-                      &showNtscSettings)) {
+                      &show(pom2::PanelId::Crt))) {
         ImGui::End();
         return;
     }
@@ -6917,7 +6605,7 @@ void MainWindow::renderNtscSettingsWindow()
 
 void MainWindow::renderJoystickPanelWindow()
 {
-    if (!showJoystickPanel) return;
+    if (!show(pom2::PanelId::Joystick)) return;
 
     pom2::JoystickPanel_ImGui::Snapshot snap;
     for (int h = 0; h < JoystickInput::kHostCount; ++h) {
@@ -6938,7 +6626,7 @@ void MainWindow::renderJoystickPanelWindow()
     for (int i = 0; i < 4; ++i) snap.appleIIPaddle[i] = joystick->paddleValue(i);
     for (int i = 0; i < 3; ++i) snap.appleIIButton[i] = joystick->buttonDown(i);
 
-    auto result = joystickPanel->render("Joystick", showJoystickPanel, snap);
+    auto result = joystickPanel->render("Joystick", show(pom2::PanelId::Joystick), snap);
     if (result.changed) {
         auto& bind = joystick->binding();
         bind.hostIdx    = result.hostIdx;
@@ -6962,10 +6650,10 @@ void MainWindow::renderJoystickPanelWindow()
 
 void MainWindow::renderMouseInspectorWindow()
 {
-    if (!showMouseInspector) return;
+    if (!show(pom2::PanelId::Mouse)) return;
     ImGui::SetNextWindowPos (ImVec2(40, 80), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(520, 640), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Mouse Inspector", &showMouseInspector)) {
+    if (!ImGui::Begin("Mouse Inspector", &show(pom2::PanelId::Mouse))) {
         ImGui::End();
         return;
     }
@@ -7216,7 +6904,7 @@ void MainWindow::renderMouseInspectorWindow()
 
 void MainWindow::renderAudioMixerWindow()
 {
-    if (!showAudioMixer) return;
+    if (!show(pom2::PanelId::Mixer)) return;
 
     // The default size has to cover a full row — label column + volume
     // slider + meter + Mute + pan — or the rightmost control lands outside
@@ -7226,7 +6914,7 @@ void MainWindow::renderAudioMixerWindow()
     const float uiSc = uiScale_ * dpiScale_;
     ImGui::SetNextWindowPos (ImVec2(80, 80),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(540 * uiSc, 320 * uiSc), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Audio Mixer", &showAudioMixer)) {
+    if (!ImGui::Begin("Audio Mixer", &show(pom2::PanelId::Mixer))) {
         ImGui::End();
         return;
     }
@@ -7486,7 +7174,7 @@ void MainWindow::renderAudioMixerWindow()
 
 void MainWindow::renderChatMauvePanelWindow()
 {
-    if (!showChatMauvePanel) return;
+    if (!show(pom2::PanelId::ChatMauve)) return;
 
     pom2::LeChatMauve_ImGui::Snapshot snap;
     if (chatMauveCard) {
@@ -7506,7 +7194,7 @@ void MainWindow::renderChatMauvePanelWindow()
     ImGui::SetNextWindowSize(ImVec2(330,  500), ImGuiCond_FirstUseEver);
 
     auto result = chatMauvePanel->render("Le Chat Mauve###chatMauvePanel",
-                                        showChatMauvePanel, snap);
+                                        show(pom2::PanelId::ChatMauve), snap);
 
     if (chatMauveCard && result.requestOverride) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
@@ -7562,12 +7250,12 @@ void MainWindow::renderChatMauvePanelWindow()
 // (`peekViaRegister`, `getAyRegister`, `isIrqAsserted`).
 void MainWindow::renderMockingboardPanelWindow()
 {
-    if (!showMockingboardPanel) return;
+    if (!show(pom2::PanelId::Mockingboard)) return;
 
     ImGui::SetNextWindowPos (ImVec2(720, 45),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(380, 540), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Mockingboard (VIA + AY state)",
-                      &showMockingboardPanel,
+                      &show(pom2::PanelId::Mockingboard),
                       ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
@@ -7730,12 +7418,12 @@ void MainWindow::renderMockingboardPanelWindow()
 
 void MainWindow::renderPhasorPanelWindow()
 {
-    if (!showPhasorPanel) return;
+    if (!show(pom2::PanelId::Phasor)) return;
 
     ImGui::SetNextWindowPos (ImVec2(720, 45),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(640, 560), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Phasor (mode + 2×VIA + 4×AY)",
-                      &showPhasorPanel,
+                      &show(pom2::PanelId::Phasor),
                       ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
@@ -7894,11 +7582,11 @@ void MainWindow::renderPhasorPanelWindow()
 
 void MainWindow::renderEchoPlusPanelWindow()
 {
-    if (!showEchoPlusPanel) return;
+    if (!show(pom2::PanelId::EchoPlus)) return;
 
     ImGui::SetNextWindowPos (ImVec2(720, 45),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(420, 400), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Echo+ (SSI263 speech)", &showEchoPlusPanel,
+    if (!ImGui::Begin("Echo+ (SSI263 speech)", &show(pom2::PanelId::EchoPlus),
                       ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
@@ -8047,7 +7735,7 @@ void MainWindow::updateAutoTurbo()
 
 void MainWindow::renderDiskPanelWindow()
 {
-    if (!showDiskPanel) return;
+    if (!show(pom2::PanelId::DiskII)) return;
 
     // Disk library is the same for every plugged DiskII (it's the
     // contents of disks_5.4/ on disk). Build it once and share via copy.
@@ -8142,11 +7830,11 @@ void MainWindow::renderDiskPanelWindow()
         char title[64];
         std::snprintf(title, sizeof(title),
                       "Disk II (slot %d)", card->getSlot());
-        // Only the primary card honours `showDiskPanel` (the menu toggle).
+        // Only the primary card honours `show(pom2::PanelId::DiskII)` (the menu toggle).
         // Secondary cards share the same toggle for simplicity — the user
         // sees them appear/disappear together. We feed the same flag to
         // each render() call.
-        auto result = panel->render(title, showDiskPanel, snap);
+        auto result = panel->render(title, show(pom2::PanelId::DiskII), snap);
 
         if (result.turboToggleChanged) {
             diskTurboWhileMotor = result.turboNewValue;
@@ -8719,7 +8407,7 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
 
 void MainWindow::renderDiskLibraryWindow()
 {
-    if (!showDiskLibrary) return;
+    if (!show(pom2::PanelId::DiskLibrary)) return;
 
     // Default position: right column of the curated 1568×850 layout,
     // flush against the screen window. 435 px wide × 745 px tall =
@@ -8796,7 +8484,7 @@ void MainWindow::renderDiskLibraryWindow()
     lists.recents      = libraryRecents_;
     lists.hideSizeDate = libraryHideSizeDate_;
 
-    const auto r = diskLibrary->render("Disk Library", showDiskLibrary,
+    const auto r = diskLibrary->render("Disk Library", show(pom2::PanelId::DiskLibrary),
                                        mounted, lists);
 
     if (r.toggleHideSizeDate) libraryHideSizeDate_ = !libraryHideSizeDate_;
@@ -9051,7 +8739,7 @@ void MainWindow::renderDiskLibraryWindow()
 
 void MainWindow::renderSmartPortPanelWindow()
 {
-    if (!showSmartPortPanel) return;
+    if (!show(pom2::PanelId::SmartPort)) return;
 
     // Build snapshot from the currently-plugged SmartPort card. When no
     // card is plugged the panel renders a "no card" hint.
@@ -9088,7 +8776,7 @@ void MainWindow::renderSmartPortPanelWindow()
                       "SmartPort Configuration");
     }
 
-    const auto r = smartPortPanel->render(title, showSmartPortPanel, snap);
+    const auto r = smartPortPanel->render(title, show(pom2::PanelId::SmartPort), snap);
 
     if (!snap.plugged) return;
 
@@ -9335,12 +9023,12 @@ void MainWindow::dumpScreenToPrinter()
     if (stream.empty()) return;
 
     imageWriter->queueBytes(stream.data(), stream.size());
-    showImageWriterPanel = true;  // the user asked to print; show the paper
+    show(pom2::PanelId::ImageWriter) = true;  // the user asked to print; show the paper
 }
 
 void MainWindow::renderFujiNetPanelWindow()
 {
-    if (!showFujiNetPanel) return;
+    if (!show(pom2::PanelId::FujiNet)) return;
 
     pom2::FujiNet_ImGui::Snapshot snap;
     snap.plugged = (fujiNetCard != nullptr);
@@ -9396,7 +9084,7 @@ void MainWindow::renderFujiNetPanelWindow()
         snap.helperResolved = fujiNetHelperResolved_;
     }
 
-    const auto r = fujiNetPanel->render("FujiNet", showFujiNetPanel, snap);
+    const auto r = fujiNetPanel->render("FujiNet", show(pom2::PanelId::FujiNet), snap);
     if (!snap.plugged) return;
 
     // Enumerating serial devices scans /dev (or the registry), so it happens
@@ -9492,7 +9180,7 @@ void MainWindow::renderFujiNetPanelWindow()
 
 void MainWindow::renderFloppyEmuWindow()
 {
-    if (!showFloppyEmu) return;
+    if (!show(pom2::PanelId::FloppyEmu)) return;
     namespace fs = std::filesystem;
     using Mode = pom2::FloppyEmuMode;
     const Mode mode = floppyEmu->mode();
@@ -9707,7 +9395,7 @@ void MainWindow::renderFloppyEmuWindow()
             static_cast<int>(snap.modeOptions.size()) - 1;
     }
 
-    const auto r = floppyEmuPanel->render("Floppy Emu (BMOW)", showFloppyEmu, snap);
+    const auto r = floppyEmuPanel->render("Floppy Emu (BMOW)", show(pom2::PanelId::FloppyEmu), snap);
 
     // ── Apply actions. ───────────────────────────────────────────────────
     if (r.setModeIndex >= 0) {
@@ -9748,7 +9436,7 @@ void MainWindow::renderFloppyEmuWindow()
 
 void MainWindow::renderHdvPanelWindow()
 {
-    if (!showHdvPanel) return;
+    if (!show(pom2::PanelId::Hdv)) return;
 
     pom2::HdvController_ImGui::DriveSnapshot snap;
     if (hdvCard) {
@@ -9832,7 +9520,7 @@ void MainWindow::renderHdvPanelWindow()
     char hdvTitle[48];
     std::snprintf(hdvTitle, sizeof(hdvTitle), "HDV (slot %d)",
                   hdvCard ? hdvCard->getSlot() : 5);
-    auto result = hdvPanel->render(hdvTitle, showHdvPanel, snap);
+    auto result = hdvPanel->render(hdvTitle, show(pom2::PanelId::Hdv), snap);
 
     if (result.writeBackToggleChanged && hdvCard) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
@@ -10278,7 +9966,7 @@ bool MainWindow::convertWoz35ToPo(int drive, bool useSmartPort35)
 
 void MainWindow::renderDisk35PanelWindow()
 {
-    if (!showDisk35Panel) return;
+    if (!show(pom2::PanelId::Disk35)) return;
 
     pom2::Disk35Controller_ImGui::PanelSnapshot snap;
     // 3.5" is "supported" by the //c+ profile (on-board SmartPort + MIG)
@@ -10419,7 +10107,7 @@ void MainWindow::renderDisk35PanelWindow()
                       "Disk 3.5\" (//c+ on-board)");
     }
     auto result = disk35Panel->render(
-        disk35Title, showDisk35Panel, snap);
+        disk35Title, show(pom2::PanelId::Disk35), snap);
 
     if (result.requestConvertDrive >= 0)
         convertWoz35ToPo(result.requestConvertDrive, useSmartPort35);
@@ -10654,7 +10342,7 @@ void MainWindow::pushAppleKeys()
 
 void MainWindow::renderKeyboardPanel()
 {
-    if (!showKeyboardPanel) {
+    if (!show(pom2::PanelId::Keyboard)) {
         // A latched Open-Apple must not outlive the window that shows it as
         // down: with the panel closed there is nothing to un-latch it with,
         // and the guest would see a key held forever.
@@ -10678,7 +10366,7 @@ void MainWindow::renderKeyboardPanel()
     if (!keyboardPanel)
         keyboardPanel = std::make_unique<pom2::Keyboard_ImGui>();
 
-    const auto ev = keyboardPanel->render(&showKeyboardPanel, kbImageTex_,
+    const auto ev = keyboardPanel->render(&show(pom2::PanelId::Keyboard), kbImageTex_,
                                           kbImageW_, kbImageH_, kbImageError_);
 
     // The Apple keys are LEVELS, not events: $C061/$C062 bit 7 reads the
@@ -10819,9 +10507,9 @@ void MainWindow::onFileDrop(int count, const char** paths)
 
 void MainWindow::renderWelcomePanelWindow()
 {
-    if (!showWelcomePanel) return;
+    if (!show(pom2::PanelId::Welcome)) return;
     ImGui::SetNextWindowSize(ImVec2(620, 0), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Welcome to POM2###welcomePanel", &showWelcomePanel,
+    if (!ImGui::Begin("Welcome to POM2###welcomePanel", &show(pom2::PanelId::Welcome),
                       ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::End();
         return;
@@ -10921,7 +10609,7 @@ void MainWindow::renderWelcomePanelWindow()
 
     ImGui::Spacing();
     ImGui::Separator();
-    if (ImGui::Button("Close")) showWelcomePanel = false;
+    if (ImGui::Button("Close")) show(pom2::PanelId::Welcome) = false;
     ImGui::SameLine();
     if (ImGui::Button("About POM2...")) { showAbout = true; }
     ImGui::End();
@@ -11002,9 +10690,9 @@ void MainWindow::renderAboutDialog()
 
 void MainWindow::renderMemoryViewerWindow()
 {
-    if (!showMemViewer) return;
+    if (!show(pom2::PanelId::MemViewer)) return;
     ImGui::SetNextWindowSize(ImVec2(720, 520), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Memory viewer", &showMemViewer)) {
+    if (ImGui::Begin("Memory viewer", &show(pom2::PanelId::MemViewer))) {
         {
             // Hold the state mutex briefly so the snapshot the viewer reads
             // (Memory::data()) is consistent — no torn writes mid-row.
@@ -11029,7 +10717,7 @@ void MainWindow::renderMemoryViewerWindow()
 
 void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
 {
-    if (!showCassetteDeck) return;
+    if (!show(pom2::PanelId::Cassette)) return;
 
     // Build the deck snapshot under stateMutex — cheap enough that holding
     // the emul lock for the time it takes to copy a dozen scalars is fine.
@@ -11057,7 +10745,7 @@ void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
 
     ImGui::SetNextWindowSize(ImVec2(440, 720), ImGuiCond_FirstUseEver);
     auto result = cassetteDeck->render("Cassette Deck",
-                                      showCassetteDeck,
+                                      show(pom2::PanelId::Cassette),
                                       controller.get(),
                                       snap,
                                       deltaSeconds);
@@ -11070,7 +10758,7 @@ void MainWindow::renderCassetteDeckWindow(float deltaSeconds)
 
 void MainWindow::renderHgrPaintWindow()
 {
-    if (!showHgrPaintEditor) return;
+    if (!show(pom2::PanelId::HgrPaint)) return;
 
     // 64 KB main-RAM (+ IIe aux) snapshot under stateMutex — the editor's
     // per-frame canvas/shadow read source (same idiom as the deck snapshot).
@@ -11087,7 +10775,7 @@ void MainWindow::renderHgrPaintWindow()
     const float w = hgrpaint::kHiresWidth  * 3.0f + 40.0f;
     const float h = hgrpaint::kHiresHeight * 3.0f + 180.0f;
     ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("HGR Paint Editor", &showHgrPaintEditor))
+    if (ImGui::Begin("HGR Paint Editor", &show(pom2::PanelId::HgrPaint)))
         hgrPaintEditor->render(hgrPaintMem_, hgrPaintAux_.empty() ? nullptr
                                                                   : &hgrPaintAux_);
     ImGui::End();
@@ -11095,7 +10783,7 @@ void MainWindow::renderHgrPaintWindow()
 
 void MainWindow::renderHgrSpriteWindow()
 {
-    if (!showHgrSpriteEditor) return;
+    if (!show(pom2::PanelId::HgrSprite)) return;
     {
         auto st = controller->lockState();
         const Memory& mem = st.memory();
@@ -11106,7 +10794,7 @@ void MainWindow::renderHgrSpriteWindow()
             hgrPaintAux_.clear();
     }
     ImGui::SetNextWindowSize(ImVec2(760, 560), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("HGR Sprite Editor", &showHgrSpriteEditor))
+    if (ImGui::Begin("HGR Sprite Editor", &show(pom2::PanelId::HgrSprite)))
         hgrSpriteEditor->render(hgrPaintMem_, hgrPaintAux_.empty() ? nullptr
                                                                    : &hgrPaintAux_);
     ImGui::End();
@@ -11124,8 +10812,8 @@ void MainWindow::driveRewindHold(bool held)
 
 void MainWindow::renderRewindWindow(float deltaSeconds)
 {
-    if (!showRewindBar) return;
-    auto result = rewindPanel_->render("Rewind", showRewindBar, *controller, deltaSeconds);
+    if (!show(pom2::PanelId::Rewind)) return;
+    auto result = rewindPanel_->render("Rewind", show(pom2::PanelId::Rewind), *controller, deltaSeconds);
     if (!result.statusMessage.empty()) {
         tapeStatusMessage = std::move(result.statusMessage);
         tapeStatusUntil   = lastFrameTime + 3.0;
@@ -11284,7 +10972,7 @@ void MainWindow::render()
         tb.isStopped          = (mode == EmulationController::Mode::Stopped);
         tb.cyclesPerFrame     = controller->getCyclesPerFrame();
         tb.videoStandard      = controller->getVideoStandard();
-        tb.memoryGridVisible  = showMemoryGrid;
+        tb.memoryGridVisible  = show(pom2::PanelId::MemGrid);
         tb.activeProfile      = activeProfile;
         tb.hasPrimaryDiskCard = (diskCard != nullptr);
         tb.charRomLocale      = charRomLocale;
@@ -11338,7 +11026,7 @@ void MainWindow::render()
         if (tr.setCyclesPerFrame > 0)
             controller->setCyclesPerFrame(tr.setCyclesPerFrame);
         if (tr.setProfileRequested)    applyProfile(tr.setProfile);
-        if (tr.requestMemoryGridToggle) showMemoryGrid = !showMemoryGrid;
+        if (tr.requestMemoryGridToggle) show(pom2::PanelId::MemGrid) = !show(pom2::PanelId::MemGrid);
         // Same entry point as F10 and the View menu item, so the three
         // routes into kiosk cannot drift apart.
         if (tr.requestKioskToggle)      toggleKioskMode();
@@ -11414,56 +11102,27 @@ void MainWindow::render()
     // call Begin(), or their first frame renders undocked.
     renderDockSpace();
     renderScreenWindow();
-    renderMemoryViewerWindow();
-    debuggerPanel->render(*controller, &showDebugger);
-    if (showMemoryBar)  renderMemoryBarWindow();
-    if (showMemoryBarH) renderMemoryBarHorizontalWindow();
-    if (showMemoryGrid) renderMemoryGridWindow();
-    renderCassetteDeckWindow(deltaSeconds);
-    renderHgrPaintWindow();
-    renderHgrSpriteWindow();
-    if (showRewindBar) renderRewindWindow(deltaSeconds);
+
+    // Every panel, in catalog order, each drawn only while it is visible.
+    // This was 43 hand-ordered calls — some gated here, most gating
+    // themselves, in an order that was the order somebody happened to add
+    // them in. What is left around it is the code that is NOT a panel: the
+    // modal file dialogs, the printer pump (a side effect that must run
+    // whether or not its window is open), the About box, the status bar and
+    // the palette overlay, which must stay last so it draws above everything.
+    renderPanels(deltaSeconds);
+
+    // The printer keeps consuming its card's spool with every window shut —
+    // without this a //c printing with the panel closed parked every byte in
+    // the spool forever, nothing on paper.
+    pumpImageWriter();
+
     renderTapeFileDialogs();
     renderPasteFileDialog();
     renderHdvFileDialog();
-    renderDiskPanelWindow();
     renderDiskFileDialog();
-    renderDiskLibraryWindow();
-    renderDisk35PanelWindow();
     renderDisk35FileDialog();
-    renderHdvPanelWindow();
-    renderSmartPortPanelWindow();
-    renderFujiNetPanelWindow();
-    renderChatMauvePanelWindow();
-    renderMockingboardPanelWindow();
-    renderPhasorPanelWindow();
-    renderEchoPlusPanelWindow();
-    renderSscPanelWindow();
-    renderEthernetPanelWindow();
-    renderPrinterPanelWindow();
-    pumpImageWriter();
-    renderImageWriterWindow();
-    renderNoSlotClockPanelWindow();
-    renderJoystickPanelWindow();
-    renderMouseInspectorWindow();
-    renderAudioMixerWindow();
-    renderNtscSettingsWindow();
-    renderVoxelSettingsWindow();
-    renderAiControlPanelWindow();
-    renderSlotConfigPanel();
-    renderMediaPanel();
-    if (showRomStatusPanel) {
-        if (!romStatusPanel)
-            romStatusPanel = std::make_unique<pom2::RomStatus_ImGui>();
-        romStatusPanel->render(
-            &showRomStatusPanel,
-            std::string(pom2::profileConfig(activeProfile).displayName));
-    }
-    renderAbstractionPanel();
-    renderKeyboardPanel();
-    renderFloppyEmuWindow();
     renderAboutDialog();
-    renderWelcomePanelWindow();
     renderStatusBar();
     // Last: the palette is an overlay and must draw above every panel.
     renderCommandPalette();

@@ -119,6 +119,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | AI control server (HTTP on loopback, opt-in) | `AiControlServer.h/.cpp` | [§ AI control server](DEV.md#ai-control-server-aicontrolserver) |
 | UI (ImGui) | `MainWindow.*`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui) |
 | UI theme + DPI/zoom scaling | `Pom2Theme.h/.cpp` | [§ Theme](DEV.md#theme--ui-scaling-pom2theme) |
+| Panel registry — the ONE list of panels (menus + palette + persistence derive from it) | `PanelCatalog.h`, `PanelRegistry.h/.cpp`, `MainWindow_Panels.cpp` | [§ Panel registry](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp) |
 | Command palette (Ctrl+Shift+P) | `CommandPalette_ImGui.h/.cpp` | [§ Palette](DEV.md#command-palette-commandpalette_imgui) |
 | Docking + layout presets | `MainWindow.cpp` (`renderDockSpace`/`applyDockLayout`), `imgui_pin.env` | [§ Docking](DEV.md#docking--layout-presets) |
 | HGR/DHGR Paint editor + sprite editor (portable, shared w/ POM1) | `hgrpaint/*`, `hgrsprite/*`, `Pom2HgrPaintHost.*` | [§ Paint editor](DEV.md#hgr--dhgr-paint-editor-hgrpaint-shared-with-pom1) |

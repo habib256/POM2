@@ -105,11 +105,11 @@ void MainWindow::persistMediaBay(int slot, int bay, SlotPeripheral* p)
 
 void MainWindow::renderSlotConfigPanel()
 {
-    if (!showSlotConfigPanel) return;
+    if (!show(pom2::PanelId::SlotConfig)) return;
 
     // 880 px was sized for two columns; one column needs about half that.
     ImGui::SetNextWindowSize(ImVec2(520, 460), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Slot Configuration", &showSlotConfigPanel)) {
+    if (!ImGui::Begin("Slot Configuration", &show(pom2::PanelId::SlotConfig))) {
         ImGui::End();
         return;
     }
@@ -520,10 +520,10 @@ void MainWindow::renderSlotConfigPanel()
 // longer share a window.
 void MainWindow::renderMediaPanel()
 {
-    if (!showMediaPanel) return;
+    if (!show(pom2::PanelId::Media)) return;
 
     ImGui::SetNextWindowSize(ImVec2(520, 480), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Internal Disks & Media", &showMediaPanel)) {
+    if (!ImGui::Begin("Internal Disks & Media", &show(pom2::PanelId::Media))) {
         ImGui::End();
         return;
     }

@@ -5,6 +5,99 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — A panel is described once now, not six times
+
+The UI's god-object problem was never the line count. It was that every panel
+existed in six places at once: 32 lines loading its visibility, 32 saving it,
+38 offering it in the command palette, 38 dispatching that command, 37 menu
+rows carrying its label / tooltip / greyed-out condition, and a 28-assignment
+block hiding "every" panel on the browser build. Splitting the file into
+`MainWindow_<Area>.cpp` moves those rows between files; it does not remove one
+of them, and the coupling is what hurts.
+
+They had already drifted, in exactly the ways six unlinked lists drift:
+
+* **Seven panels had no settings key at all** — the Debugger and the memory
+  viewer among them. The palette opened them and they were gone next launch,
+  and nothing in the code said whether that was a decision or an omission.
+* **The WASM chrome-light block named 28 panels by hand**, so every panel added
+  after it was written stayed open on the browser build. A list that could only
+  rot in one direction.
+* **The Help menu attached ROM Status's tooltip to the Abstraction Levels row**
+  (two `IsItemHovered` blocks after the same `MenuItem`): one row showed the
+  wrong tip, the other showed none.
+* The palette and the menus carried **different labels for the same window** —
+  "Disk II drive" against "Disk II (slot 6)".
+
+`PanelCatalog.h` is now the one list: 38 rows of `{id, title, menu group,
+settings key, shortcut, tooltip}`. `PanelRegistry` binds each row to the `bool`
+holding its visibility plus two optional runtime bits — an availability
+predicate (an unplugged card greys the row) and a dynamic title (the label that
+carries a slot number). `MainWindow_Panels.cpp` holds that binding table, and
+the menus, the palette, the palette's dispatch, the settings round-trip and the
+browser build's chrome-light startup are all *derived* from it.
+
+The Devices menu went from 157 hand-written lines to eight — four
+`SeparatorText` headers and four `panelMenuGroup` calls. `MainWindow.cpp` lost
+**341 lines** (11 495 → 11 154, ceiling lowered in the same commit),
+`MainWindow.h` lost its 38 visibility members, and both stopped being where
+panel facts live. Adding a panel is a catalog row
+plus a `bind` line; forgetting the bind is caught at startup by
+`PanelRegistry::unbound()`, which names the panel in the log instead of leaving
+a menu row that toggles nothing.
+
+The five formerly keyless View panels now persist, and the Welcome panel is the
+one entry that deliberately does not — a first launch with no ROM opens it from
+the constructor, before settings are read, so a stored `false` would cancel the
+greeting a newcomer needs. `panel_registry` counts that exception rather than
+allowing it: a second keyless panel fails the test and has to argue its case.
+
+Verified end to end, not just built: `panel_registry` (catalog invariants,
+catalog-order iteration, the persistence loop, unbound reporting), the whole
+suite at 195/195, and a real GUI run under Xvfb — startup logs no unbound or
+unknown panel, a clean exit writes all 37 keys, and editing two of them in the
+config and restarting brings them back, which is the load half nothing else
+proves.
+
+**The storage moved in too, and the render block became a loop** (same day,
+second pass). `MainWindow` no longer carries 38 `bool showXxx` members:
+visibility is one `std::array<bool, PanelId::Count>` in the registry, reached
+as `show(PanelId::Debugger)` — a `bool&`, so the 92 sites that read or took the
+address of a member changed name and nothing else. Correspondence between the
+enum and the table is by an explicit field in each row rather than by position,
+and `panelCatalogIsComplete()` is a `static_assert`: a forgotten row, a
+duplicate, or a copy-pasted enumerator fails the build instead of quietly
+toggling the wrong window. `defaultOpen` in the catalog replaced the three
+`= true` member initialisers that decided what a fresh install shows.
+
+`MainWindow::render`'s ~43 panel calls — some gated by the caller, most gating
+themselves, ordered by whoever added them last — are now `renderPanels(delta)`,
+walking the catalog and drawing each panel while it is visible. What stayed
+behind is the code that is not a panel: the modal file dialogs,
+`pumpImageWriter()` (a side effect that must run whether or not its window is
+open), the About box, the status bar, and the palette overlay, which must still
+be last so it draws above everything.
+
+**One panel is drawn while closed**, and finding out why is the reason this
+kind of loop is worth pinning: the //e keyboard latches Open-Apple and
+Solid-Apple, and a latch that outlives the window showing it as down is a key
+the guest holds forever with nothing left to release it. `renderKeyboardPanel`
+had an edge-triggered teardown in its "not visible" branch, which a naive loop
+would simply never call. `Runtime::drawAlways` keeps it called every frame;
+`panel_registry` pins that it is.
+
+Verified in the running GUI, not only in tests: a config with 30 panels open,
+run under Xvfb, and every one of them appears in `imgui.ini` with a real
+`Pos`/`Size`/`LastUsed` — the marker ImGui only writes for a window that was
+actually created that session, as opposed to one merely pre-docked by the
+layout builder. Card-gated panels correctly did not draw with no card plugged.
+
+Deliberately a table and not self-registration: static registrars in 40
+translation units scatter the UI surface back across the codebase, and the
+value here is that one file answers "what panels exist, where do they live,
+what persists". Same argument the command palette already makes for its
+non-panel commands.
+
 ## 2026-08-23 — Write watchpoints, and they cost the hot path nothing
 
 The debugger shipped on 2026-08-22 with breakpoints, step, step-over and
@@ -71,6 +164,7 @@ is the question the ratchet exists to force, and the answer here is that the
 test net — so doing it now to save 59 lines would be doing the wrong half of it.
 
 Suite 194/194.
+
 
 ## 2026-08-23 — Rewind stops recording a timeline that runs backwards
 

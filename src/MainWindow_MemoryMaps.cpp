@@ -188,7 +188,7 @@ std::vector<MainWindow::MemRegion> MainWindow::buildMemoryRegions()
 void MainWindow::renderMemoryBarWindow()
 {
     ImGui::SetNextWindowSize(ImVec2(420, 540), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Memory Map Bar", &showMemoryBar)) {
+    if (!ImGui::Begin("Memory Map Bar", &show(pom2::PanelId::MemBar))) {
         ImGui::End();
         return;
     }
@@ -421,7 +421,7 @@ void MainWindow::renderMemoryBarWindow()
     }
 
     // --- Memory viewer viewport overlay ---
-    if (showMemViewer) {
+    if (show(pom2::PanelId::MemViewer)) {
         const auto vp = memViewer->getViewportRange();
         float vpY0 = addrToY(vp.startAddress);
         float vpY1 = addrToY(vp.endAddress);
@@ -476,7 +476,7 @@ void MainWindow::renderMemoryBarWindow()
             ImGui::EndTooltip();
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                showMemViewer = true;
+                show(pom2::PanelId::MemViewer) = true;
                 memViewer->navigateToAddress(static_cast<int>(hoverAddr));
             }
         }
@@ -494,7 +494,7 @@ void MainWindow::renderMemoryBarWindow()
 void MainWindow::renderMemoryBarHorizontalWindow()
 {
     ImGui::SetNextWindowSize(ImVec2(720, 88), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Memory Map Bar (Horizontal)", &showMemoryBarH)) {
+    if (!ImGui::Begin("Memory Map Bar (Horizontal)", &show(pom2::PanelId::MemBarH))) {
         ImGui::End();
         return;
     }
@@ -670,7 +670,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
     }
 
     // --- Memory viewer viewport overlay ---
-    if (showMemViewer) {
+    if (show(pom2::PanelId::MemViewer)) {
         const auto vp = memViewer->getViewportRange();
         float vpX0 = addrToX(vp.startAddress);
         float vpX1 = addrToX(vp.endAddress);
@@ -725,7 +725,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
             ImGui::EndTooltip();
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                showMemViewer = true;
+                show(pom2::PanelId::MemViewer) = true;
                 memViewer->navigateToAddress(static_cast<int>(hoverAddr));
             }
         }
@@ -741,7 +741,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
 void MainWindow::renderMemoryGridWindow()
 {
     ImGui::SetNextWindowSize(ImVec2(880, 580), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Memory Map Grid", &showMemoryGrid)) {
+    if (!ImGui::Begin("Memory Map Grid", &show(pom2::PanelId::MemGrid))) {
         ImGui::End();
         return;
     }
@@ -828,7 +828,7 @@ void MainWindow::renderMemoryGridWindow()
                     if (mousePos.x >= p0.x && mousePos.x < p1.x &&
                         mousePos.y >= p0.y && mousePos.y < p1.y) {
                         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                            showMemViewer = true;
+                            show(pom2::PanelId::MemViewer) = true;
                             memViewer->navigateToAddress(addr);
                         }
                         ImGui::BeginTooltip();

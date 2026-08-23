@@ -248,7 +248,7 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 
 | Pri | Item | Status | Detail |
 | --- | ---- | ------ | ------ |
-| **P0** | Stop growing the god-objects; extract 3–4 window groups (storage, audio, network, debug) into TUs. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. Without this, `MainWindow.cpp` hits ~14 kLOC in six months and nobody reviews it. | 🟡 **bleeding stopped 2026-08-22**, split still open. `MainWindow.cpp` measured 5 590 → 6 622 (the audit that set the target) → **11 511**, i.e. +74 % *after* the rule was written. `tools/check_file_sizes.sh` is now a CI ratchet over `tools/file_size_budget.txt`: ceilings may fall, never rise, and a new file over 3 000 lines fails. Growing the god-object now costs a visible budget edit in the same commit. | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object |
+| **P0** | Stop growing the god-objects, and **decompose** rather than relocate: the split into `MainWindow_<Area>.cpp` moves rows between files and leaves the coupling intact. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. | 🟢 **the UI half is done 2026-08-23.** `MainWindow.cpp` went 5 590 → 6 622 (the audit that set the target) → 11 511 → **11 154** — the first fall since the rule was written, and it came from removing the SIX parallel per-panel lists (settings load 32, save 32, palette 38, palette dispatch 38, menu rows 37, WASM chrome-light 28), then the 38 `bool showXxx` members, then the ~43 `renderXxxWindow()` calls. One catalog + one registry; adding a panel is a row and a `draw` line. `tools/check_file_sizes.sh` ratchets the ceiling, which now only falls. **Left**: moving panel *bodies* into their own TUs — a move rather than a rewrite now that nothing outside a body refers to it. | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object; [DEV § Panel registry](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp) |
 | **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟡 open, but no longer unattended: a **nightly ASan+UBSan / TSan matrix** runs in `ci.yml` as of 2026-08-22 (`POM2_SANITIZE` had been a CMake option CI never used, so the "controller TSan clean 2026-08-17" result had nothing keeping it true). GUI / `demodMutex` / slot re-plug under load still need a targeted pass. OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
 | **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
 | **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
@@ -1241,15 +1241,23 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   - Not committed, matching the precedent from hunt 5: the harnesses link
     against source files rather than a build-system target, which is a CI
     decision rather than a bug fix.
-- 🟠 **`MainWindow.cpp` god-object (10 669 lines)** *(audit 2026-05-31, count
-  re-measured 2026-08-19 — it was ~6700 then, so the file is still growing)* —
-  architect **P0** ([Architect attack order](#architect-attack-order)). Biggest
-  single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
-  `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window
-  groups (storage / audio / network / debug) into dedicated TUs (aim for
-  &lt; 3000 lines/file, like POM1's `MainWindow_*` discipline). Standing rule:
-  new cards ship their panel in `*_ImGui.cpp` with zero business logic in
-  `MainWindow.cpp`. *3-5 d.*
+- 🟡 **`MainWindow.cpp` god-object (11 154 lines)** *(audit 2026-05-31 at
+  10 669; 11 495 before the panel work, 11 154 after — the first fall since
+  the rule was written)* — architect **P0**
+  ([Architect attack order](#architect-attack-order)). **The lesson of
+  2026-08-23: the file split was never the fix.** `_Slots` / `_MemoryMaps` /
+  `_ImGui` moved code without removing coupling — what hurt was that one panel
+  was described in six unlinked places, plus a `bool showXxx` member, plus a
+  hand-ordered render call. They had drifted: seven panels never persisted, the
+  WASM chrome-light block missed every panel added after it was written, and
+  one menu row wore another's tooltip. `PanelCatalog.h` + `PanelRegistry` +
+  `MainWindow_Panels.cpp` made all of that one table: the 38 members are gone
+  (`show(PanelId::X)`), the 43 render calls are one loop, and a forgotten
+  catalog row now fails the build rather than the UI.
+  **Left**: move the panel *bodies* into their own translation units. That is
+  now a move rather than a rewrite — nothing outside a body refers to it — and
+  it is the ordinary half of the work. *1-2 d.*
+  → [DEV](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp)
 - 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
   to centralize into a `Config` (env → CLI → Settings → defaults),
   list env vars in `--help`. *1 d.* Architect **P4**.
