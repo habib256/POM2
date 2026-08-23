@@ -203,10 +203,10 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
 | 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
-| 19 | Phasor (AE — 2×VIA, 4×AY)      | Verbatim         | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo L/R per VIA pair done (2026-08-01) |
+| 19 | Phasor (AE — 2×VIA, 4×AY)      | Partial-verbatim | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo L/R per VIA pair done (2026-08-01). 🟡 **no cycle-stamped event queue** — the AY writes are applied when the audio callback runs, not at their `emuCycles` stamp the way Mockingboard's are, so beam-raced register changes quantise to the buffer. Bus decode is verbatim; the audio timeline is not, hence Partial not Verbatim. |
 | 20 | SSI263 speech (chip model)     | AppleWin-faithful| AppleWin `source/SSI263.{h,cpp}` (MAME does not implement)                 | 🟢 formant synth → PCM blob, 62 phonemes (AppleWin LGPL → GPL3)                           |
 | 21 | EchoPlusCard (Cricket/SSI263, key `echoplus`) | POM2-original | Cricket / Street Elec SSI263 spec (historically mislabelled "Echo+") | 🟢 markadev audit 2026-05-28: the real Echo+ = TMS5220 (see line 21bis)                |
-| 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode; TMS5220 LPC + AY-3-8913 synth cores deferred                  |
+| 21bis | EchoPlusTMS5220Card (key `echoplus_tms`) | Scaffold       | markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+                  | 🟡 stub register decode (kept for software detection); TMS5220 LPC + AY-3-8913 synth cores deferred. Catalog label says "silent, detect-only" so it does not pose as a working card (2026-08-23). |
 | 22 | PrinterCard (parallel synth)  | POM2-original    | Apple II slot 1 convention + Pascal 1.1 sig                              | — (PDF export shipped: `src/ImageWriterPdf.*`, pinned `imagewriter_pdf`)                 |
 | 22bis | GrapplerCard (key `grappler`) | Verbatim         | MAME `bus/a2bus/grappler.cpp` (pinned 2026-07-28, line-cited) + markadev 4 KB EPROM (`roms/grappler_plus.bin`) | 🟢 /STROBE 7-clock pulse collapsed to instant (no observer); `ackEffective()` BUSY gate is POM2's back-pressure model |
 | 22ter | ImageWriter II printer (host-side, no slot) | Verbatim         | greg-kennedy/ImageWriter (GSport/KEGS/DOSBox lineage) + Apple ImageWriter II/LQ reference manuals | — (full control language, 4-band colour ribbon, 8-/24-pin bit images, paper tray + PNG & multi-page PDF export; fed by `printer` / `grappler` / SSC printer tap (//c PR#1)) |
@@ -250,7 +250,7 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 | **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
 | **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
 | **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | ✅ **BP + step + step-over + run-to-cursor DONE 2026-08-22; WRITE watchpoints DONE 2026-08-23** (`Debugger.h/.cpp`, `Debugger_ImGui.*`, `MemoryWatchSink.h`, pinned `debugger`; zero measurable cost armed or not, PERFORMANCE § 8.3). READ watchpoints the same day: no free per-address hook on `memRead`, so one divert flag folded into existing fast-path tests — +0.0 % un-armed, PERFORMANCE § 8.5. | [Arch](#arch-refactor--tooling); [§ Debugger](DEV.md#debugger-debuggerhcpp-debugger_imgui) |
-| **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
+| **P3** | Kill or officialise the scaffolds. | ✅ **officialised 2026-08-23.** (1) **IWM data path**: already settled — default `iwmAuthoritative_ = true` (IWM is the truth for 3.5"; 5.25" always from DiskIICard's LSS), the only flip is the env var `POM2_IWM_AUTHORITATIVE=0`, a debug-only A/B toggle never reachable from the UI or settings. Not dual product behaviour; documented as debug. (2) **`echoplus_tms`**: kept for software detection but its catalog label now says "— silent, detect-only", so it no longer poses as a working speech card. (3) **Phasor**: dashboard #19 reclassed Verbatim → Partial-verbatim — the bus decode is verbatim, the audio timeline is not (no `emuCycles`-stamped AY write queue; the callback snapshots the banks). Implementing that queue stays a 🟡 [Audio] item, but "verbatim" no longer overstates it. | `Memory.h` IWM flag; dashboard #19/#21bis; [Audio](#audio) Phasor queue |
 | **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open |
 | **P3** | ~~Finish the `stateMutex` family: the HDV / block-device mount~~ ✅ **DONE 2026-08-22** — 25.8 ms under the lock → 0.0 ms. What is left of the family is the FujiNet `transact` wait and two thread `join()`s, both 🟡. | ✅ | [Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt) | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
 | **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `AtomicFileReplace.h` |
@@ -1282,11 +1282,14 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `debugger`. Read watchpoints (2026-08-23) divert every read while one is
   armed, through a flag folded into the fast path's existing tests —
   measured free un-armed ([PERFORMANCE § 8.2-8.5](docs/PERFORMANCE.md)).
-- 🟡 **`POM2_IWM_LEGACY_DATA_PATH` / IWM vs Disk II shadow** —
-  architect **P3**. `Memory::setIWMAuthoritative` (`Memory.h`) still
-  offers a dual data path. Either IWM is the truth and the shadow goes,
-  or the env var is a documented debug mode. Leaving both as product
-  behaviour is the scaffold tax.
+- ✅ **`POM2_IWM_AUTHORITATIVE` / IWM vs Disk II shadow — settled
+  2026-08-23.** Not dual product behaviour: the default is IWM-authoritative
+  (`iwmAuthoritative_ = true`; 5.25" data still comes from DiskIICard's LSS
+  because the walker mis-framed RWTS), and full-shadow mode is reachable ONLY
+  by the env var `POM2_IWM_AUTHORITATIVE=0`, a debug A/B toggle with no UI or
+  settings surface. Documented as debug, so it is not a scaffold in limbo.
+  (The old name `POM2_IWM_LEGACY_DATA_PATH` in this list was stale — the var
+  is `POM2_IWM_AUTHORITATIVE`, read once in `EmulationController`.)
 - 🟡 **CI `ctest -L rom` + ROM Status « degraded »** — architect **P3**.
   Tests SKIP when a dump is absent, so the L0 path can rot behind a
   green suite. ROM Status reports missing, not « running the synthetic

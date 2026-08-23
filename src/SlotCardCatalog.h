@@ -100,7 +100,7 @@ inline constexpr CardType kCardTypes[] = {
     // 2× AY-3-8913 PSGs + TMS5220 speech chip. Scaffolded stub — chip
     // models silent in v1; the register decode is enough for software
     // detection. See markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+.
-    { "echoplus_tms", "Echo+ (TMS5220 + 2×AY)" },
+    { "echoplus_tms", "Echo+ (TMS5220 + 2×AY) — silent, detect-only" },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).
