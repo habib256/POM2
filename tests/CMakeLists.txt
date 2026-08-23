@@ -2057,6 +2057,32 @@ endif()
 add_test(NAME iie_memory_smoke COMMAND test_iie_memory)
 set_tests_properties(iie_memory_smoke PROPERTIES TIMEOUT 5)
 
+# ─── Input I/O (keyboard / paddles / buttons) ────────────────────────────
+# The behaviour-preserving safety net for the Memory god-object split
+# (extract Keyboard + PaddleInputs): pins the $C000/$C010 latch, the
+# $C061-$C063 buttons + Open/Solid-Apple, and the $C064-$C067 paddle RC
+# timing with the $C070 re-arm, all through memRead/memWrite. Written before
+# the split so the extraction has something to be checked against.
+add_executable(test_input_io
+    input_io_smoke_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_input_io PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_input_io PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_input_io PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_input_io PRIVATE winmm)
+endif()
+
+add_test(NAME input_io_smoke COMMAND test_input_io)
+set_tests_properties(input_io_smoke PROPERTIES TIMEOUT 5)
+
 
 # ─── RamWorks III smoke test ─────────────────────────────────────────────
 # Pins the Applied Engineering aux-slot RAM expansion port — verbatim

@@ -198,6 +198,8 @@ set(SOURCES
     src/MainWindow.cpp
     src/MainWindow_MemoryMaps.cpp
     src/MainWindow_Panels.cpp
+    src/MainWindow_AudioPanels.cpp
+    src/MainWindow_DevicePanels.cpp
     src/MainWindow_Slots.cpp
     src/PanelRegistry.cpp
     src/MC6821.cpp
