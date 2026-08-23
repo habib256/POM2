@@ -69,9 +69,6 @@ public:
     };
 
     /// Watch a read, a write, or both. `None` removes the watchpoint.
-    /// Only the Write bit can fire today (see noteAccess), and setWatchpoint
-    /// keeps only that bit: a `Read` request arms nothing and `watchpointAt`
-    /// says so, rather than reporting a watch the machine will ignore.
     enum Access : uint8_t { None = 0, Read = 1, Write = 2, ReadWrite = 3 };
 
     // ── Breakpoints ──────────────────────────────────────────────────────
@@ -119,11 +116,11 @@ public:
     /// AFTER the write. Two different, both useful, facts: `Hit::pc` is who
     /// wrote, the CPU's PC is where you resume.
     ///
-    /// Only WRITE watchpoints reach here today. `memWrite`'s fast path has a
-    /// per-address `writable[]` byte a watch can be hidden in for free
-    /// (Memory.h § Write watchpoints); `memRead`'s has no equivalent table,
-    /// and a branch there measured +13-16 % (PERFORMANCE § 8.2), so
-    /// setWatchpoint drops the Read bit on entry. The UI does not offer one.
+    /// Both halves reach here, by different routes: a write watch is an
+    /// address diverted off `memWrite`'s fast path through `writable[]`
+    /// (free, armed or not); a read watch flips `Memory::readDivert_`, which
+    /// sends EVERY read through `memReadSlow` while one is armed (free when
+    /// none is). Memory.h § Write / § Read watchpoints, PERFORMANCE § 8.3/8.5.
     void noteAccess(uint16_t addr, uint8_t value, bool write) override;
 
     /// True once something has asked the machine to stop and the stop has not

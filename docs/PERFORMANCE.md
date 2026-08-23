@@ -547,5 +547,63 @@ rather than adding one beside it (§ 8.3).
 That is the pattern worth taking from this section. A hot-path feature that
 measures badly is usually not too expensive — it is in the wrong shape, and the
 measurement is what tells you the budget it has to fit into. Read watchpoints
-have no such shape available, so they are still not implemented, and that too is
-recorded rather than faked.
+had no per-address shape available; § 8.5 is the coarser shape that fit.
+
+### 8.5 Read watchpoints — the flag that is not tested, 2026-08-23
+
+`memRead`'s fast path has no per-address table, so a read watch cannot hide
+the way a write watch does. The design is one level coarser: one flag,
+`readDivert_`, true while ANY read watch is armed, sends every read through
+`memReadSlow`, which reports the watched ones after performing the read. The
+question was only what the flag costs when it is false.
+
+**First shape, rejected: test the flag.** One byte load and one predictable
+branch at the top of each of `memRead`'s two halves. Apple M1, the ordinary
+`build/` release configuration, the two binaries interleaved, best of 9, RAM
+hash identical:
+
+| Workload | Before | Flag tested | Δ |
+|---|---|---|---|
+| `--frames 30000` (][+ banner) | 2.139 s | 2.294 s | **+7.2 %** |
+| `--rom apple2e.rom --iie --frames 30000` | 2.595 s | 2.704 s | **+4.2 %** |
+
+Half the cost of the naive tap in § 8.2, for a *predictable* branch. The
+lesson of § 8.2 stands: it is the instruction count and code growth around
+the hottest function that costs, not the misprediction.
+
+**Second shape, shipped: fold the flag into tests already being made.** The
+fast path decided three things already — `!iieMode || testMode` on the ][+
+path, `!bankTrace_` on the //e path, `!iicProfile_` on the ROM window and the
+//e internal I/O ROM. Each became a derived byte with `readDivert_` folded in
+(`plainRead_`, `iieFastRead_`, `romFastRead_`; `refreshReadFastFlags()`
+recomputes them at every writer of a source flag). Arming a read watch closes
+all three gates and the reads fall into `memReadSlow` on branches that were
+already there. The ][+ path went from two tests to one in the process.
+
+| Workload | Before | Folded (none armed) | Δ |
+|---|---|---|---|
+| `--frames 30000` (][+ banner) | 2.170 s | 2.171 s | **+0.0 %** |
+| `--rom apple2e.rom --iie --frames 30000` | 2.593 s | 2.514 s | −3.0 % |
+| `--disk … --frames 6000` (Disk II LSS) | 0.863 s | 0.859 s | −0.5 % |
+
+One trap on the way, caught by the same measurement: the report wraps the
+original slow-path body (`memReadSlowBody`), and the compiler kept that large
+body out of line, which cost the ][+ banner a reproducible **+1.0 %** across
+three best-of-15 series — its keyboard poll lives on the slow path. Forcing the
+body inline (`always_inline`) is what took the table above to +0.0 %.
+
+**What it costs while a read watch IS armed**, measured with
+`pom2_bench --read-watch 00FF` (the diversion with no sink, so nothing stops),
+best of 5:
+
+| Workload | Un-armed | Armed | Δ |
+|---|---|---|---|
+| ][+ banner | 2.221 s | 3.055 s | +37.6 % |
+| //e banner | 2.563 s | 3.978 s | +55.2 % |
+| Disk II LSS | 0.864 s | 0.962 s | +11.3 % |
+
+That is the pre-§ 3.2 profile coming back — every bus read out of line — and
+it is paid only by the session that armed a read watch, only while it is
+armed. The machine still runs at well over 100× real time under the bench, so
+a debugging session does not notice; the panel's tooltip says so, and defaults
+to a write watch, which stays free in both states.
