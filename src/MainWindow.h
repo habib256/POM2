@@ -274,7 +274,6 @@ private:
     /// Run-control debugger panel. All of its state and every decision it
     /// makes live in Debugger_ImGui — MainWindow only owns it and shows it.
     std::unique_ptr<pom2::Debugger_ImGui>        debuggerPanel;
-    bool showDebugger = false;
     std::unique_ptr<pom2::Settings>               settings;
     std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
     std::unique_ptr<pom2::Rewind_ImGui>           rewindPanel_;
@@ -401,9 +400,6 @@ private:
     // any HiResMode. Lazily initialised; off (persisted under `show_3d_voxel`).
     std::unique_ptr<pom2::Voxel3DRenderer> voxel3d_;
     pom2::OrbitCamera voxelCam_;
-    bool         show3dVoxel_ = false;
-    bool         showVoxelSettings_ = false;
-    bool         showNtscSettings = false;
     // Master ON/OFF for the whole CRT effect stack (the button at the top of
     // the CRT Settings window). When off, every pipeline presents its raw
     // framebuffer — the colour demod still runs, only the CRT glass is
@@ -464,12 +460,28 @@ private:
     // One table (PanelCatalog.h) + one binding list (MainWindow_Panels.cpp),
     // and the menus / palette / palette dispatch / settings round-trip are
     // all derived from it. They used to be six hand-kept lists.
-    /// Bind every catalog entry to its flag. Called once, before settings are
-    /// read — `loadPanelVisibility()` needs the bindings to exist.
+    /// A panel's visibility. This is `PanelRegistry`'s storage, not a member
+    /// of this class: the 38 `bool showXxx` fields that used to sit below —
+    /// scattered across 500 lines of header, each one also needing a row in
+    /// the load list, the save list, the palette list, the palette's dispatch,
+    /// its menu, and the WASM chrome-light block — are one array now, reached
+    /// by a name the compiler checks against the catalog.
+    bool& show(pom2::PanelId id) { return panels_.visible(id); }
+    bool  show(pom2::PanelId id) const { return panels_.visible(id); }
+
+    /// Attach every panel's runtime bits — availability, dynamic label, and
+    /// how it draws. Called once, before settings are read.
     void registerPanels();
+    /// Attach each panel's draw call. Split from registerPanels() because it
+    /// is a different question: that one says what a panel IS right now, this
+    /// one says how it paints.
+    void registerPanelDraws();
     /// One menu row for `id`: label (dynamic when the panel carries a slot),
     /// shortcut, tooltip, greyed when its card is not plugged.
-    void panelMenuItem(const char* id);
+    void panelMenuItem(pom2::PanelId id);
+    /// Draw every visible panel. Was ~43 `if (showXxx) renderXxxWindow()`
+    /// calls whose order was the order somebody happened to add them in.
+    void renderPanels(float deltaSeconds);
     /// Every panel of one menu group, in catalog order.
     void panelMenuGroup(pom2::PanelGroup group);
     /// Feed every panel to the command palette. A callback rather than the
@@ -488,6 +500,9 @@ private:
     void hideAllPanels();
 
     pom2::PanelRegistry panels_;
+    /// Frame delta handed to the two panels that pace themselves (cassette,
+    /// rewind). Set by renderPanels() immediately before the draw loop.
+    float panelDelta_ = 0.0f;
     /// Execute a palette command by id. Single dispatch point — the
     /// palette itself has no idea what any command does.
     void runCommand(const std::string& id);
@@ -513,23 +528,14 @@ private:
     // caps-lock happens to be on. Acceptable: the badge exists to explain
     // unexpected uppercase, which requires typing in the first place.
     bool hostCapsLock_ = false;
-
-    bool         showMemViewer = false;
-    bool         showMemoryBar      = false;   // tall vertical map
-    bool         showMemoryBarH     = false;   // wide-short horizontal variant
-    bool         showMemoryGrid     = false;   // 16×16 page grid
     // Default UI layout: Apple II Screen on the left, HDV top-right,
     // Disk II bottom-right. Every other panel (Emulation controls,
     // Cassette deck, Memory viewers, Joystick, Le Chat Mauve) starts
     // hidden — toggle from the Debug / Hardware menus.
-    bool         showCassetteDeck = false;
-    bool         showHgrPaintEditor = false;
-    bool         showHgrSpriteEditor = false;
     // Per-frame 64 KB main-RAM (+ aux) snapshots handed to the HGR Paint
     // editor as its canvas/shadow read source (see renderHgrPaintWindow).
     std::vector<uint8_t> hgrPaintMem_;
     std::vector<uint8_t> hgrPaintAux_;
-    bool         showRewindBar    = false;
     bool         rewindHeldPrev_  = false;   // hold-to-rewind edge tracker (F6 + toolbar)
     // Per-card disk panels (Disk II / Disk 3.5" / HDV) are off by
     // default since 2026-05-15 — the unified `Disk Library` panel
@@ -537,28 +543,16 @@ private:
     // a single window. Users open the per-card panels on demand from
     // Devices menu when they need the deep state (track number, motor
     // LED, write-back checkbox, etc.).
-    bool         showDiskPanel   = false;
-    bool         showDisk35Panel = false;
-    bool         showHdvPanel    = false;
-    bool         showSmartPortPanel = false;
-    bool         showFujiNetPanel   = false;
-    bool         showJoystickPanel = false;
-    bool         showChatMauvePanel = false;
-    bool         showSscPanel       = false;
     // Ethernet panel — Uthernet I / II status, host transport, W5100
     // socket table. One window, tabbed between whichever cards are in.
-    bool         showEthernetPanel  = false;
     std::unique_ptr<pom2::Uthernet_ImGui> ethernetPanel;
     // Dallas DS1216E "No-Slot Clock" diagnostics panel — pattern-matcher
     // counter + clock-readout bit counter so the user can verify ProDOS
     // walked the magic key successfully.
-    bool         showNoSlotClockPanel = false;
     // Printer panel — view spool buffer, save as .txt, clear.
-    bool         showPrinterPanel   = false;
     // ImageWriter II paper-tray window (rendered printout). Visible by
     // default: it is one of the three tabs the default dock layout seeds to
     // the right of the screen (see `applyDockLayout`, DockLayout::Reset).
-    bool         showImageWriterPanel = true;
     // How many spool bytes have already been fed to `imageWriter`, so a
     // poll only picks up what arrived since the previous frame. Re-seated
     // whenever the source card changes or its spool is cleared — see
@@ -587,24 +581,19 @@ private:
     // two AY-3-8910 register banks. Primary use: diagnose silent
     // IRQ-driven music drivers (Ultima IV, Nox Archaist) by seeing
     // whether the music handler is actually writing AY registers.
-    bool         showMockingboardPanel = false;
     // Phasor live state panel — same layout as Mockingboard but
     // widened to 4 AY-3-8913 banks, with a mode banner (MB / Phasor /
     // EchoPlus) and clockScale at the top.
-    bool         showPhasorPanel       = false;
     // Echo+ panel — single SSI263 register dump + current phoneme +
     // A/!R + duration countdown.
-    bool         showEchoPlusPanel     = false;
     // Audio mixer — master + per-channel sliders/mute (Speaker, Cassette,
     // Mockingboard, Disk 5.25", Disk 3.5"). Replaces the volume sliders
     // that used to live in the Status panel. Persisted as `show_mixer`.
-    bool         showAudioMixer     = false;
     // Mouse Inspector — live readout of host cursor position, Apple II
     // Screen widget rect, MouseCard 8-bit counter + sub-pixel accumulator,
     // AppleWin HLE firmware state (iX/iY/clamps/mode), and the firmware
     // screen holes. Off by default; toggled from Panels menu; persisted as
     // `show_mouse_inspector`. Helper for future cursor-alignment tuning.
-    bool         showMouseInspector = false;
     // Optional CSV log path for the Mouse Inspector. Empty = not logging.
     // `mouseInspectorLogStream` is opened when logging starts and closed
     // when it stops; flushed after every row so a crash mid-tune still
@@ -616,39 +605,32 @@ private:
     // Staged — edits take effect on Apply, which restarts the machine.
     // Persisted as `show_slot_config`. Visible by default: one of the three
     // tabs the default dock layout seeds right of the screen.
-    bool         showSlotConfigPanel = true;
     // Internal disks + mountable ports of the plugged storage cards. Split
     // out of Slot Configuration 2026-07-28: the two ran opposite interaction
     // models in one window (staged vs immediate), which is exactly the
     // confusion the 2026-07-27 pass papered over with banners. Persisted as
     // `show_media_panel`; Devices → Internal Disks & Media.
-    bool         showMediaPanel = false;
     // ROM Status: every dump POM2 probes, present/missing, with what breaks
     // without it. POM2 ships no ROMs, so this is the first place to look
     // when a profile boots the wrong firmware or a card won't plug.
     // Persisted as `show_rom_status`; Help → ROM Status.
-    bool         showRomStatusPanel = false;
     std::unique_ptr<pom2::RomStatus_ImGui> romStatusPanel;
     // Abstraction Levels: which subsystems POM2 emulates as silicon (LLE) and
     // which as a service (HLE), which level is running RIGHT NOW (a missing
     // dump degrades several of them silently), and the four boundaries the
     // user can move. Companion to docs/lle_vs_hle.md.
     // Persisted as `show_abstraction`; Help → Abstraction Levels.
-    bool         showAbstractionPanel = false;
     std::unique_ptr<pom2::AbstractionLevels_ImGui> abstractionPanel;
     // BMOW Floppy Emu panel. Off by default; Devices → Floppy Emu.
     // Persisted as `show_floppy_emu`. `floppyEmuFavActive_` tracks the
     // Favorites-vs-File-Explorer toggle; `floppyEmuStatus` is the last
     // mount/eject/mode message shown under the OLED.
-    bool         showFloppyEmu       = false;
     bool         floppyEmuFavActive_ = false;
     std::string  floppyEmuStatus;
-    bool         showAiControlPanel  = false;
     // Unified disk browser (3-tab panel: 5.25/3.5/HDV). On by default
     // since 2026-05-15 — replaces the per-card library lists as the
     // primary way to browse + mount images. Toggled from File menu.
     // Persisted as `show_disk_library`.
-    bool         showDiskLibrary     = true;
     // Initialised in the constructor body from SuperSerialCard::kDefaultPort
     // so we don't have to drag SuperSerialCard.h into this header.
     int          sscPortInput       = 0;
@@ -752,7 +734,6 @@ private:
     // newcomer sees where to drop firmware/disks instead of a bare
     // "NO ROM" screen. `romLoaded_` mirrors the last ROM-load result so
     // the panel can show the no-ROM guidance prominently.
-    bool showWelcomePanel = false;
     bool romLoaded_       = false;
     // Apple ][+ photo shown in the About dialog. Loaded lazily on first
     // open via stb_image; texture freed in ~MainWindow. `tried_` blocks
@@ -766,7 +747,6 @@ private:
     // hotspot table). Same lazy-load-once contract as the About photo, and
     // the texture is freed in the same place. Persisted as `show_keyboard`;
     // Devices → Apple //e Keyboard.
-    bool         showKeyboardPanel = false;
     std::unique_ptr<pom2::Keyboard_ImGui> keyboardPanel;
     unsigned     kbImageTex_   = 0;
     int          kbImageW_     = 0;

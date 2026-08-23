@@ -4435,15 +4435,17 @@ settings key, shortcut, tooltip}`. `PanelRegistry` binds each row to the `bool`
 that holds its visibility, plus two optional runtime bits — an availability
 predicate (`smartPortCard != nullptr` greys the row) and a dynamic title (the
 label that carries a slot number). `MainWindow_Panels.cpp` holds that binding
-table and the four functions the rest of the UI is derived from:
+table and the functions the rest of the UI is derived from:
 
 ```
-panelMenuGroup(PanelGroup::DevStorage)   // a whole menu section
-panelMenuItem("panel.crt")               // one row, anywhere
-forEachPanelCommand(add)                 // the palette's Panel category
-runPanelCommand(id)                      // its dispatch
+show(PanelId::Debugger)                     // was `bool showDebugger`, ×38
+panelMenuGroup(PanelGroup::DevStorage)      // a whole menu section
+panelMenuItem(PanelId::Crt)                 // one row, anywhere
+forEachPanelCommand(add)                    // the palette's Panel category
+runPanelCommand(id)                         // its dispatch
 loadPanelVisibility() / savePanelVisibility()
-hideAllPanels()                          // the WASM chrome-light
+renderPanels(delta)                         // was 43 renderXxxWindow() calls
+hideAllPanels()                             // the WASM chrome-light
 ```
 
 The Devices menu went from 157 lines of hand-written rows to eight: four
@@ -4458,13 +4460,41 @@ settings file all iterate the registry, so a sequence that depended on when a
 binding happened would reshuffle the user's menus whenever an unrelated
 binding moved. `bind()` inserts in catalog position; `panel_registry` pins it.
 
-**What this is not (yet).** The registry holds `bool*` into MainWindow's
-members — the storage is still 40 `bool showXxx` fields, because moving it
-inside the registry means touching the ~150 places that read those members
-directly. That is the next step and the one that finally deletes the wall of
-members; this one removes the six lists, which is what was actually causing
-drift. The panels' *rendering* is likewise untouched: ~43 `renderXxxWindow()`
-calls still sit in `MainWindow::render`, each self-gating on its flag.
+**The storage moved in too** (same day, second pass). `MainWindow` no longer
+has 38 `bool showXxx` members: visibility is one `std::array<bool,
+PanelId::Count>` in the registry, reached as `show(PanelId::Debugger)` — a
+`bool&`, so the ~92 call sites that read or took the address of a member
+changed name and nothing else. `PanelId` is a plain enum; correspondence with
+the catalog is by an explicit field in each row, not by position, and
+`panelCatalogIsComplete()` is a `static_assert` that every enumerator has
+exactly one row. A forgotten row, a duplicate, or a copy-pasted enumerator is
+a build failure rather than a menu entry that toggles the wrong window.
+
+Fresh-install visibility moved with it: `defaultOpen` in the catalog replaced
+three `= true` member initialisers three hundred lines apart in the header.
+
+**And the render block became a loop.** `MainWindow::render` had ~43 calls —
+some gated by the caller, most gating themselves, in the order somebody
+happened to add them in. They are now `renderPanels(delta)` → `drawAll()`,
+which walks the catalog and calls each panel's `draw` while it is visible.
+What stayed behind is the code that is *not* a panel: the modal file dialogs,
+`pumpImageWriter()` (a side effect that must run whether or not its window is
+open), the About box, the status bar, and the palette overlay, which must
+still be last so it draws above everything.
+
+One panel is drawn **while closed**, and the exception earns its flag: the
+//e keyboard latches Open-Apple / Solid-Apple, and a latch that outlives the
+window showing it as down is a key the guest holds forever with nothing left
+to release it. `Runtime::drawAlways` keeps `renderKeyboardPanel` called every
+frame so it can act on the close edge, exactly as it did when the call was
+unconditional. `panel_registry` pins that, because it is the kind of thing a
+loop silently eats.
+
+**What is left.** Nothing structural: adding a panel is a catalog row, a
+`draw` line, and — only if it sits behind a card — a `bind` for its label and
+availability. The remaining work on `MainWindow.cpp` is ordinary extraction of
+the panel *bodies* into their own translation units, which is now a move
+rather than a rewrite, because nothing outside a body refers to it.
 
 **Deliberately a table, not self-registration.** Static registrars in 40
 translation units would scatter the UI surface back across the codebase; the

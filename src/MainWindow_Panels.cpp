@@ -27,10 +27,13 @@
 #include "EchoPlusCard.h"
 #include "FujiNetCard.h"
 #include "Logger.h"
+#include "RomStatus_ImGui.h"
+#include "SystemProfile.h"
 #include "PhasorCard.h"
 #include "PrinterCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
+#include "Debugger_ImGui.h"
 #include "SmartPortCard.h"
 #include "SuperSerialCard.h"
 #include "UthernetCard.h"
@@ -57,193 +60,230 @@ std::string slotSuffix(Card* card)
 
 void MainWindow::registerPanels()
 {
+    using P  = pom2::PanelId;
+    using RT = pom2::PanelRegistry::Runtime;
+
+    // Most panels need nothing here at all: their title is fixed, they are
+    // always available, and their draw call is attached below. Only the ones
+    // sitting behind a card have anything to say, and what they say is the
+    // same two things — "is it plugged" and "which slot does the label name".
     auto card = [](auto** p) { return [p] { return *p != nullptr; }; };
 
-    // File / Machine
-    panels_.bind("panel.disklibrary", &showDiskLibrary);
-    panels_.bind("panel.slotconfig",  &showSlotConfigPanel);
-
-    // Devices ▸ Storage
-    panels_.bind("panel.media",     &showMediaPanel);
-    panels_.bind("panel.floppyemu", &showFloppyEmu);
-    panels_.bind("panel.cassette",  &showCassetteDeck);
-    panels_.bind("panel.diskii",    &showDiskPanel);
-    // The 3.5" drive is a SmartPort card's on any //e, and the machine's own
-    // on a //c+ — the label has to say which, because "Disk 3.5" alone leaves
-    // the user hunting for a card that is not there.
-    panels_.bind("panel.disk35", &showDisk35Panel, {}, [this] {
+    // The 3.5" drive belongs to a SmartPort card on any //e and to the
+    // machine itself on a //c+ — the label has to say which, or the user
+    // hunts for a card that is not there.
+    panels_.bind(P::Disk35, RT{ [this] {
         return smartPortCard
             ? "Disk 3.5\" (slot " + std::to_string(smartPortCard->getSlot()) + ")"
             : std::string("Disk 3.5\" (//c+ on-board)");
-    });
-    panels_.bind("panel.hdv", &showHdvPanel, {}, [this] {
+    } });
+    panels_.bind(P::Hdv, RT{ [this] {
         return "HDV (slot " + std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
-    });
-    panels_.bind("panel.smartport", &showSmartPortPanel, card(&smartPortCard),
-                 [this] {
-                     return "SmartPort Configuration" + slotSuffix(smartPortCard);
-                 });
-    panels_.bind("panel.fujinet", &showFujiNetPanel, card(&fujiNetCard),
-                 [this] { return "FujiNet" + slotSuffix(fujiNetCard); });
+    } });
+    panels_.bind(P::SmartPort, RT{
+        [this] { return "SmartPort Configuration" + slotSuffix(smartPortCard); },
+        card(&smartPortCard) });
+    panels_.bind(P::FujiNet, RT{
+        [this] { return "FujiNet" + slotSuffix(fujiNetCard); }, card(&fujiNetCard) });
+    panels_.bind(P::Phasor, RT{
+        [this] { return "Phasor" + slotSuffix(phasorCard); }, card(&phasorCard) });
+    panels_.bind(P::EchoPlus, RT{
+        [this] { return "Echo+" + slotSuffix(echoPlusCard); }, card(&echoPlusCard) });
+    panels_.bind(P::Printer, RT{
+        [this] { return "Printer" + slotSuffix(printerCard); }, card(&printerCard) });
 
-    // Devices ▸ Sound
-    panels_.bind("panel.mockingboard", &showMockingboardPanel);
-    panels_.bind("panel.phasor", &showPhasorPanel, card(&phasorCard),
-                 [this] { return "Phasor" + slotSuffix(phasorCard); });
-    panels_.bind("panel.echoplus", &showEchoPlusPanel, card(&echoPlusCard),
-                 [this] { return "Echo+" + slotSuffix(echoPlusCard); });
-    panels_.bind("panel.mixer", &showAudioMixer);
-
-    // Devices ▸ Ports & cards
     // Super Serial is the one card a profile can carry TWICE (the //c's
     // printer and modem ports), so its label lists every slot it occupies.
-    panels_.bind("panel.ssc", &showSscPanel,
-                 [this] { return !sscCards.empty(); },
-                 [this] {
-                     if (sscCards.empty()) return std::string("Super Serial (no card plugged)");
-                     if (sscCards.size() == 1)
-                         return "Super Serial (slot " +
-                                std::to_string(sscCards[0]->getSlot()) + ")";
-                     std::string lbl = "Super Serial (slots";
-                     for (size_t i = 0; i < sscCards.size(); ++i) {
-                         lbl += (i == 0) ? " " : ", ";
-                         lbl += std::to_string(sscCards[i]->getSlot());
-                     }
-                     return lbl + ")";
-                 });
+    panels_.bind(P::Ssc, RT{
+        [this] {
+            if (sscCards.empty()) return std::string("Super Serial (no card plugged)");
+            if (sscCards.size() == 1)
+                return "Super Serial (slot " +
+                       std::to_string(sscCards[0]->getSlot()) + ")";
+            std::string lbl = "Super Serial (slots";
+            for (size_t i = 0; i < sscCards.size(); ++i) {
+                lbl += (i == 0) ? " " : ", ";
+                lbl += std::to_string(sscCards[i]->getSlot());
+            }
+            return lbl + ")";
+        },
+        [this] { return !sscCards.empty(); } });
+
     // One entry covers both NICs; the panel tabs between whichever are in.
-    panels_.bind("panel.ethernet", &showEthernetPanel,
-                 [this] { return uthernetCard || uthernetIICard; },
-                 [this] {
-                     if (uthernetIICard && uthernetCard)
-                         return "Ethernet (Uthernet I slot " +
-                                std::to_string(uthernetCard->getSlot()) +
-                                ", II slot " +
-                                std::to_string(uthernetIICard->getSlot()) + ")";
-                     if (uthernetIICard)
-                         return "Ethernet (Uthernet II, slot " +
-                                std::to_string(uthernetIICard->getSlot()) + ")";
-                     if (uthernetCard)
-                         return "Ethernet (Uthernet I, slot " +
-                                std::to_string(uthernetCard->getSlot()) + ")";
-                     return std::string("Ethernet (no card plugged)");
-                 });
-    panels_.bind("panel.printer", &showPrinterPanel, card(&printerCard),
-                 [this] { return "Printer" + slotSuffix(printerCard); });
-    // The ImageWriter is the PRINTER hanging off whichever interface card is
-    // plugged, so it is always openable — an empty paper tray is a legitimate
-    // thing to look at.
-    panels_.bind("panel.imagewriter", &showImageWriterPanel);
-    panels_.bind("panel.chatmauve",   &showChatMauvePanel);
-    panels_.bind("panel.joystick",    &showJoystickPanel);
-    panels_.bind("panel.keyboard",    &showKeyboardPanel);
+    panels_.bind(P::Ethernet, RT{
+        [this] {
+            if (uthernetIICard && uthernetCard)
+                return "Ethernet (Uthernet I slot " +
+                       std::to_string(uthernetCard->getSlot()) + ", II slot " +
+                       std::to_string(uthernetIICard->getSlot()) + ")";
+            if (uthernetIICard)
+                return "Ethernet (Uthernet II, slot " +
+                       std::to_string(uthernetIICard->getSlot()) + ")";
+            if (uthernetCard)
+                return "Ethernet (Uthernet I, slot " +
+                       std::to_string(uthernetCard->getSlot()) + ")";
+            return std::string("Ethernet (no card plugged)");
+        },
+        [this] { return uthernetCard || uthernetIICard; } });
 
-    // Devices ▸ Inspectors & tools
-    panels_.bind("panel.rewind",  &showRewindBar);
-    panels_.bind("panel.mouse",   &showMouseInspector);
-    panels_.bind("panel.nsclock", &showNoSlotClockPanel);
-
-    // Display
-    panels_.bind("panel.crt",      &showNtscSettings);
-    panels_.bind("panel.voxel",    &show3dVoxel_);
-    panels_.bind("panel.voxelset", &showVoxelSettings_);
-
-    // View
-    panels_.bind("panel.memviewer", &showMemViewer);
-    panels_.bind("panel.debugger",  &showDebugger);
-    panels_.bind("panel.membar",    &showMemoryBar);
-    panels_.bind("panel.membarh",   &showMemoryBarH);
-    panels_.bind("panel.memgrid",   &showMemoryGrid);
-
-    // Tools
-    panels_.bind("panel.hgrpaint",  &showHgrPaintEditor);
-    panels_.bind("panel.hgrsprite", &showHgrSpriteEditor);
-    panels_.bind("panel.aicontrol", &showAiControlPanel);
 #ifdef __EMSCRIPTEN__
     // AiControlServer::start() cannot open a listening socket in the browser
     // sandbox, so the panel is absent rather than greyed: a greyed row says
     // "plug something in", and there is nothing to plug in.
-    panels_.hideFromUi("panel.aicontrol");
+    panels_.hideFromUi(P::AiControl);
 #endif
 
-    // Help
-    panels_.bind("panel.welcome",     &showWelcomePanel);
-    panels_.bind("panel.romstatus",   &showRomStatusPanel);
-    panels_.bind("panel.abstraction", &showAbstractionPanel);
+    registerPanelDraws();
 
-    // The two ways this table can be wrong, both silent until now: a catalog
-    // row nobody bound (a menu entry that toggles nothing) and a bind for an
-    // id that does not exist (a panel that never appears). Neither is worth
-    // aborting over, both are worth a line in the log.
-    for (const std::string& id : panels_.unbound())
-        pom2::log().error("UI", "panel declared but never bound: " + id);
-    for (const std::string& id : panels_.unknownBinds())
-        pom2::log().error("UI", "panel bound but not in the catalog: " + id);
+    // A catalog row nobody draws is a menu entry that opens nothing — silent
+    // in every other way, so it is worth a line in the log at startup.
+    for (const std::string& id : panels_.undrawn())
+        pom2::log().error("UI", "panel declared but nothing draws it: " + id);
+}
+
+// ── What each panel draws ────────────────────────────────────────────────
+//
+// The registry calls these only while the panel is visible, which is why the
+// bodies below can be bare calls: the `if (!showXxx) return;` that used to
+// open each render function is now the loop's business, in one place.
+
+void MainWindow::registerPanelDraws()
+{
+    using P = pom2::PanelId;
+    auto draw = [this](P id, std::function<void()> fn, bool always = false) {
+        panels_.setDraw(id, std::move(fn), always);
+    };
+
+    draw(P::DiskLibrary,  [this] { renderDiskLibraryWindow(); });
+    draw(P::SlotConfig,   [this] { renderSlotConfigPanel(); });
+    draw(P::Media,        [this] { renderMediaPanel(); });
+    draw(P::FloppyEmu,    [this] { renderFloppyEmuWindow(); });
+    draw(P::Cassette,     [this] { renderCassetteDeckWindow(panelDelta_); });
+    draw(P::DiskII,       [this] { renderDiskPanelWindow(); });
+    draw(P::Disk35,       [this] { renderDisk35PanelWindow(); });
+    draw(P::Hdv,          [this] { renderHdvPanelWindow(); });
+    draw(P::SmartPort,    [this] { renderSmartPortPanelWindow(); });
+    draw(P::FujiNet,      [this] { renderFujiNetPanelWindow(); });
+    draw(P::Mockingboard, [this] { renderMockingboardPanelWindow(); });
+    draw(P::Phasor,       [this] { renderPhasorPanelWindow(); });
+    draw(P::EchoPlus,     [this] { renderEchoPlusPanelWindow(); });
+    draw(P::Mixer,        [this] { renderAudioMixerWindow(); });
+    draw(P::Ssc,          [this] { renderSscPanelWindow(); });
+    draw(P::Ethernet,     [this] { renderEthernetPanelWindow(); });
+    draw(P::Printer,      [this] { renderPrinterPanelWindow(); });
+    draw(P::ImageWriter,  [this] { renderImageWriterWindow(); });
+    draw(P::ChatMauve,    [this] { renderChatMauvePanelWindow(); });
+    draw(P::Joystick,     [this] { renderJoystickPanelWindow(); });
+    // The one panel drawn even while closed: it has to release the
+    // Open-Apple / Solid-Apple latches on the frame it is shut, or the guest
+    // sees a key held forever. It keeps its own guard and acts on that edge.
+    draw(P::Keyboard, [this] { renderKeyboardPanel(); }, /*always=*/true);
+    draw(P::Rewind,       [this] { renderRewindWindow(panelDelta_); });
+    draw(P::Mouse,        [this] { renderMouseInspectorWindow(); });
+    draw(P::NoSlotClock,  [this] { renderNoSlotClockPanelWindow(); });
+    draw(P::Crt,          [this] { renderNtscSettingsWindow(); });
+    draw(P::Voxel,        [this] { /* drawn inside renderScreenWindow */ });
+    draw(P::VoxelSettings,[this] { renderVoxelSettingsWindow(); });
+    draw(P::MemViewer,    [this] { renderMemoryViewerWindow(); });
+    draw(P::Debugger,     [this] { debuggerPanel->render(*controller,
+                                                         &show(P::Debugger)); });
+    draw(P::MemBar,       [this] { renderMemoryBarWindow(); });
+    draw(P::MemBarH,      [this] { renderMemoryBarHorizontalWindow(); });
+    draw(P::MemGrid,      [this] { renderMemoryGridWindow(); });
+    draw(P::HgrPaint,     [this] { renderHgrPaintWindow(); });
+    draw(P::HgrSprite,    [this] { renderHgrSpriteWindow(); });
+    draw(P::AiControl,    [this] { renderAiControlPanelWindow(); });
+    draw(P::Welcome,      [this] { renderWelcomePanelWindow(); });
+    // ROM Status builds its panel object on first use — it holds a scan of
+    // every ROM path, which a session that never opens it should not pay for.
+    draw(P::RomStatus, [this] {
+        if (!romStatusPanel)
+            romStatusPanel = std::make_unique<pom2::RomStatus_ImGui>();
+        romStatusPanel->render(
+            &show(P::RomStatus),
+            std::string(pom2::profileConfig(activeProfile).displayName));
+    });
+    draw(P::Abstraction,  [this] { renderAbstractionPanel(); });
 }
 
 // ── View 1: menu rows ────────────────────────────────────────────────────
 
-void MainWindow::panelMenuItem(const char* id)
+void MainWindow::panelMenuItem(pom2::PanelId id)
 {
-    const pom2::PanelRegistry::Binding* b = panels_.find(id);
-    if (!b || b->hidden) return;
-    const bool enabled = panels_.available(*b);
-    const std::string label = panels_.title(*b);
+    if (panels_.hidden(id)) return;
+    const pom2::PanelInfo& info = pom2::panelInfo(id);
+    const bool enabled = panels_.available(id);
+    const std::string label = panels_.title(id);
 
     if (!enabled) ImGui::BeginDisabled();
-    ImGui::MenuItem(label.c_str(), b->info->shortcut, b->visible);
+    ImGui::MenuItem(label.c_str(), info.shortcut, &panels_.visible(id));
     if (!enabled) ImGui::EndDisabled();
     // AllowWhenDisabled so an unplugged card still explains what it would do
     // — the tooltip is how the user learns the panel exists before owning it.
-    if (b->info->tip &&
-        ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", b->info->tip);
+    if (info.tip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", info.tip);
 }
 
 void MainWindow::panelMenuGroup(pom2::PanelGroup group)
 {
-    for (const pom2::PanelRegistry::Binding& b : panels_.all())
-        if (b.info->group == group) panelMenuItem(b.info->id);
+    for (const pom2::PanelInfo& p : pom2::kPanelCatalog)
+        if (p.group == group) panelMenuItem(p.id);
 }
 
-// ── View 2 + 3: the command palette and its dispatch ─────────────────────
+// ── The command palette and its dispatch ─────────────────────────────────
 
 void MainWindow::forEachPanelCommand(
     const std::function<void(const char*, const std::string&, const char*, bool,
                              bool)>& add) const
 {
-    for (const pom2::PanelRegistry::Binding& b : panels_.all()) {
-        if (b.hidden) continue;
-        add(b.info->id, panels_.title(b),
-            b.info->shortcut ? b.info->shortcut : "",
-            panels_.available(b), b.visible && *b.visible);
+    for (const pom2::PanelInfo& p : pom2::kPanelCatalog) {
+        if (panels_.hidden(p.id)) continue;
+        add(p.command, panels_.title(p.id), p.shortcut ? p.shortcut : "",
+            panels_.available(p.id), panels_.visible(p.id));
     }
 }
 
 bool MainWindow::runPanelCommand(const std::string& id)
 {
-    return panels_.toggle(id);
+    for (const pom2::PanelInfo& p : pom2::kPanelCatalog) {
+        if (id != p.command) continue;
+        bool& v = panels_.visible(p.id);
+        v = !v;
+        return true;
+    }
+    return false;
 }
 
-// ── View 4: the settings round-trip ──────────────────────────────────────
+// ── The settings round-trip ──────────────────────────────────────────────
 
 void MainWindow::loadPanelVisibility()
 {
     if (!settings) return;
-    panels_.forEachPersisted([this](const char* key, bool* flag) {
-        *flag = settings->getBool(key, *flag);
+    panels_.forEachPersisted([this](const char* key, bool& flag) {
+        flag = settings->getBool(key, flag);
     });
 }
 
 void MainWindow::savePanelVisibility()
 {
     if (!settings) return;
-    panels_.forEachPersisted([this](const char* key, bool* flag) {
-        settings->setBool(key, *flag);
+    panels_.forEachPersisted([this](const char* key, bool& flag) {
+        settings->setBool(key, flag);
     });
 }
 
 void MainWindow::hideAllPanels()
 {
     panels_.hideAll();
+}
+
+// ── The render loop ──────────────────────────────────────────────────────
+
+void MainWindow::renderPanels(float deltaSeconds)
+{
+    // Two panels want the frame delta and the registry's draw signature does
+    // not carry one — a member is cheaper than threading a parameter through
+    // 38 closures that ignore it.
+    panelDelta_ = deltaSeconds;
+    panels_.drawAll();
 }

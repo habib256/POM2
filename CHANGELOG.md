@@ -39,8 +39,9 @@ browser build's chrome-light startup are all *derived* from it.
 
 The Devices menu went from 157 hand-written lines to eight — four
 `SeparatorText` headers and four `panelMenuGroup` calls. `MainWindow.cpp` lost
-**312 lines** (11 495 → 11 183, ceiling lowered in the same commit) and, more
-usefully, stopped being where panel facts live. Adding a panel is a catalog row
+**341 lines** (11 495 → 11 154, ceiling lowered in the same commit),
+`MainWindow.h` lost its 38 visibility members, and both stopped being where
+panel facts live. Adding a panel is a catalog row
 plus a `bind` line; forgetting the bind is caught at startup by
 `PanelRegistry::unbound()`, which names the panel in the log instead of leaving
 a menu row that toggles nothing.
@@ -58,12 +59,38 @@ unknown panel, a clean exit writes all 37 keys, and editing two of them in the
 config and restarting brings them back, which is the load half nothing else
 proves.
 
-**What this is not yet.** The registry holds `bool*` into MainWindow's members,
-so the wall of ~40 `bool showXxx` is still standing; moving the storage inside
-means touching the ~150 sites that read those members directly, and it is the
-next step rather than this one. The ~43 `renderXxxWindow()` calls are likewise
-untouched. What this commit removes is the six-way duplication, which is what
-was actually producing the drift above.
+**The storage moved in too, and the render block became a loop** (same day,
+second pass). `MainWindow` no longer carries 38 `bool showXxx` members:
+visibility is one `std::array<bool, PanelId::Count>` in the registry, reached
+as `show(PanelId::Debugger)` — a `bool&`, so the 92 sites that read or took the
+address of a member changed name and nothing else. Correspondence between the
+enum and the table is by an explicit field in each row rather than by position,
+and `panelCatalogIsComplete()` is a `static_assert`: a forgotten row, a
+duplicate, or a copy-pasted enumerator fails the build instead of quietly
+toggling the wrong window. `defaultOpen` in the catalog replaced the three
+`= true` member initialisers that decided what a fresh install shows.
+
+`MainWindow::render`'s ~43 panel calls — some gated by the caller, most gating
+themselves, ordered by whoever added them last — are now `renderPanels(delta)`,
+walking the catalog and drawing each panel while it is visible. What stayed
+behind is the code that is not a panel: the modal file dialogs,
+`pumpImageWriter()` (a side effect that must run whether or not its window is
+open), the About box, the status bar, and the palette overlay, which must still
+be last so it draws above everything.
+
+**One panel is drawn while closed**, and finding out why is the reason this
+kind of loop is worth pinning: the //e keyboard latches Open-Apple and
+Solid-Apple, and a latch that outlives the window showing it as down is a key
+the guest holds forever with nothing left to release it. `renderKeyboardPanel`
+had an edge-triggered teardown in its "not visible" branch, which a naive loop
+would simply never call. `Runtime::drawAlways` keeps it called every frame;
+`panel_registry` pins that it is.
+
+Verified in the running GUI, not only in tests: a config with 30 panels open,
+run under Xvfb, and every one of them appears in `imgui.ini` with a real
+`Pos`/`Size`/`LastUsed` — the marker ImGui only writes for a window that was
+actually created that session, as opposed to one merely pre-docked by the
+layout builder. Card-gated panels correctly did not draw with no card plugged.
 
 Deliberately a table and not self-registration: static registrars in 40
 translation units scatter the UI surface back across the codebase, and the

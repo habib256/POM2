@@ -60,11 +60,37 @@ enum class PanelGroup {
     Help,           ///< Help menu
 };
 
+/// Every panel, as a compile-time handle. The ORDER here is irrelevant —
+/// correspondence with the table below is by the explicit `PanelId` field in
+/// each row, not by position, and `panelInfo()` looks it up. That is the
+/// difference between two lists that must be kept in step (the thing this
+/// whole file exists to stop) and one list with a typed index into it: a
+/// missing or duplicated row is a compile error, not a runtime surprise.
+enum class PanelId : std::size_t {
+    DiskLibrary, SlotConfig,
+    Media, FloppyEmu, Cassette, DiskII, Disk35, Hdv, SmartPort, FujiNet,
+    Mockingboard, Phasor, EchoPlus, Mixer,
+    Ssc, Ethernet, Printer, ImageWriter, ChatMauve, Joystick, Keyboard,
+    Rewind, Mouse, NoSlotClock,
+    Crt, Voxel, VoxelSettings,
+    MemViewer, Debugger, MemBar, MemBarH, MemGrid,
+    HgrPaint, HgrSprite, AiControl,
+    Welcome, RomStatus, Abstraction,
+    Count,
+};
+
+inline constexpr std::size_t kPanelCount = static_cast<std::size_t>(PanelId::Count);
+
 struct PanelInfo {
-    /// Stable identity. Used by the command palette, by the settings file's
-    /// layout section, and by any future keyboard binding — so it may not
-    /// change once shipped, even when the title does.
-    const char* id;
+    /// The compile-time handle. Everything that HOLDS a panel — the
+    /// visibility array, `MainWindow::show()`, every call site that used to
+    /// name a `bool showXxx` member — uses this, so a typo is a compile
+    /// error rather than a panel that silently never opens.
+    PanelId id;
+    /// Command id: the string the palette dispatches and any future key
+    /// binding names. It may not change once shipped, even when the title
+    /// does — the enumerator above is for code, this is for config.
+    const char* command;
     /// The one label. Menus and the palette both use it, which is the point:
     /// they used to carry different wordings for the same window ("Disk II
     /// drive" in the palette, "Disk II (slot 6)" in the menu).
@@ -78,110 +104,114 @@ struct PanelInfo {
     const char* shortcut;
     /// Menu tooltip. Written for somebody who has not opened the panel yet.
     const char* tip;
+    /// Open on a fresh install (no settings file yet). Three panels are: the
+    /// two that answer "where do I put my disks" and the printout the printer
+    /// cards feed. Everything else starts closed.
+    bool defaultOpen = false;
 };
 
 // clang-format off
 inline constexpr PanelInfo kPanelCatalog[] = {
 
 // ── File ────────────────────────────────────────────────────────────────
-{ "panel.disklibrary", "Disk Library (all formats)", PanelGroup::File,
+{ PanelId::DiskLibrary, "panel.disklibrary", "Disk Library (all formats)", PanelGroup::File,
   "show_disk_library", nullptr,
-  "Every disk image POM2 can read, in one browsable list." },
+  "Every disk image POM2 can read, in one browsable list.", /*defaultOpen=*/true },
 
 // ── Machine ─────────────────────────────────────────────────────────────
-{ "panel.slotconfig", "Slot Configuration...", PanelGroup::Machine,
+{ PanelId::SlotConfig, "panel.slotconfig", "Slot Configuration...", PanelGroup::Machine,
   "show_slot_config", nullptr,
   "One card per slot, plugged and unplugged live. Built-in slots on the\n"
-  "//c-class profiles are locked and say why." },
+  "//c-class profiles are locked and say why.", /*defaultOpen=*/true },
 
 // ── Devices ▸ Storage ───────────────────────────────────────────────────
-{ "panel.media", "Internal Disks & Media...", PanelGroup::DevStorage,
+{ PanelId::Media, "panel.media", "Internal Disks & Media...", PanelGroup::DevStorage,
   "show_media_panel", nullptr,
   "Every internal drive and mountable bay in one place. Mount / Insert /\n"
   "Eject act immediately — the card-per-slot list is Machine \xe2\x86\x92 Slot\n"
   "Configuration." },
-{ "panel.floppyemu", "Floppy Emu (BMOW)", PanelGroup::DevStorage,
+{ PanelId::FloppyEmu, "panel.floppyemu", "Floppy Emu (BMOW)", PanelGroup::DevStorage,
   "show_floppy_emu", nullptr,
   "BMOW Floppy Emu: SD-card image browser + OLED, emulated." },
-{ "panel.cassette", "Cassette deck", PanelGroup::DevStorage,
+{ PanelId::Cassette, "panel.cassette", "Cassette deck", PanelGroup::DevStorage,
   "show_cassette", nullptr,
   "Load/save tape images (.wav) on II/II+/IIe." },
-{ "panel.diskii", "Disk II (slot 6)", PanelGroup::DevStorage,
+{ PanelId::DiskII, "panel.diskii", "Disk II (slot 6)", PanelGroup::DevStorage,
   "show_disk_panel", nullptr,
   "5.25\" drive panel: insert / eject / write-protect, drive LEDs." },
-{ "panel.disk35", "Disk 3.5\"", PanelGroup::DevStorage,
+{ PanelId::Disk35, "panel.disk35", "Disk 3.5\"", PanelGroup::DevStorage,
   "show_disk35_panel", nullptr,
   "800K 3.5\" drive (SmartPort / //c+ on-board IWM)." },
-{ "panel.hdv", "HDV", PanelGroup::DevStorage,
+{ PanelId::Hdv, "panel.hdv", "HDV", PanelGroup::DevStorage,
   "show_hdv_panel", nullptr,
   "ProDOS hard-disk image (.hdv/.2mg): mount / eject / boot." },
-{ "panel.smartport", "SmartPort Configuration", PanelGroup::DevStorage,
+{ PanelId::SmartPort, "panel.smartport", "SmartPort Configuration", PanelGroup::DevStorage,
   "show_smartport_panel", nullptr,
   "SmartPort units behind a Liron-class card (3.5\" + HDV volumes)." },
-{ "panel.fujinet", "FujiNet", PanelGroup::DevStorage,
+{ PanelId::FujiNet, "panel.fujinet", "FujiNet", PanelGroup::DevStorage,
   "show_fujinet_panel", nullptr,
   "FujiNet relay: transport, attached devices and call counters." },
 
 // ── Devices ▸ Sound ─────────────────────────────────────────────────────
-{ "panel.mockingboard", "Mockingboard (VIA + AY state)", PanelGroup::DevSound,
+{ PanelId::Mockingboard, "panel.mockingboard", "Mockingboard (VIA + AY state)", PanelGroup::DevSound,
   "show_mockingboard", nullptr,
   "Mockingboard A/C: live 6522 VIA + AY-3-8910 PSG register view." },
-{ "panel.phasor", "Phasor", PanelGroup::DevSound,
+{ PanelId::Phasor, "panel.phasor", "Phasor", PanelGroup::DevSound,
   "show_phasor", nullptr,
   "Applied Engineering Phasor: 2\xc3\x97 VIA, 4\xc3\x97 AY, mode soft-switch." },
-{ "panel.echoplus", "Echo+", PanelGroup::DevSound,
+{ PanelId::EchoPlus, "panel.echoplus", "Echo+", PanelGroup::DevSound,
   "show_echoplus", nullptr,
   "Echo/Cricket SSI263 speech chip state." },
-{ "panel.mixer", "Audio Mixer", PanelGroup::DevSound,
+{ PanelId::Mixer, "panel.mixer", "Audio Mixer", PanelGroup::DevSound,
   "show_mixer", nullptr,
   "Per-source volume: speaker, Mockingboard/Phasor, speech, floppy." },
 
 // ── Devices ▸ Ports & cards ─────────────────────────────────────────────
-{ "panel.ssc", "Super Serial", PanelGroup::DevPorts,
+{ PanelId::Ssc, "panel.ssc", "Super Serial", PanelGroup::DevPorts,
   "show_ssc", nullptr,
   "6551 ACIA serial port + telnet bridge (modem / printer)." },
-{ "panel.ethernet", "Ethernet", PanelGroup::DevPorts,
+{ PanelId::Ethernet, "panel.ethernet", "Ethernet", PanelGroup::DevPorts,
   "show_ethernet", nullptr,
   "Uthernet I / II state: host transport, MAC, W5100 sockets." },
-{ "panel.printer", "Printer", PanelGroup::DevPorts,
+{ PanelId::Printer, "panel.printer", "Printer", PanelGroup::DevPorts,
   "show_printer", nullptr,
   "Parallel printer card \xe2\x86\x92 text spool (.txt)." },
-{ "panel.imagewriter", "ImageWriter II (printout)", PanelGroup::DevPorts,
+{ PanelId::ImageWriter, "panel.imagewriter", "ImageWriter II (printout)", PanelGroup::DevPorts,
   "show_imagewriter", nullptr,
-  "Rendered ImageWriter II output: pages, colour ribbon, PNG export." },
-{ "panel.chatmauve", "Le Chat Mauve (slot 7)", PanelGroup::DevPorts,
+  "Rendered ImageWriter II output: pages, colour ribbon, PNG export.", /*defaultOpen=*/true },
+{ PanelId::ChatMauve, "panel.chatmauve", "Le Chat Mauve (slot 7)", PanelGroup::DevPorts,
   "show_chatmauve", nullptr,
   "Le Chat Mauve RGB / Eve video card controls." },
-{ "panel.joystick", "Joystick", PanelGroup::DevPorts,
+{ PanelId::Joystick, "panel.joystick", "Joystick", PanelGroup::DevPorts,
   "show_joystick", nullptr,
   "Analog paddles / joystick mapping + push-buttons." },
-{ "panel.keyboard", "Apple //e Keyboard", PanelGroup::DevPorts,
+{ PanelId::Keyboard, "panel.keyboard", "Apple //e Keyboard", PanelGroup::DevPorts,
   "show_keyboard", nullptr,
   "A photo of the real //e keyboard, clickable. The keys a host keyboard\n"
   "has nowhere to put — Open-Apple, Solid-Apple, the //e's own Reset —\n"
   "are here, with the real legends." },
 
 // ── Devices ▸ Inspectors & tools ────────────────────────────────────────
-{ "panel.rewind", "Rewind (time-travel)", PanelGroup::DevInspectors,
+{ PanelId::Rewind, "panel.rewind", "Rewind (time-travel)", PanelGroup::DevInspectors,
   "show_rewind", "F6",
   "Scrub back through machine state. Hold F6 to rewind live." },
-{ "panel.mouse", "Mouse Inspector", PanelGroup::DevInspectors,
+{ PanelId::Mouse, "panel.mouse", "Mouse Inspector", PanelGroup::DevInspectors,
   "show_mouse_inspector", nullptr,
   "Apple II Mouse Card state + host-cursor sync diagnostics." },
-{ "panel.nsclock", "No-Slot Clock (DS1216E)", PanelGroup::DevInspectors,
+{ PanelId::NoSlotClock, "panel.nsclock", "No-Slot Clock (DS1216E)", PanelGroup::DevInspectors,
   "show_nsclock", nullptr,
   "Dallas DS1216E real-time clock hidden under the Monitor ROM." },
 
 // ── Display ─────────────────────────────────────────────────────────────
-{ "panel.crt", "CRT Settings (sliders)...", PanelGroup::Display,
+{ PanelId::Crt, "panel.crt", "CRT Settings (sliders)...", PanelGroup::Display,
   "show_ntsc", nullptr,
   "Scanlines, shadow mask, barrel, phosphor curve, persistence,\n"
   "brightness/contrast/saturation." },
-{ "panel.voxel", "3D voxel view", PanelGroup::Display,
+{ PanelId::Voxel, "panel.voxel", "3D voxel view", PanelGroup::Display,
   "show_3d_voxel", nullptr,
   "MicroM8-style cube renderer.\n"
   "Left-drag orbits, middle-drag pans, wheel zooms." },
-{ "panel.voxelset", "3D voxel settings...", PanelGroup::Display,
+{ PanelId::VoxelSettings, "panel.voxelset", "3D voxel settings...", PanelGroup::Display,
   "show_voxel_settings", nullptr,
   "Depth, colour pop, fill, anti-alias, mono, per-colour depth." },
 
@@ -189,33 +219,33 @@ inline constexpr PanelInfo kPanelCatalog[] = {
 // These five were the panels with no settings key: opening one and finding
 // it gone next launch was not a decision, it was six lists disagreeing.
 // They persist like the rest now.
-{ "panel.memviewer", "Memory viewer", PanelGroup::View,
+{ PanelId::MemViewer, "panel.memviewer", "Memory viewer", PanelGroup::View,
   "show_memviewer", nullptr,
   "Hex + ASCII view of the emulated memory, with a live follow mode." },
-{ "panel.debugger", "Debugger", PanelGroup::View,
+{ PanelId::Debugger, "panel.debugger", "Debugger", PanelGroup::View,
   "show_debugger", nullptr,
   "Registers, disassembly, breakpoints, and step / step-over /\n"
   "run-to-cursor." },
-{ "panel.membar", "Memory Map Bar", PanelGroup::View,
+{ PanelId::MemBar, "panel.membar", "Memory Map Bar", PanelGroup::View,
   "show_membar", nullptr,
   "A one-strip map of what is paged where right now." },
-{ "panel.membarh", "Memory Map Bar (Horizontal)", PanelGroup::View,
+{ PanelId::MemBarH, "panel.membarh", "Memory Map Bar (Horizontal)", PanelGroup::View,
   "show_membar_h", nullptr,
   "The same map, laid out along the window's width." },
-{ "panel.memgrid", "Memory Map Grid", PanelGroup::View,
+{ PanelId::MemGrid, "panel.memgrid", "Memory Map Grid", PanelGroup::View,
   "show_memgrid", nullptr,
   "Page-per-cell grid: RAM, ROM, aux, language card, slot ROM." },
 
 // ── Tools ───────────────────────────────────────────────────────────────
-{ "panel.hgrpaint", "HGR Paint Editor", PanelGroup::Tools,
+{ PanelId::HgrPaint, "panel.hgrpaint", "HGR Paint Editor", PanelGroup::Tools,
   "show_hgr_paint", nullptr,
   "Paint directly into HGR/GR/DHGR video RAM through the real NTSC\n"
   "pipeline (image import included)." },
-{ "panel.hgrsprite", "HGR Sprite Editor", PanelGroup::Tools,
+{ PanelId::HgrSprite, "panel.hgrsprite", "HGR Sprite Editor", PanelGroup::Tools,
   "show_hgr_sprite", nullptr,
   "Draw HGR sprites on a scratch page, grab from / stamp to the live\n"
   "screen, export ca65 .byte tables." },
-{ "panel.aicontrol", "AI Control (HTTP)...", PanelGroup::Tools,
+{ PanelId::AiControl, "panel.aicontrol", "AI Control (HTTP)...", PanelGroup::Tools,
   "show_ai_control", nullptr,
   "Loopback HTTP control server: keys, screenshots, snapshots, reset." },
 
@@ -223,14 +253,14 @@ inline constexpr PanelInfo kPanelCatalog[] = {
 // The one panel that deliberately does NOT persist: a first launch with no
 // ROM opens it from the constructor, before settings are read, so a stored
 // `false` would silently cancel the greeting the newcomer needs.
-{ "panel.welcome", "Welcome / Quick Start", PanelGroup::Help,
+{ PanelId::Welcome, "panel.welcome", "Welcome / Quick Start", PanelGroup::Help,
   nullptr, nullptr,
   "Where to put ROMs/disks, keys, and signature features." },
-{ "panel.romstatus", "ROM Status...", PanelGroup::Help,
+{ PanelId::RomStatus, "panel.romstatus", "ROM Status...", PanelGroup::Help,
   "show_rom_status", nullptr,
   "Every ROM POM2 probes: present or missing, which dump resolved, and\n"
   "what breaks without it." },
-{ "panel.abstraction", "Abstraction Levels (LLE / HLE)...", PanelGroup::Help,
+{ PanelId::Abstraction, "panel.abstraction", "Abstraction Levels (LLE / HLE)...", PanelGroup::Help,
   "show_abstraction", nullptr,
   "What POM2 emulates as silicon and what it emulates as a service,\n"
   "subsystem by subsystem — plus which level is actually running (a\n"
@@ -239,8 +269,32 @@ inline constexpr PanelInfo kPanelCatalog[] = {
 };
 // clang-format on
 
-inline constexpr std::size_t kPanelCount =
-    sizeof(kPanelCatalog) / sizeof(kPanelCatalog[0]);
+// ── The one check that makes the two halves one list ────────────────────
+// Every PanelId has exactly one row, and every row names a real PanelId. A
+// forgotten row, a duplicate, or a copy-pasted enumerator is a build failure
+// here rather than a menu entry that toggles the wrong window.
+constexpr bool panelCatalogIsComplete()
+{
+    if (sizeof(kPanelCatalog) / sizeof(kPanelCatalog[0]) != kPanelCount) return false;
+    for (std::size_t want = 0; want < kPanelCount; ++want) {
+        std::size_t seen = 0;
+        for (const PanelInfo& p : kPanelCatalog)
+            if (static_cast<std::size_t>(p.id) == want) ++seen;
+        if (seen != 1) return false;
+    }
+    return true;
+}
+static_assert(panelCatalogIsComplete(),
+              "every PanelId needs exactly one row in kPanelCatalog");
+
+/// The row for a panel. Linear, constexpr, 38 entries — this runs at compile
+/// time wherever the argument is a constant, and once per menu row otherwise.
+constexpr const PanelInfo& panelInfo(PanelId id)
+{
+    for (const PanelInfo& p : kPanelCatalog)
+        if (p.id == id) return p;
+    return kPanelCatalog[0];   // unreachable: the static_assert above proved it
+}
 
 }  // namespace pom2
 
