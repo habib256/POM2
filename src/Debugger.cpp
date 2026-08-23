@@ -90,6 +90,9 @@ std::vector<uint16_t> Debugger::breakpoints() const
 
 void Debugger::setWatchpoint(uint16_t addr, Access access)
 {
+    // Only the Write half can fire (see the header): keep what we can honour,
+    // so `watchpointAt` never reports a watch the machine will ignore.
+    access = static_cast<Access>(access & Write);
     if (access == None) {
         if (wpBits_.empty()) return;
         if (wpBits_[addr] != None) --wpCount_;

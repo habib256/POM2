@@ -5513,10 +5513,12 @@ be un-done — so `Hit::pc` (latched by `onInstruction` as `curPc_`) names the
 instruction that *wrote*, while the machine's live PC is the instruction after
 it. Both facts are in the stop banner.
 
-**Read watchpoints are still NOT implemented**, and the API accepts a Read
-watch that never fires rather than pretending otherwise (the panel offers only
-writes). `memRead`'s fast path has no per-address table to hide a watch in —
-that is the whole reason the write half was free and the read half is not.
+**Read watchpoints are still NOT implemented**, and the API says so:
+`setWatchpoint` keeps only the Write bit, so a `Read` request arms nothing,
+`ReadWrite` degrades to `Write`, and `watchpointAt` reports what can actually
+fire (the panel offers only writes; pinned by `debugger` case 1). `memRead`'s
+fast path has no per-address table to hide a watch in — that is the whole
+reason the write half was free and the read half is not.
 
 **Known limit.** Step-over reads the opcode at the PC with `peekMainRam`, not
 `memRead` — a debugger must never flip a soft switch to inspect the machine —
