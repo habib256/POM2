@@ -70,6 +70,7 @@ void Debugger_ImGui::render(EmulationController& ctrl, bool* open)
         snap.halted   = cpu.isHalted();
         snap.hit      = ctrl.debugger().lastHit();
         snap.breakpoints = ctrl.debugger().breakpoints();
+        snap.watchpoints = ctrl.debugger().watchpoints();
         const uint8_t* raw = mem.data();
         if (raw) snap.memory.assign(raw, raw + 0x10000);
     }
@@ -105,6 +106,10 @@ void Debugger_ImGui::render(EmulationController& ctrl, bool* open)
     ImGui::SameLine();
     ImGui::BeginChild("##bplist", ImVec2(rightWidth, 0), true);
     drawBreakpointList(ctrl, snap);
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    drawWatchpointList(ctrl, snap);
     ImGui::EndChild();
 
     ImGui::End();
@@ -140,11 +145,15 @@ void Debugger_ImGui::drawStopBanner(const Snapshot& snap)
             break;
         case Debugger::Reason::WatchRead:
         case Debugger::Reason::WatchWrite:
+            // Two addresses, and both matter: WHAT was written, and WHO wrote
+            // it. The machine's PC is neither — it is the instruction after
+            // the store, because the access cannot be un-done.
             std::snprintf(msg, sizeof(msg),
-                          "Stopped: $%04X was %s ($%02X).", snap.hit.addr,
+                          "Stopped: $%04X was %s ($%02X) by the instruction at $%04X.",
+                          snap.hit.addr,
                           snap.hit.reason == Debugger::Reason::WatchWrite
                               ? "written" : "read",
-                          snap.hit.value);
+                          snap.hit.value, snap.hit.pc);
             break;
         default:
             std::snprintf(msg, sizeof(msg), "Stopped.");
@@ -315,6 +324,72 @@ void Debugger_ImGui::drawBreakpointList(EmulationController& ctrl,
             ctrl.debugger().clearBreakpoints();
             ctrl.syncDebugHook();
         }
+    }
+}
+
+// ── Watchpoint list ──────────────────────────────────────────────────────
+//
+// Write watchpoints only, and the UI says so rather than offering a Read box
+// that would never fire: `memWrite`'s fast path carries a per-address
+// `writable[]` byte a watch can hide inside for free, and `memRead` has no
+// equivalent — a branch there measured +13-16 % on pom2_bench
+// (docs/PERFORMANCE.md § 8.2).
+
+void Debugger_ImGui::drawWatchpointList(EmulationController& ctrl,
+                                        const Snapshot& snap)
+{
+    ImGui::TextUnformatted("Watch (writes)");
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Stops the machine when a write reaches the address.\n"
+                          "Costs nothing while none is armed: the address is\n"
+                          "diverted off memWrite's fast path rather than the\n"
+                          "fast path testing for it.\n"
+                          "Read watchpoints are not offered — memRead has no\n"
+                          "equivalent free hook (PERFORMANCE 8.2).");
+    ImGui::Separator();
+
+    ImGui::SetNextItemWidth(70);
+    const bool entered = ImGui::InputText("##wpaddr", wpEntry_, sizeof(wpEntry_),
+                                          ImGuiInputTextFlags_CharsHexadecimal |
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    const bool add = ImGui::Button("Watch") || entered;
+    if (add && wpEntry_[0]) {
+        unsigned v = 0;
+        if (std::sscanf(wpEntry_, "%x", &v) == 1) {
+            auto st = ctrl.lockState();
+            ctrl.debugger().setWatchpoint(static_cast<uint16_t>(v & 0xFFFF),
+                                          Debugger::Write);
+            ctrl.syncDebugHook();      // installs Memory's diversion
+        }
+        wpEntry_[0] = '\0';
+    }
+
+    if (snap.watchpoints.empty()) {
+        ImGui::TextColored(kDimColour, "none");
+        return;
+    }
+    for (const Debugger::Watch& w : snap.watchpoints) {
+        ImGui::PushID(0x10000 + static_cast<int>(w.addr));
+        if (ImGui::SmallButton("x")) {
+            auto st = ctrl.lockState();
+            ctrl.debugger().setWatchpoint(w.addr, Debugger::None);
+            ctrl.syncDebugHook();
+        }
+        ImGui::SameLine();
+        char t[16];
+        std::snprintf(t, sizeof(t), "$%04X", w.addr);
+        if (ImGui::Selectable(t)) {
+            viewAddr_ = w.addr;
+            followPc_ = false;
+        }
+        ImGui::PopID();
+    }
+    ImGui::Separator();
+    if (ImGui::Button("Clear watches")) {
+        auto st = ctrl.lockState();
+        ctrl.debugger().clearWatchpoints();
+        ctrl.syncDebugHook();
     }
 }
 

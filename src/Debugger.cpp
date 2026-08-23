@@ -145,6 +145,17 @@ void Debugger::clearTransient()
 
 bool Debugger::onInstruction(uint16_t pc)
 {
+    // A watchpoint fired inside the PREVIOUS instruction. The access is done
+    // and cannot be un-done, so its stop lands here, at the first boundary
+    // after it — which is what makes noteAccess() a run-control stop rather
+    // than a note in a log. Checked before everything else: the hit is only
+    // ever clear when the controller has consumed it (debugResume), so this
+    // cannot swallow a resume.
+    if (hit_.valid()) return true;
+    // Latched for noteAccess(), which fires mid-instruction and would
+    // otherwise have no way to name the instruction responsible.
+    curPc_ = pc;
+
     // Resuming from a stop: the PC still points at the instruction that
     // stopped us, so without this the same breakpoint fires forever and Run
     // does nothing. One instruction of amnesty, cleared on use.
@@ -179,11 +190,12 @@ void Debugger::noteAccess(uint16_t addr, uint8_t value, bool write)
     // that stopped it rather than the last one it happened to reach.
     if (hit_.valid()) return;
     hit_ = { write ? Reason::WatchWrite : Reason::WatchRead,
-             /*pc=*/0, addr, value };
-    // The PC is filled in by the controller when it parks: the access is
-    // mid-instruction, and `programCounter` has already advanced past the
-    // opcode, so a PC captured here would point at neither a useful place nor
-    // a stable one.
+             curPc_, addr, value };
+    // curPc_, not the CPU's programCounter: the access is mid-instruction and
+    // that register has already advanced past the opcode and its operands, so
+    // it names neither the writing instruction nor anything stable. curPc_ is
+    // what onInstruction was handed for the instruction now executing — the
+    // one that performed this write.
 }
 
 void Debugger::clearHit()

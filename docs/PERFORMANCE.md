@@ -441,6 +441,11 @@ Method: `pom2_bench`, best of seven per workload, three series, RAM hash
 checked identical on every run. Baseline taken on the unmodified tree
 immediately before the change, on the same host and the same build flags.
 
+Both hooks exist today, but only after the second one was rewritten: the
+per-instruction hook was free from the start (§ 8.1), the per-access hook cost
+13-16 % and was thrown away (§ 8.2), and write watchpoints came back a day
+later in a shape that adds nothing to the hot path at all (§ 8.3).
+
 | Workload | Baseline | With the CPU hook | With the memory tap too |
 |---|---|---|---|
 | `--frames 30000` (][+ banner) | 1.968 s | 1.94 s | 2.231 s |
@@ -480,18 +485,67 @@ on the ][+ banner, against 2.231 s for the plain wrapper), which locates the
 cost: it is the extra branch and the code growth around the hottest function in
 the emulator, not an inlining regression that could be argued away.
 
-So watchpoints are **not implemented**, and `Debugger` carries the API for them
-unhooked rather than pretending. The design that would pay for itself is
-recorded in `TODO.md`: `memWrite`'s fast path already consults a per-address
-`writable[]` byte, so a watched address can be made to *fail* that test and
-fall to `memWriteSlow`, which notices the watch and performs the write itself —
-**zero new branches on the fast path**, write watchpoints only. Reads have no
-equivalent per-address table in their fast path, and that is the honest reason
-read watchpoints would cost something.
+So watchpoints were **not implemented** at the time, and `Debugger` carried the
+API for them unhooked rather than pretending. The design that would pay for
+itself was recorded instead: `memWrite`'s fast path already consults a
+per-address `writable[]` byte, so a watched address can be made to *fail* that
+test and fall to `memWriteSlow`, which notices the watch and performs the write
+itself — **zero new branches on the fast path**, write watchpoints only. Reads
+have no equivalent per-address table in their fast path, and that is the honest
+reason read watchpoints would cost something. § 8.3 is that design, measured.
 
-### 8.3 What this section is really for
+### 8.3 The free design, shipped — 2026-08-23
 
-The measurement that mattered here was the one that killed a feature. A
-debugger with watchpoints would have been better than one without — and it
-would have made every session that never opens the debugger 13 % slower. The
-numbers are recorded so nobody re-derives them by shipping the regression.
+Write watchpoints now work, and the fast path is **byte-for-byte the code that
+was there before**. Nothing tests for a watchpoint on the hot path because
+nothing needs to: arming one CLEARS the address's `writable[]` byte, so
+`memWrite`'s existing test fails for that address and the write falls into
+`memWriteSlow` by itself. The slow path reports the access and performs the
+write from a shadowed copy of the real permission. The table
+(`Memory::writeWatch_`) is empty and unallocated until the first watch is
+armed.
+
+Host: Intel i7-10700F, Linux, the ordinary `build/` release configuration. The
+two binaries were kept side by side and run **interleaved**, best of 9 each,
+pinned to one core with `taskset`. RAM hash identical on every workload — the
+same discipline §§ 1-7 are held to.
+
+| Workload | Before | With write watchpoints (none armed) | Δ |
+|---|---|---|---|
+| `--frames 30000` (][+ banner) | 2.011 s | 1.968 s | −2.1 % |
+| `--rom apple2e.rom --iie --frames 30000` | 2.283 s | 2.266 s | −0.7 % |
+| `--disk … --frames 6000` (Disk II LSS) | 0.702 s | 0.701 s | −0.1 % |
+
+An unpinned best-of-7 series taken first agrees (1.999 → 1.991, 2.314 → 2.295,
+0.711 → 0.706). A second unpinned series was **discarded, and it is worth
+saying why**: it read −23 % on the //e workload, from a baseline that had drifted
+to 3.086 s against 2.283 s for the same binary minutes earlier. That is a loaded
+host, not a speedup, and a number that flattering is a measurement to throw away
+rather than a result to quote.
+
+The honest reading of the table is not "faster". It is **no measurable cost**,
+which is what the design predicted: the only code added anywhere near the write
+path is one `writeWatch_.empty()` test inside `memWriteSlow`, and the sub-1 %
+spread is this host's noise floor plus code-layout luck.
+
+What it costs while a watch IS armed is a different question, deliberately not
+folded into the table: the CPU switches to the debug loop (a virtual call per
+instruction, § 8.1's other branch), and the watched address's writes take the
+slow path. Both are paid only by the session that armed the watch, which is the
+whole point of the arrangement.
+
+### 8.4 What this section is really for
+
+The measurement that mattered here was the one that killed a feature — for a
+day. A debugger with watchpoints is better than one without, and the obvious
+implementation would have made every session that never opens the debugger
+13 % slower. Keeping the number instead of the feature is what left the problem
+stated precisely enough to solve: the fast path already touches a per-address
+byte, so the watch could hide *inside a test that was already being paid for*
+rather than adding one beside it (§ 8.3).
+
+That is the pattern worth taking from this section. A hot-path feature that
+measures badly is usually not too expensive — it is in the wrong shape, and the
+measurement is what tells you the budget it has to fit into. Read watchpoints
+have no such shape available, so they are still not implemented, and that too is
+recorded rather than faked.

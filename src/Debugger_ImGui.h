@@ -57,6 +57,7 @@ private:
         bool     halted  = false;
         Debugger::Hit hit{};
         std::vector<uint16_t> breakpoints;
+        std::vector<Debugger::Watch> watchpoints;
         /// 64 KiB of main RAM, copied so the disassembly can be laid out
         /// after the lock is released.
         std::vector<uint8_t> memory;
@@ -66,6 +67,7 @@ private:
     void drawRegisters(const Snapshot& snap);
     void drawDisassembly(EmulationController& ctrl, const Snapshot& snap);
     void drawBreakpointList(EmulationController& ctrl, const Snapshot& snap);
+    void drawWatchpointList(EmulationController& ctrl, const Snapshot& snap);
     void drawStopBanner(const Snapshot& snap);
 
     /// Disassembly origin. Follows the PC unless the user has scrolled away.
@@ -74,6 +76,9 @@ private:
     /// Address typed into the "add breakpoint" box, as text so a half-typed
     /// value does not jump the view.
     char      bpEntry_[8]  = {0};
+    /// Same, for the watchpoint box. Separate storage so typing in one does
+    /// not clear the other.
+    char      wpEntry_[8]  = {0};
     /// The address the user last clicked in the disassembly — the target for
     /// Run To Cursor.
     uint16_t  cursorAddr_  = 0;

@@ -139,6 +139,10 @@ EmulationController::EmulationController()
     // bitmaps are lazy) and leaves `M6502::run` on the loop it has always
     // used, so a session that does not debug pays nothing for it.
     debugger_ = std::make_unique<pom2::Debugger>();
+    // Where Memory reports a watched write. The sink is permanent; what
+    // switches watchpoints on and off is Memory's own (lazily allocated)
+    // diversion table, rebuilt by syncDebugHook().
+    mem.setWatchSink(debugger_.get());
 
     // Wire $C020 / $C060 (cassette) and $C030 (speaker, with sub-
     // instruction timestamping via the CPU back-pointer).
@@ -784,6 +788,16 @@ void EmulationController::noteDebuggerStop()
 void EmulationController::syncDebugHook()
 {
     processor.setDebugHook(debugger_->armed() ? debugger_.get() : nullptr);
+    // Write watchpoints are not a hook Memory calls on every access — they
+    // are addresses DIVERTED off memWrite's fast path (Memory.h § Write
+    // watchpoints), so Memory keeps a table that has to follow the
+    // debugger's. Rebuilt wholesale rather than incrementally: this runs on a
+    // UI edit and never on the CPU's path, and one authority for two tables
+    // beats two that can drift. Read watches are skipped because nothing can
+    // deliver them — see Debugger::noteAccess.
+    mem.clearWriteWatches();
+    for (const auto& w : debugger_->watchpoints())
+        if (w.access & pom2::Debugger::Write) mem.setWriteWatch(w.addr, true);
 }
 
 void EmulationController::debugResume()
