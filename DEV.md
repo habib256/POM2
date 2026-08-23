@@ -355,6 +355,26 @@ $B000-$DFFF windows = 6502 $D000-$FFFF Language Card RAM.
 
 ## Memory
 
+### What lives outside Memory now
+
+`Memory` is still the bus, the paging and the RAM, but three concerns that
+used to swell it were split out (one concern per file):
+
+- **`Keyboard.h/.cpp`** — the keyboard latch and the host paste FIFO. The
+  hot `$C000` read is `keyboard_.latchMirror()` (a lock-free atomic
+  republished under Keyboard's own mutex); the cold IIe status reads
+  ($C011/$C012/$C019) use `keyboard_.lastKey7()`. `Memory::pasteText`
+  forwards with `foldToUpper = !iieMode`.
+- **`PaddleInputs.h`** — the game port: paddles, buttons, Open/Solid-Apple +
+  Shift, and the $C070 RC-discharge latch. The $C061-$C067 read path calls
+  `paddles_.button0/1/2()` and `paddles_.discharging(idx, cycleCounter)`;
+  the snapshot serialises `paddles_.latchCycle()`.
+- **`MemoryWatch.cpp`** — the debugger's write/read watchpoint bookkeeping
+  (the hot-path halves stay in Memory; see § Debugger).
+
+Pinned behaviour-preserving by `input_io_smoke`, `paste_smoke` and
+`ui_worker_contention` (2026-08-23).
+
 ### `loadAppleIIRom` dump shapes
 
 - **16 KB**: `$C000-$FFFF` direct (MAME/AppleWin).

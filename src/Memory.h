@@ -32,7 +32,9 @@
 #include "SlotBus.h"
 #include "MemoryProfile.h"
 #include "CpuClock.h"
+#include "Keyboard.h"
 #include "MemoryWatchSink.h"
+#include "PaddleInputs.h"
 
 #include <array>
 #include <atomic>
@@ -485,9 +487,11 @@ public:
     std::vector<VideoEvent> takeVideoEvents();
 
     // Keyboard bridge — UI thread enqueues keys, CPU thread reads them
-    // via $C000 / clears the strobe via $C010.
-    void queueKey(uint8_t ascii);       // 7-bit ASCII (upper or lower case)
-    void clearKeyStrobe();              // mirrors $C010 access
+    // via $C000 / clears the strobe via $C010. State + FIFO live in
+    // pom2::Keyboard (`keyboard_`); these forward to it, and the softswitch
+    // read path calls `keyboard_.latchMirror()` / `lastKey7()` directly.
+    void queueKey(uint8_t ascii)  { keyboard_.queueKey(ascii); }
+    void clearKeyStrobe()         { keyboard_.clearStrobe(); }
 
     /// Paste a block of text. Line-endings normalised to CR ($0D) — `\r\n`,
     /// `\r`, `\n` all collapse to one CR. Non-printable controls below
@@ -497,21 +501,26 @@ public:
     /// `clearKeyStrobe()` — so the Apple II ROM's strobe-and-poll loop
     /// pulls them out at exactly its own pace, no timing tricks needed.
     /// Returns the number of bytes actually queued (after filtering).
-    static constexpr size_t kPasteMaxChars = 4096;
-    size_t pasteText(const char* data, size_t length);
+    /// The ][/][+ case-fold is applied iff not in IIe mode.
+    static constexpr size_t kPasteMaxChars = pom2::Keyboard::kPasteMaxChars;
+    size_t pasteText(const char* data, size_t length) {
+        return keyboard_.pasteText(data, length, /*foldToUpper=*/!iieMode);
+    }
     size_t pasteText(const std::string& s) { return pasteText(s.data(), s.size()); }
 
     /// Like pasteText but does NOT filter control bytes — used by tests
     /// that need to drive a launcher's arrow keys (Ctrl-J / Ctrl-K) or
     /// ESC. Bytes are stripped to 7 bits but otherwise pass through
     /// verbatim. Same FIFO + strobe drain as pasteText.
-    size_t pasteRawKeys(const char* data, size_t length);
+    size_t pasteRawKeys(const char* data, size_t length) {
+        return keyboard_.pasteRawKeys(data, length);
+    }
 
     /// How many bytes are still waiting in the paste queue. UI shows this
     /// in the Edit menu so the user knows the paste is
     /// in flight.
-    size_t pendingPasteSize() const;
-    void   cancelPaste();
+    size_t pendingPasteSize() const { return keyboard_.pendingPasteSize(); }
+    void   cancelPaste()            { keyboard_.cancelPaste(); }
 
     // Speaker — the CPU toggles a flip-flop by reading $C030. We expose
     // a counter the audio backend can sample. UI may also subscribe via
@@ -524,8 +533,10 @@ public:
 
     // Paddle inputs — $C064-$C067 read the 4 paddles, $C061-$C063 read
     // the 3 push-button switches. Game-port reset latch armed by $C070.
-    void setPaddle(int idx, uint8_t value);    // 0..3
-    void setPaddleButton(int idx, bool down);  // 0..2
+    // State + read logic live in pom2::PaddleInputs (`paddles_`); these are
+    // thin forwarders kept for the existing call sites.
+    void setPaddle(int idx, uint8_t value)   { paddles_.setPaddle(idx, value); }
+    void setPaddleButton(int idx, bool down) { paddles_.setPaddleButton(idx, down); }
 
     // IIe modifier keys. Real //e wires Open Apple to PB0 ($C061),
     // Solid Apple to PB1 ($C062), and Shift (with the SHK jumper set,
@@ -534,9 +545,9 @@ public:
     // handler can call these from a GLFW key callback when the IIe
     // ROM is loaded; they're OR'd into the joystick button states at
     // read time.
-    void setOpenAppleKey  (bool down) { openAppleKey  = down; }
-    void setSolidAppleKey (bool down) { solidAppleKey = down; }
-    void setShiftKey      (bool down) { shiftKey      = down; }
+    void setOpenAppleKey  (bool down) { paddles_.setOpenAppleKey(down); }
+    void setSolidAppleKey (bool down) { paddles_.setSolidAppleKey(down); }
+    void setShiftKey      (bool down) { paddles_.setShiftKey(down); }
 
     // Reset — returns LC/MMU/IOU/video switches to cold-boot defaults.
     // Does NOT touch RAM. Used by power-on (`coldBoot`), profile apply,
@@ -774,53 +785,22 @@ private:
     /// Same as recordVideoEvent but caller already holds stateMutex.
     void pushVideoEventLocked(VideoEventKind kind, bool value);
 
-    // Keyboard.
-    mutable std::mutex kbMutex;
-    uint8_t lastKey   = 0;
-    bool    keyReady  = false;
-    // `lastKey | (keyReady << 7)` republished (under kbMutex) after every
-    // mutation of the pair, so the CPU's $C000-$C01F reads take one relaxed
-    // load instead of the mutex. The ][+ Monitor's keyboard loop and every
-    // game's input poll hit $C000 continuously: the uncontended lock/unlock
-    // pair was ~5 % of a banner profile. Writers still serialise on kbMutex;
-    // a reader that lands between the member writes and the publish simply
-    // observes the previous pair — the same thing it would have seen had it
-    // taken the lock a moment earlier.
-    std::atomic<uint8_t> kbLatchMirror_{0};
-    void publishKbLatch() {
-        kbLatchMirror_.store(static_cast<uint8_t>(lastKey | (keyReady ? 0x80 : 0x00)),
-                             std::memory_order_relaxed);
-    }
-    // Paste queue — drains one byte into `lastKey` each time the CPU
-    // clears the strobe via $C010. See pasteText().
-    std::deque<uint8_t> pasteQueue;
+    // Keyboard latch + host paste FIFO — its own concern now (Keyboard.h).
+    // The $C000 hot read is `keyboard_.latchMirror()` (a lock-free atomic
+    // republished under Keyboard's own mutex); the cold IIe status reads use
+    // `keyboard_.lastKey7()`.
+    pom2::Keyboard keyboard_;
 
     // Speaker.
     std::atomic<uint64_t> speakerToggles{0};
     SpeakerCallback speakerCb = nullptr;
     void*           speakerUser = nullptr;
 
-    // Paddles + buttons. Paddle "value" is the discharge time of an RC
-    // network — Apple II reads $C064-$C067 and counts cycles until the
-    // register flips. We model that by remembering when the latch was armed.
-    std::array<uint8_t, 4> paddleValue{ 128, 128, 128, 128 };
-    std::array<bool,    3> paddleButton{ false, false, false };
-    // IIe modifier keys, wired alongside the gameport buttons at
-    // $C061-$C063. Atomic because the GLFW key callback runs on the
-    // UI thread while the CPU worker polls them.
-    std::atomic<bool> openAppleKey  { false };
-    std::atomic<bool> solidAppleKey { false };
-    std::atomic<bool> shiftKey      { false };
-    // Init the latch "deep in the past" so the elapsed test
-    // `(cycleCounter - paddleLatchCycle) >= paddleValue*11` is true at
-    // boot regardless of paddleValue (max threshold = 255*11 = 2805).
-    // Matches MAME apple2.cpp:259 `m_joystick_x1_time = 0` semantics
-    // (timer already expired at startup). Without this, $C064-$C067
-    // would return 0x80 for ~1408 cycles after every power-on and
-    // confuse the //e auto-test that detects "no paddle connected".
-    // Concretely: 0 - paddleLatchCycle in uint64 wraps to 0x10000 here,
-    // which is well above any plausible threshold.
-    uint64_t paddleLatchCycle = ~uint64_t(0) - 0xFFFFu;
+    // Game port — paddles, buttons and the Open/Solid-Apple + Shift mods,
+    // plus the $C070 RC-discharge latch. All of it lives in PaddleInputs now
+    // (one concern per file); the $C061-$C067 read path and $C070 forward to
+    // `paddles_`, and the snapshot serialises `paddles_.latchCycle()`.
+    pom2::PaddleInputs paddles_;
     // Cycle at which the current video frame started. Derived state, kept
     // incrementally by advanceCycles() so the per-instruction VBL check needs
     // no runtime-divisor modulo — see the comment there. Deliberately NOT
