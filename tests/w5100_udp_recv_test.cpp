@@ -175,18 +175,37 @@ void openUdpSocket(W5100Device& dev, LocalPeer& peer, uint8_t rmsr)
 /// Poll SN_RX_RSR the way a driver does — reading it is what pulls a
 /// packet off the host socket — until something is staged or time is up.
 /// `regBase` lets a caller poll through the $8000 mirror instead.
+///
+/// SN_RX_RSR is a 16-bit register read one byte at a time, and on this chip
+/// reading it is ALSO what pulls a datagram off the host socket (it is polled,
+/// there is no RX interrupt). So the two byte reads are not a snapshot: a
+/// datagram arriving between them yields a torn value — the old hi with the
+/// new lo — which read a 1408-byte datagram back as 128 about once in 40 runs.
+/// A real W5100 driver reads RSR until two consecutive reads agree (datasheet
+/// §5.2.2); this does the same. The inner loop is bounded because after the
+/// single datagram these tests send is staged, rxSize stops moving.
+uint16_t readRxRsr(W5100Device& dev, uint16_t regBase)
+{
+    const uint8_t hi = dev.readValueAt(
+        static_cast<uint16_t>(regBase + kW5100SnRxRsr0));
+    const uint8_t lo = dev.readValueAt(
+        static_cast<uint16_t>(regBase + kW5100SnRxRsr1));
+    return static_cast<uint16_t>((hi << 8) | lo);
+}
+
 uint16_t pollForData(W5100Device& dev, int timeoutMs, uint16_t regBase = kS0)
 {
-    uint16_t pending = 0;
-    for (int waited = 0; waited < timeoutMs && pending == 0; waited += 5) {
-        const uint8_t hi = dev.readValueAt(
-            static_cast<uint16_t>(regBase + kW5100SnRxRsr0));
-        const uint8_t lo = dev.readValueAt(
-            static_cast<uint16_t>(regBase + kW5100SnRxRsr1));
-        pending = static_cast<uint16_t>((hi << 8) | lo);
-        if (pending == 0) sleepMs(5);
+    for (int waited = 0; waited < timeoutMs; waited += 5) {
+        uint16_t a = readRxRsr(dev, regBase);
+        for (int settle = 0; settle < 8; ++settle) {
+            const uint16_t b = readRxRsr(dev, regBase);
+            if (b == a) break;
+            a = b;
+        }
+        if (a != 0) return a;
+        sleepMs(5);
     }
-    return pending;
+    return 0;
 }
 
 /// Read `count` bytes out of socket 0's RX ring starting at SN_RX_RD.

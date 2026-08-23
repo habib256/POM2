@@ -150,20 +150,19 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   falsifiable (exit 138 without the fix). macOS CI runs `ctest` again.
   → `CHANGELOG.md` 2026-08-23.
 
-- 🔵 **`w5100_udp_recv` loses a loopback datagram about once in 25 runs —
-  seen 2026-08-22.** `testFittingDatagramLandsWhole` polls for 2 s and
-  occasionally never sees a 1472-byte datagram the peer definitely sent
-  (`sendToGuest` asserts the send). Measured on a pristine tree, so it predates
-  the 2026-08-22 sweep; it is recorded rather than papered over with a retry
-  because the cause is not understood, and "the guest sometimes does not
-  receive a datagram" would be a real bug if it turns out not to be a test
-  artefact. Next step: log `errno`/`WSAGetLastError` on the failing poll and
-  check whether the guest socket's ephemeral port is being reused from an
-  earlier test whose socket closed with data still queued.
-  **2026-08-22 update**: the test is now `RUN_SERIAL` (tests/CMakeLists.txt),
-  which removes cross-test contention as a variable — so if it still drops a
-  datagram, the cause is in the code rather than in the schedule. That does not
-  close the finding, it narrows it.
+- ✅ **`w5100_udp_recv` flake — found 2026-08-22, DONE 2026-08-23. A test
+  artefact, and the diagnosis is the interesting part.** Not a lost datagram:
+  a torn read of a 16-bit register. `pollForData` read `SN_RX_RSR` as two
+  byte accesses, and on this chip reading `SN_RX_RSR0` is what *pulls* the
+  datagram off the host socket (it is polled — no RX interrupt). So a datagram
+  arriving between the hi and lo reads gave the old hi with the new lo — a
+  1408-byte datagram read back as 128 (`0x0080` vs `0x0580`), ~1 run in 40.
+  Instrumented to catch the actual staged value, which is what named the tear.
+  Fixed in the test, not the model: a real W5100 driver reads RSR until two
+  consecutive reads agree (datasheet §5.2.2), and `pollForData` now does too —
+  the model is faithful, the test was reading a moving 16-bit register
+  non-atomically. 0/250 locally after the fix, all three previously-flaky
+  cases. → `CHANGELOG.md` 2026-08-23.
 
 ## MAME ↔ POM2 parity (dashboard)
 
