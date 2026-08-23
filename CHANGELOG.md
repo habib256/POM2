@@ -5,6 +5,29 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — The W5100 "lost datagram" was a torn 16-bit read
+
+The one finding the 2026-08-22 sweep left open as a possible real bug — a
+loopback datagram vanishing about once in 40 runs — turned out to be a test
+artefact, and the shape of it is worth keeping. `SN_RX_RSR` is a 16-bit
+register the test read one byte at a time, and on this chip reading its high
+byte is *also* what pulls a datagram off the host socket: the Uthernet II has
+no RX interrupt, so POM2 receives when the guest polls. A datagram landing
+between the two byte reads therefore produced a torn value — the old high byte
+with the new low byte — and a 1408-byte datagram read back as 128 (`0x0080`
+against the expected `0x0580`, low byte intact, high byte stale).
+
+Instrumenting the assertion to print the staged size is what turned "sometimes
+zero" into "always 128 when it fails", which named the tear immediately. The
+fix is in the test, not the model: a real W5100 driver reads RSR until two
+consecutive reads agree (datasheet §5.2.2), because the register is not latched
+against a receive in flight — and `pollForData` now does the same. The model
+is faithful; the test was reading a moving 16-bit register as though the two
+halves were a snapshot. 0 failures in 250 runs after the fix, across all three
+cases that used to trip. The `RUN_SERIAL` mark added on 2026-08-22 to rule out
+cross-test contention stays — it was never the cause, but a test that binds a
+loopback port has no reason to race the others.
+
 ## 2026-08-23 — Read watchpoints, and the flag that is never tested
 
 The debugger's write half shipped free in the morning because `memWrite`'s
