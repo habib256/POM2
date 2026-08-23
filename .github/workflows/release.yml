@@ -833,23 +833,15 @@ jobs:
                 index.html POM2.js POM2.wasm POM2.data)
           ls -lh dist/*.zip
 
-      # Uploaded BEFORE the freshness guard below, so it is uploaded even when
-      # that guard fails: when it does fire, the zip just built IS the bundle
-      # that needs committing. Grab it from the artifacts, drop the four files
-      # into wasm/, run tools/wasm_stamp.sh --write — no emsdk needed locally.
+      # The online demo is not this zip: ci.yml's `pages` job deploys the
+      # bundle it builds on every push to main, so nothing here has to be
+      # committed back (the freshness guard that used to sit below went with
+      # the committed wasm/ copy, 2026-08-23).
       - uses: actions/upload-artifact@v5
         with:
           name: POM2-web-wasm
           path: dist/*-web-wasm.zip
           if-no-files-found: error
-
-      # FRESHNESS GUARD — the online demo IS the committed wasm/ folder (Pages
-      # serves it from the branch). This job rebuilds the bundle for the
-      # package, but it is not what deploys; a forgotten rebuild would leave a
-      # stale demo online in silence. Compares SOURCE fingerprints, not bytes:
-      # emcc is not reproducible across emsdk versions.
-      - name: Is the committed wasm/ bundle up to date?
-        run: tools/wasm_stamp.sh --check
 
   # ------------------------------------------------ attach to the Release ----
   publish:

@@ -386,19 +386,6 @@ jobs:
           echo "WASM artifacts OK:"
           ls -lh wasm/POM2.wasm wasm/POM2.js wasm/index.html
 
-      # The online demo IS the committed wasm/ folder — GitHub Pages serves it
-      # straight from the branch — so it is published content, not a build
-      # artifact that can lag harmlessly. This job rebuilds the bundle to prove
-      # the sources still compile for the browser, but it does NOT deploy; a
-      # forgotten rebuild would leave a stale demo online with nothing failing.
-      # Compares SOURCE fingerprints rather than bytes: emcc output is not
-      # reproducible across emsdk versions, so a byte diff would fail forever.
-      #
-      # Uploaded BEFORE the staleness check below, deliberately: that check's
-      # own remedy is "take the freshly built bundle out of the run", which was
-      # impossible while nothing was published — the instruction pointed at
-      # files no one could reach. Ordering it first means the bundle is there
-      # precisely on the run where the check fails.
       - name: Upload the WASM bundle
         uses: actions/upload-artifact@v5
         with:
@@ -411,8 +398,57 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      # If this trips: the build above already produced a fresh bundle, so take
-      # the POM2-wasm-bundle artifact from this run (or rebuild locally), then
-      # `tools/wasm_stamp.sh --write` and commit wasm/.
-      - name: Is the committed wasm/ bundle up to date?
-        run: tools/wasm_stamp.sh --check
+      # The online demo is deployed FROM THIS JOB (the `pages` job below takes
+      # the artifact staged here), so it is always the bundle built from the
+      # commit it claims to be — there is no committed copy to fall behind.
+      # Until 2026-08-23 Pages served `wasm/` straight from the branch, and a
+      # source-fingerprint guard (`tools/wasm_stamp.sh`) turned every push
+      # that touched src/ red until someone re-committed 38 MB of binaries:
+      # POM2.wasm had 39 commits and the packfile 383 MiB by the time that
+      # stopped. Deploying from the build is what removes both the guard and
+      # the growth.
+      #
+      # Staged under `wasm/` so the URL stays https://…/pom2/wasm/ (README
+      # links it in five places); the root index.html only redirects there.
+      - name: Stage the Pages site
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          mkdir -p _site/wasm
+          cp wasm/index.html wasm/POM2.js wasm/POM2.wasm wasm/POM2.data _site/wasm/
+          cat > _site/index.html <<'EOF'
+          <!doctype html><meta charset="utf-8">
+          <meta http-equiv="refresh" content="0; url=wasm/">
+          <title>POM2</title><a href="wasm/">POM2 in your browser</a>
+          EOF
+          touch _site/.nojekyll
+          du -sh _site
+
+      - name: Upload the Pages artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  # Deploys what the `wasm` job just built. Separate job on purpose: it is
+  # the only one that needs `pages: write` + `id-token: write`, and keeping
+  # those off the build jobs is the point of a least-privilege split. Its
+  # own concurrency group (not the CI one) so a superseded run's deploy is
+  # cancelled without killing the build that replaced it mid-flight.
+  pages:
+    name: Deploy the browser demo to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: wasm
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}wasm/
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

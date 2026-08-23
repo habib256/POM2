@@ -85,8 +85,9 @@ emcmake cmake -S . -B "$BUILD_DIR" \
 # a builder known to have more headroom.
 cmake --build "$BUILD_DIR" --parallel "${POM2_JOBS:-2}"
 
-# Keep accidental --with-data builds from overwriting the tracked wasm/POM2.data
-# with a file GitHub will reject.
+# Refuse a --with-data bundle above GitHub's file limit: wasm/ is no longer
+# tracked (CI deploys it to Pages), but a bundle that size is a mistake
+# everywhere it could land — the release zip, the Pages artifact, a commit.
 DATA_SRC="$BUILD_DIR/POM2.data"
 if [ -f "$DATA_SRC" ]; then
     DATA_SIZE_BYTES=$(wc -c < "$DATA_SRC" | tr -d '[:space:]')
@@ -95,7 +96,7 @@ if [ -f "$DATA_SRC" ]; then
         cat >&2 <<EOF
 error: $DATA_SRC is ${DATA_SIZE_MIB} MiB, above GitHub's 100 MiB file limit.
 
-Refusing to copy it into $WASM_DIR/ so it is not committed accidentally.
+Refusing to copy it into $WASM_DIR/.
 For a local-only large bundle, rerun with:
   POM2_WASM_ALLOW_LARGE_DATA=1 ./build_wasm.sh --with-data
 EOF
