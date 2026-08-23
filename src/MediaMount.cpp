@@ -10,6 +10,7 @@
 #include "ProDOSBlockCard.h"
 #include "SmartPortUnit.h"
 
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -23,8 +24,10 @@ bool mountDiskII(EmulationController& ctrl, DiskIICard& card, int drive,
 
     // Phase 1 — no lock. The read and the nibble decode happen here, so the
     // CPU worker keeps running and the UI keeps painting through all of it.
-    DiskImage prepared;
-    if (!DiskIICard::prepareDisk(path, card.isWriteBackEnabled(), prepared, error))
+    // Heap, not stack: a DiskImage is ~242 KB and prepareDisk stacks two more
+    // below this frame — see the note in DiskIICard::prepareDisk.
+    auto prepared = std::make_unique<DiskImage>();
+    if (!DiskIICard::prepareDisk(path, card.isWriteBackEnabled(), *prepared, error))
         return false;
 
     // Phase 2 — the lock, held only for the swap. Same mutex the CPU worker
@@ -33,7 +36,7 @@ bool mountDiskII(EmulationController& ctrl, DiskIICard& card, int drive,
     bool ok = false;
     {
         std::lock_guard<std::mutex> lk(ctrl.stateMutex());
-        ok = card.installDisk(drive, std::move(prepared));
+        ok = card.installDisk(drive, std::move(*prepared));
         if (ok) {
             if (seekTrack0) card.seekTrack0();
         } else {

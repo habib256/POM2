@@ -5,6 +5,43 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — The macOS SIGBUS was a stack overflow, and a real one
+
+The first macOS CI run ever to execute the suite came back 191/192, with
+`disk_path_snapshot` killed by SIGBUS on arm64 and green on Linux at every
+parallelism and under every sanitizer. Filed as a platform finding with the
+first things to try on a Mac. On a Mac it took one run: deterministic, 10/10,
+and `lldb` put the fault in `___chkstk_darwin` — the stack-probe helper — with
+`DiskImage::loadFile` as the caller. Not the dangling reference the test's own
+comments invited everyone to suspect; the reference in case 1 is sound (it
+aliases an in-place `images[2]` member whose identity survives insert/eject).
+It was the **writer thread's stack**.
+
+`sizeof(DiskImage)` is **247 480 bytes**: the 35 track buffers live in the
+object (`std::array<std::array<uint8_t, 6656>, 35>`), which is what keeps the
+LSS hot path free of an indirection. The insert chain stacked one temporary
+per frame — `insertDisk`'s `replacement`, `prepareDisk`'s `staged`,
+`loadFile`'s own `replacement` — about 725 KB of frames. A Linux `std::thread`
+gets 8 MB of stack and never noticed. A macOS one gets **512 KB**. The test's
+writer is a `std::thread`; so is the AI control server's HTTP thread, which
+reaches `insertDisk` by exactly that path on every `/disk` insert. The test
+did not have a platform bug. The app did, and a `/disk` request on a Mac
+could kill it.
+
+Fixed by heap-allocating the six temporaries (`std::make_unique<DiskImage>`
+in `DiskImage::loadFile` ×2, `DiskIICard::prepareDisk` / `insertDisk` /
+`installDisk`, and `mountDiskII`). The object's layout is untouched — the
+alternative, moving `tracks` to the heap, would have made every move O(1)
+instead of a 233 KB memcpy, but it touches the hottest disk path and was not
+the bug. A NOTE on `class DiskImage` now states the constraint.
+
+Pinned by `diskii_insert_thread_stack`, which runs the insert chain on a
+pthread whose stack is *explicitly* 512 KB, so the regression fails on Linux
+CI too rather than only where the platform default happens to be small.
+Verified falsifiable: exit 138 with the source fix stashed, green with it.
+`disk_path_snapshot` itself is unchanged and 20/20 green on the Mac. The
+macOS CI job now runs `ctest`, in the same commit, as its comment promised.
+
 ## 2026-08-23 — A panel is described once now, not six times
 
 The UI's god-object problem was never the line count. It was that every panel

@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -595,13 +596,17 @@ bool DiskImage::loadSectorImageFromBuffer(const uint8_t* data, std::size_t len,
 bool DiskImage::loadFile(const std::string& imgPath)
 {
     if (!saveDirty()) return false;
-    DiskImage replacement;
-    replacement.writeBackEnabled = writeBackEnabled;
-    if (!replacement.loadFileUnchecked(imgPath)) {
-        lastError = replacement.lastError;
+    // Heap, not stack: sizeof(DiskImage) is ~242 KB (the in-object track
+    // buffers), and this runs three-deep on an insert (insertDisk →
+    // prepareDisk → here). macOS gives a std::thread 512 KB of stack, so
+    // three stacked temporaries SIGBUS the AI-server and test threads there.
+    auto replacement = std::make_unique<DiskImage>();
+    replacement->writeBackEnabled = writeBackEnabled;
+    if (!replacement->loadFileUnchecked(imgPath)) {
+        lastError = replacement->lastError;
         return false;
     }
-    *this = std::move(replacement);
+    *this = std::move(*replacement);
     return true;
 }
 
@@ -752,13 +757,14 @@ bool DiskImage::loadFileUnchecked(const std::string& imgPath)
 bool DiskImage::loadFile(const std::string& imgPath, SectorOrder order)
 {
     if (!saveDirty()) return false;
-    DiskImage replacement;
-    replacement.writeBackEnabled = writeBackEnabled;
-    if (!replacement.loadFileUnchecked(imgPath, order)) {
-        lastError = replacement.lastError;
+    // Heap for the same stack-size reason as the overload above.
+    auto replacement = std::make_unique<DiskImage>();
+    replacement->writeBackEnabled = writeBackEnabled;
+    if (!replacement->loadFileUnchecked(imgPath, order)) {
+        lastError = replacement->lastError;
         return false;
     }
-    *this = std::move(replacement);
+    *this = std::move(*replacement);
     return true;
 }
 

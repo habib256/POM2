@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <memory>
 
 namespace {
 // ~32 CPU cycles per nibble = 4 µs bit cells × 8 bits at 1.0227 MHz. Real
@@ -335,15 +336,19 @@ DiskIICard::~DiskIICard()
 bool DiskIICard::prepareDisk(const std::string& path, bool writeBackEnabled,
                              DiskImage& out, std::string& error)
 {
-    DiskImage staged;
-    staged.setWriteBackEnabled(writeBackEnabled);
-    if (!staged.loadFile(path)) {
-        error = staged.getLastError();
+    // Heap, not stack: a DiskImage is ~242 KB and this sits mid-chain on the
+    // insert path (insertDisk → here → loadFile, one temporary per frame) —
+    // three on a 512 KB macOS std::thread stack is a SIGBUS. The AI control
+    // server's HTTP thread reaches insertDisk directly.
+    auto staged = std::make_unique<DiskImage>();
+    staged->setWriteBackEnabled(writeBackEnabled);
+    if (!staged->loadFile(path)) {
+        error = staged->getLastError();
         pom2::log().warn("Disk II", "Insert failed: " + error);
         return false;
     }
     error.clear();
-    out = std::move(staged);
+    out = std::move(*staged);
     return true;
 }
 
@@ -362,13 +367,14 @@ bool DiskIICard::insertDisk(int drive, const std::string& path)
     commitInFlightWrite();
     if (!flushOutgoingForSwap(drive)) return false;
 
-    DiskImage replacement;
+    // Heap for the same stack-size reason as prepareDisk below.
+    auto replacement = std::make_unique<DiskImage>();
     std::string error;
-    if (!prepareDisk(path, writeBackEnabled, replacement, error)) {
+    if (!prepareDisk(path, writeBackEnabled, *replacement, error)) {
         mediaErrors[drive] = error;
         return false;
     }
-    return installPreparedLocked(drive, std::move(replacement));
+    return installPreparedLocked(drive, std::move(*replacement));
 }
 
 // Flush a drive's medium before it is dropped. Returns false — and records the
@@ -416,13 +422,14 @@ bool DiskIICard::installDisk(int drive, DiskImage&& prepared)
 
     if (sameFileStillDirty) {
         const std::string path = prepared.getPath();
-        DiskImage reread;
+        // Heap for the same stack-size reason as prepareDisk above.
+        auto reread = std::make_unique<DiskImage>();
         std::string error;
-        if (!prepareDisk(path, writeBackEnabled, reread, error)) {
+        if (!prepareDisk(path, writeBackEnabled, *reread, error)) {
             mediaErrors[drive] = error;
             return false;
         }
-        prepared = std::move(reread);
+        prepared = std::move(*reread);
     }
     return installPreparedLocked(drive, std::move(prepared));
 }
