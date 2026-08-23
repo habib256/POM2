@@ -244,15 +244,17 @@ jobs:
           - san: thread
             name: tsan
             # The threading contract: the CPU worker's park/resume protocol,
-            # the rewind transport across it, the audio source teardown, the
-            # HTTP server's handler thread, the SP link worker and the print
-            # spooler. These are the tests that have more than one thread.
+            # the rewind transport across it, the UI-thread↔worker input
+            # contention (MainWindow's paddle/keyboard access disciplines under
+            # a live worker), the audio source teardown, the HTTP server's
+            # handler thread, the SP link worker and the print spooler. These
+            # are the tests that have more than one thread.
             #
-            # `targets` lists their executables so this leg builds EIGHT
+            # `targets` lists their executables so this leg builds NINE
             # binaries instead of two hundred. The first run of this job spent
             # 50 of its 51 minutes compiling test binaries it then never ran.
-            filter: '(rewind_transport|audio_source_teardown|ai_control_server_smoke|sp_over_slip_link|printer_history|thread_guard|fujinet_net_device|child_process)'
-            targets: '--target test_rewind_transport test_audio_source_teardown test_ai_control_server test_sp_over_slip_link test_printer_history test_thread_guard test_fujinet_net_device test_child_process'
+            filter: '(rewind_transport|ui_worker_contention|audio_source_teardown|ai_control_server_smoke|sp_over_slip_link|printer_history|thread_guard|fujinet_net_device|child_process)'
+            targets: '--target test_rewind_transport test_ui_worker_contention test_audio_source_teardown test_ai_control_server test_sp_over_slip_link test_printer_history test_thread_guard test_fujinet_net_device test_child_process'
     steps:
       - uses: actions/checkout@v4
 

@@ -557,6 +557,38 @@ endif()
 add_test(NAME rewind_transport COMMAND test_rewind_transport)
 set_tests_properties(rewind_transport PROPERTIES TIMEOUT 20)
 
+# ─── UI-thread ↔ CPU-worker contention (targeted TSan pass) ───────────────
+# Drives the real worker while hammering it with MainWindow's exact input
+# access disciplines (paddles under lockState, keyboard via kbMutex, Apple
+# keys via atomics). Under -fsanitize=thread it flags any access that escapes
+# those disciplines; otherwise it is a deadlock/liveness smoke test. Added to
+# the nightly TSan matrix (ci.yml).
+add_executable(test_ui_worker_contention
+    ui_worker_contention_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_ui_worker_contention PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_ui_worker_contention PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_ui_worker_contention PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_ui_worker_contention PRIVATE winmm)
+endif()
+add_test(NAME ui_worker_contention COMMAND test_ui_worker_contention)
+set_tests_properties(ui_worker_contention PROPERTIES TIMEOUT 30 RUN_SERIAL TRUE)
+
 
 # ─── Rewind slot-card state (rewind Phase 4) ──────────────────────────────
 # Pins DiskIICard snapshot serialization + the MachineSnapshot SLOTn wiring:
