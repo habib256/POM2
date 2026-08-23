@@ -201,6 +201,8 @@ set(SOURCES
     src/MainWindow_Panels.cpp
     src/MainWindow_AudioPanels.cpp
     src/MainWindow_DevicePanels.cpp
+    src/MainWindow_SettingsPanels.cpp
+    src/MainWindow_MiscPanels.cpp
     src/MainWindow_Slots.cpp
     src/PanelRegistry.cpp
     src/MC6821.cpp
