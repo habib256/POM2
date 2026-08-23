@@ -7,7 +7,10 @@
 //   2. the ring evicts oldest-first once over its frame cap;
 //   3. restoreToCycle() lands on the newest frame at-or-before a target
 //      cycle (and clamps to the oldest when the target predates the ring);
-//   4. a disabled buffer captures nothing (zero overhead).
+//   4. a disabled buffer captures nothing (zero overhead);
+//   5. a capture stamped at-or-before the tail (the machine jumped back in
+//      time) drops the abandoned future, so the ring stays strictly
+//      increasing and the seek helpers keep meaning what they say.
 //
 // This is the gate for any change to RewindBuffer or the MachineSnapshot
 // capture/restore sequence it rides on.
@@ -250,6 +253,62 @@ int main()
         assert(rb.empty() && rb.bytes() == 0);
     }
 
-    std::printf("Rewind ring buffer: OK (round-trip + eviction + seek)\n");
+    // ── (5) A jump back in time drops the abandoned future ────────────────
+    // The ring's stamps must be STRICTLY increasing: `indexForCycle` breaks
+    // out at the first frame past its target, so a single out-of-order frame
+    // makes every seek beyond it land somewhere else, and `newest - oldest`
+    // (the panel's "span" readout) stops being a duration at all.
+    //
+    // The machine really does jump back: a scrub resumed through anything but
+    // `rewindEndAndResume` — the toolbar Play button, Machine > Run, the
+    // `machine.run` palette command, the kiosk menu — leaves the old future in
+    // the deque and records the new timeline straight on top of it.
+    {
+        pom2::RewindBuffer rb;
+        rb.setEnabled(true);
+        rb.setKeyframeInterval(4);          // deltas in the survivors too
+        for (uint8_t i = 0; i < 12; ++i) {
+            setState(cpu, mem, static_cast<uint8_t>(60 + i),
+                     static_cast<uint64_t>(60 + i) * 1000);
+            rb.capture(cpu, mem);
+        }
+        assert(rb.size() == 12);
+
+        // Scrub back to frame 3, then resume WITHOUT truncateAfter.
+        assert(rb.restore(3, cpu, mem));
+        checkState(cpu, mem, 63, 63'000);
+        setState(cpu, mem, 99, 63'500);     // one resumed frame's worth
+        rb.capture(cpu, mem);
+
+        assert(rb.size() == 5);             // frames 0..3 + the resumed one
+        assert(rb.newestCycle() == 63'500);
+        for (size_t i = 1; i < rb.size(); ++i)
+            assert(rb.infoAt(i).cycle > rb.infoAt(i - 1).cycle);
+        // The seek helper lands where it claims.
+        assert(rb.indexForCycle(63'400) == 3);
+        assert(rb.indexForCycle(70'000) == 4);
+        // Survivors still reconstruct — truncateAfter rebased the delta base.
+        scramble(cpu, mem);
+        assert(rb.restore(1, cpu, mem));
+        checkState(cpu, mem, 61, 61'000);
+        scramble(cpu, mem);
+        assert(rb.restore(4, cpu, mem));
+        checkState(cpu, mem, 99, 63'500);
+
+        // A jump back to before the OLDEST retained frame abandons the whole
+        // ring — and the restart must be a keyframe, not a delta against a
+        // base blob belonging to a timeline that no longer exists.
+        setState(cpu, mem, 7, 500);
+        rb.capture(cpu, mem);
+        assert(rb.size() == 1);
+        assert(rb.infoAt(0).keyframe);
+        assert(rb.newestCycle() == 500);
+        scramble(cpu, mem);
+        assert(rb.restore(0, cpu, mem));
+        checkState(cpu, mem, 7, 500);
+    }
+
+    std::printf("Rewind ring buffer: OK (round-trip + eviction + seek + "
+                "abandoned-future drop)\n");
     return 0;
 }

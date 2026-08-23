@@ -227,6 +227,17 @@ public:
     void   rewindEndAndResume(size_t index);
     /// Leave scrub but stay paused at the current frame (keeps the ring).
     void   rewindEndPaused();
+    /// True while a scrub owns the machine — the worker is parked at a
+    /// historical frame and the live state is that frame, not the newest.
+    ///
+    /// The controller owns this, not the panel: `setMode(Running)` from ANY
+    /// path (toolbar Play, Machine > Run, the `machine.run` palette command,
+    /// the kiosk menu) ends the scrub, and a UI that kept its own flag would
+    /// go on believing it was still scrubbing — its next drag would seek a
+    /// machine that is running, so the slider visibly does nothing.
+    bool   rewindScrubbing() const {
+        return scrubIndex_.load() != pom2::RewindBuffer::kNoFrame;
+    }
     /// True once the worker has parked at the Stopped idle wait (test hook).
     bool   rewindIsParked() const { return workerParked_.load(); }
 
@@ -306,6 +317,9 @@ private:
     // branch re-checks `mode` between 4096-cycle chunks, so the worker
     // parks within ~one chunk of a Stopped request.
     std::atomic<bool> workerParked_{false};
+    // Frame index the scrub currently sits on, kNoFrame when not scrubbing.
+    // Written from the UI thread (the rewind transport), read anywhere.
+    std::atomic<size_t> scrubIndex_{pom2::RewindBuffer::kNoFrame};
 
     std::mutex              stateMtx;
     std::condition_variable wakeCv;

@@ -79,19 +79,26 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
   Deliberate and bounded, so listed for completeness rather than as a defect:
   the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms, `W5100Device.h`).
 
-- 🔵 **Rewind: resuming from anywhere but "resume here" leaves the ring
-  non-monotonic — found 2026-08-22.** `RewindBuffer::indexForCycle` early-breaks
-  on the first frame past the target, which is only correct while stamps
-  increase. Only `rewindEndAndResume` truncates the abandoned future and clears
-  `Rewind_ImGui::scrubbing_`; the toolbar Play button, Machine ▸ Run, the
-  `machine.run` palette command and the kiosk menu all call `setMode(Running)`
-  directly. Scrub back, then press toolbar Play: new frames are appended with
-  stamps *earlier* than the tail, so the span readout lies and seeking lands
-  far from the requested cycle — and because `scrubbing_` stays true, the next
-  drag skips the `setMode(Stopped)` + `waitUntilParked()` and the slider
-  visibly does nothing. `AiControlServer` and `CliRunner` already call
-  `rewind().clear()` after a snapshot load for exactly this reason; the GUI
-  resume paths need the same guard.
+- ✅ **Rewind: resuming from anywhere but "resume here" left the ring
+  non-monotonic — found 2026-08-22, DONE 2026-08-23.** `indexForCycle`
+  early-breaks on the first frame past its target, which is only a correct
+  search while stamps increase — assumed, never enforced, and the machine broke
+  it routinely: only `rewindEndAndResume` truncated the abandoned future and
+  cleared `Rewind_ImGui::scrubbing_`, while the toolbar Play button, Machine ▸
+  Run, the `machine.run` palette command and the kiosk menu all called
+  `setMode(Running)` directly. Fixed at the two layers that own the two halves
+  rather than at the four call sites: `RewindBuffer::capture` now drops every
+  frame stamped at-or-after the incoming one (one compare on the hot path; a
+  jump back past the oldest frame clears the ring so the restart is a keyframe,
+  not a delta against a dead timeline), and the **controller owns the scrub**
+  (`scrubIndex_` / `rewindScrubbing()`), ended by `setMode(m != Stopped)`
+  whoever asks, with the panel's flag reduced to a view of it. The truncation
+  is deliberately *not* in `setMode`: it is reached from callers already
+  holding `stateMutex` (the Disk II Library boot buttons), which is
+  non-recursive — deferring the drop to the worker's next capture keeps every
+  resume path lock-free. Pinned by `rewind_roundtrip` case 5 +
+  `rewind_transport` case 6, each half verified falsifiable on its own.
+  → [DEV](DEV.md#rewind--time-travel)
 
 - 🟡 **Watchpoints are missing from the debugger, and the reason is a
   measurement — 2026-08-22.** Breakpoints, step, step-over and run-to-cursor

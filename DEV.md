@@ -2300,12 +2300,46 @@ instead of popping. `rewind_transport` pins all of this against a real
 worker thread *and* the `tickFrame` path. The ring is cleared on
 `coldBoot` (RAM wipe ⇒ a different machine).
 
+**The ring's stamps are strictly increasing, and that is enforced, not
+assumed** (2026-08-23). `indexForCycle` walks the deque and breaks at the
+first frame past its target, so one out-of-order frame silently breaks every
+seek beyond it and turns `newest - oldest` (the panel's "span" readout) into
+a meaningless number. The machine *does* jump back: `rewindEndAndResume` is
+only one of the ways it resumes — the toolbar Play button, Machine ▸ Run, the
+`machine.run` palette command and the kiosk menu all call
+`setMode(Mode::Running)` directly, leaving the abandoned future in the deque
+for the next capture to append *behind*. Two guards, at the two layers that
+own the two halves:
+
+* `RewindBuffer::capture` drops every frame stamped at-or-after the incoming
+  one before appending (`dropAbandonedFuture`, one compare on the hot path;
+  a jump back past the oldest retained frame clears the ring so the restart
+  is a keyframe, never a delta against a dead timeline). It sits in the one
+  funnel every capture goes through, so the invariant also covers a snapshot
+  load that forgot its `rewind().clear()` — and callers that don't exist yet.
+* `EmulationController` owns the scrub itself (`scrubIndex_`, exposed as
+  `rewindScrubbing()`), and `setMode(m != Stopped)` ends it. The truncation is
+  deliberately *not* done there: `setMode` is reached from callers that
+  already hold `stateMutex` (the Disk II Library's boot buttons), and
+  `stateMutex` is non-recursive. Deferring the drop to the worker's next
+  capture keeps that path lock-free.
+
+Pinned by `rewind_roundtrip` case 5 (unit: a jump back drops the future,
+survivors still reconstruct, a full abandon restarts on a keyframe) and
+`rewind_transport` case 6 (a bare `setMode(Running)` ends the scrub and the
+ring shrinks then stays monotonic). Both verified falsifiable.
+
 **UI** (`Rewind_ImGui`): Devices ▸ "Rewind". Record toggle, a timeline
 slider, |< / << hold / <| / |> / resume transport, history-length
 slider, and `F6` = hold-to-rewind-live from anywhere (polled in
 `MainWindow::render`, survives ImGui capture, no-op when recording is
-off). Cursor + scrub flag are the panel's only state; the ring and
-machine live in the controller.
+off). The cursor is the panel's own state; the scrub flag is a *view* of
+`EmulationController::rewindScrubbing()`, resynced (`syncScrub`) on entry to
+`render` / `beginScrubIfNeeded` / `releaseHold` — a panel that kept its own
+answer went on believing it was scrubbing after a toolbar Play, so its next
+drag seeked a running machine (the slider visibly did nothing) and a released
+`F6` hold resumed from a stale cursor. The ring and machine live in the
+controller.
 
 **Slot/disk state** (`rewind_slot_state`): `SlotPeripheral` gained
 `append/loadSnapshotState`; `DiskIICard` serializes its mechanical +
