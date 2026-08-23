@@ -5,6 +5,32 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — A TSan pass for the contention the GUI actually creates
+
+The nightly TSan matrix covered the worker's park/resume, rewind, the audio
+teardown and the helper-process threads — every test that happens to have two
+threads — but not the one contention the GUI creates on every single frame:
+the UI thread reading and writing emulated input state while the CPU worker
+runs. MainWindow can't be instantiated headless (GLFW/GL), so the race the
+whole "TSan the GUI half" item worried about had no test at all.
+
+`ui_worker_contention` is that test without the window. It drives
+EmulationController's real worker and, from a second thread, hammers it with
+MainWindow's *exact* access disciplines — paddles and buttons under
+`lockState()` (the joystick block's shape), `queueKey` with no lock (Memory's
+`kbMutex` owns it), Open/Solid-Apple through the atomic flags — while the
+worker executes a loop that reads `$C000`/`$C061`/`$C064`, so it touches the
+keyboard mirror, the Apple-key atomics and the paddle arrays at the same time.
+Under `-fsanitize=thread` this flags any access that escapes those
+disciplines; it came back clean, which is the result — the disciplines hold
+under real contention, and now a change that reads a paddle off the lock or
+writes the latch without `kbMutex` turns the nightly TSan leg red instead of
+shipping. Added to the matrix's target list (nine binaries, not eight).
+
+What this does NOT cover, and the item stays open for: `demodMutex`, slot
+re-plug under load, and MainWindow itself (still unreachable under TSan
+headless).
+
 ## 2026-08-23 — The W5100 "lost datagram" was a torn 16-bit read
 
 The one finding the 2026-08-22 sweep left open as a possible real bug — a
