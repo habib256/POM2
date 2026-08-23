@@ -129,6 +129,53 @@ std::string Memory::busStateSummary() const
 void Memory::markRomRegion(uint16_t lo, uint16_t hi)
 {
     for (int a = lo; a <= hi; ++a) writable[a] = false;
+    // A watched address inside the range is already forced non-writable, so
+    // the loop above changed nothing for it — but its SHADOW still claims the
+    // old permission, and the shadow is what memWriteSlow honours. Update it,
+    // or a ROM region marked while a watchpoint is armed (a profile switch
+    // reloading ROMs) would leave that one address writable.
+    if (writeWatch_.empty()) return;
+    for (int a = lo; a <= hi; ++a)
+        writeWatch_[a] = static_cast<uint8_t>(writeWatch_[a] & ~kWatchWasWritable);
+}
+
+void Memory::setWriteWatch(uint16_t addr, bool on)
+{
+    if (on) {
+        if (writeWatch_.empty()) writeWatch_.assign(0x10000, 0);
+        if (writeWatch_[addr] & kWatchArmed) return;      // keep the count honest
+        writeWatch_[addr] = static_cast<uint8_t>(
+            kWatchArmed | (writable[addr] ? kWatchWasWritable : 0));
+        // THE diversion: the fast path's own test now fails for this address,
+        // which is the whole trick. Below $C000 only — above it every write
+        // already reaches memWriteSlow.
+        if (addr < 0xC000) writable[addr] = false;
+        ++writeWatchCount_;
+        return;
+    }
+    if (writeWatch_.empty() || !(writeWatch_[addr] & kWatchArmed)) return;
+    if (addr < 0xC000)
+        writable[addr] = (writeWatch_[addr] & kWatchWasWritable) != 0;
+    writeWatch_[addr] = 0;
+    if (--writeWatchCount_ == 0) {
+        // Un-armed means un-allocated, same rule as Debugger's bitmaps: the
+        // table exists only while somebody is debugging.
+        writeWatch_.clear();
+        writeWatch_.shrink_to_fit();
+    }
+}
+
+void Memory::clearWriteWatches()
+{
+    if (writeWatch_.empty()) return;
+    for (std::size_t a = 0; a < writeWatch_.size(); ++a) {
+        if (!(writeWatch_[a] & kWatchArmed)) continue;
+        if (a < 0xC000)
+            writable[a] = (writeWatch_[a] & kWatchWasWritable) != 0;
+    }
+    writeWatch_.clear();
+    writeWatch_.shrink_to_fit();
+    writeWatchCount_ = 0;
 }
 
 bool Memory::loadRomBytes(const uint8_t* src, size_t length, uint16_t addr)
@@ -1078,7 +1125,11 @@ void Memory::restoreMainRam(const uint8_t* data, size_t n)
 {
     const size_t lim = (n < mem.size()) ? n : mem.size();
     for (size_t i = 0; i < lim; ++i) {
-        if (writable[i]) mem[i] = data[i];   // skip ROM / I-O regions
+        // ramWritable(), not writable[]: an address diverted by a write
+        // watchpoint reads as non-writable there, and a snapshot or rewind
+        // restore would silently skip that one byte for as long as the watch
+        // stayed armed.
+        if (ramWritable(static_cast<uint16_t>(i))) mem[i] = data[i];
     }
 }
 
@@ -2353,9 +2404,17 @@ void Memory::memWriteSlow(uint16_t addr, uint8_t value)
     // Klaus harness: flat 64 KB RAM, no side effects.
     if (testMode) { mem[addr] = value; return; }
 
+    // Write watchpoints (Memory.h § Write watchpoints). Armed addresses below
+    // $C000 are diverted here by having their `writable[]` byte cleared;
+    // everything from $C000 up already comes through here, so one test covers
+    // RAM, soft switches, slot I/O and the language card alike. Costs an empty
+    // -vector test when nobody is debugging, on the SLOW path only.
+    if (!writeWatch_.empty() && (writeWatch_[addr] & kWatchArmed) && watchSink_)
+        watchSink_->noteAccess(addr, value, /*write=*/true);
+
     // Fast path: writable RAM and Language Card overlay for $D000-$FFFF.
     if (addr < 0xC000) {
-        if (!writable[addr]) return;
+        if (!ramWritable(addr)) return;
         // Diagnostic: log every write to $0400 (top-left text-screen cell)
         // while the IIe reboot trace is armed. The user reports an 'M'
         // landing there after Choplifter's title screen; we want to see

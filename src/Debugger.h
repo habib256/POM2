@@ -40,13 +40,14 @@
 #define POM2_DEBUGGER_H
 
 #include "M6502.h"
+#include "MemoryWatchSink.h"
 
 #include <cstdint>
 #include <vector>
 
 namespace pom2 {
 
-class Debugger : public M6502DebugHook
+class Debugger : public M6502DebugHook, public MemoryWatchSink
 {
 public:
     /// Why the machine stopped. `None` means it did not.
@@ -110,8 +111,18 @@ public:
     /// Called by Memory for an access to a watched address. Records the hit;
     /// the CPU halts at the END of the current instruction (the access is
     /// already in flight and cannot be un-done), so the reported PC is the
-    /// instruction that performed it.
-    void noteAccess(uint16_t addr, uint8_t value, bool write);
+    /// instruction that performed it — `onInstruction` returns the stop at
+    /// the next boundary, where the machine's live PC is the instruction
+    /// AFTER the write. Two different, both useful, facts: `Hit::pc` is who
+    /// wrote, the CPU's PC is where you resume.
+    ///
+    /// Only WRITE watchpoints reach here today. `memWrite`'s fast path has a
+    /// per-address `writable[]` byte a watch can be hidden in for free
+    /// (Memory.h § Write watchpoints); `memRead`'s has no equivalent table,
+    /// and a branch there measured +13-16 % (PERFORMANCE § 8.2), so a Read
+    /// watch is accepted by the API and never fires. The UI does not offer
+    /// one.
+    void noteAccess(uint16_t addr, uint8_t value, bool write) override;
 
     /// True once something has asked the machine to stop and the stop has not
     /// been consumed yet. `EmulationController` drains this at its chunk
@@ -148,6 +159,11 @@ private:
 
     uint16_t resumeSkip_      = 0;
     bool     resumeSkipArmed_ = false;
+
+    /// PC of the instruction currently executing, latched by `onInstruction`.
+    /// `noteAccess` fires from inside that instruction, where the CPU's own
+    /// programCounter has already walked past the opcode and operands.
+    uint16_t curPc_ = 0;
 
     Hit hit_{};
 };

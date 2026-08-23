@@ -17,6 +17,12 @@
 //   4. Transients are one-shot. Step-over installs a breakpoint at the return
 //      address; leaving it behind would turn every step-over into a permanent
 //      breakpoint the user never asked for.
+//   5. A write watchpoint stops the machine, names the instruction that wrote,
+//      and the write still LANDS. Watchpoints are implemented by diverting the
+//      address off memWrite's fast path (clearing its `writable[]` byte), so
+//      the danger specific to this design is that arming a watch silently
+//      write-protects the address — which would corrupt the machine being
+//      debugged rather than merely failing to stop it.
 
 #include "Debugger.h"
 #include "M6502.h"
@@ -46,6 +52,44 @@ void loadProgram(Memory& mem)
 {
     for (std::size_t i = 0; i < sizeof(kProgram); ++i)
         mem.writeRamUnchecked(static_cast<uint16_t>(kStart + i), kProgram[i]);
+}
+
+// A program that STORES, at $0310:
+//   $0310  LDA #$5A     A9 5A
+//   $0312  STA $0350    8D 50 03
+//   $0315  LDA #$77     A9 77
+//   $0317  JMP $0317    4C 17 03
+constexpr uint16_t kStoreStart = 0x0310;
+constexpr uint16_t kStorePc    = 0x0312;   // the STA itself
+constexpr uint16_t kStoreNext  = 0x0315;   // where the machine resumes
+constexpr uint16_t kStoreAddr  = 0x0350;
+const uint8_t kStoreProgram[] = {
+    0xA9, 0x5A,
+    0x8D, 0x50, 0x03,
+    0xA9, 0x77,
+    0x4C, 0x17, 0x03,
+};
+
+void loadStoreProgram(Memory& mem)
+{
+    for (std::size_t i = 0; i < sizeof(kStoreProgram); ++i)
+        mem.writeRamUnchecked(static_cast<uint16_t>(kStoreStart + i), kStoreProgram[i]);
+}
+
+// Arm a write watchpoint the way EmulationController::syncDebugHook() does:
+// the Debugger owns the user-facing set, Memory owns the diversion. A test
+// that armed only one of the two would pass while the shipped path was broken.
+void armWriteWatch(Memory& mem, pom2::Debugger& dbg, uint16_t addr)
+{
+    dbg.setWatchpoint(addr, pom2::Debugger::Write);
+    mem.setWatchSink(&dbg);
+    mem.setWriteWatch(addr, true);
+}
+
+void disarmWriteWatch(Memory& mem, pom2::Debugger& dbg, uint16_t addr)
+{
+    dbg.setWatchpoint(addr, pom2::Debugger::None);
+    mem.setWriteWatch(addr, false);
 }
 
 // ── 1. Bookkeeping ───────────────────────────────────────────────────────
@@ -267,6 +311,121 @@ void testTransientDoesNotEatARealBreakpoint()
     std::printf("[ OK ] a transient does not consume a real breakpoint\n");
 }
 
+// ── 7. THE watchpoint case ───────────────────────────────────────────────
+void testWriteWatchStopsAndTheWriteLands()
+{
+    Memory mem;
+    M6502  cpu(&mem);
+    pom2::Debugger dbg;
+    loadStoreProgram(mem);
+
+    armWriteWatch(mem, dbg, kStoreAddr);
+    assert(dbg.armed() && dbg.watchArmed());
+    assert(mem.hasWriteWatch(kStoreAddr));
+    assert(mem.writeWatchCount() == 1);
+
+    cpu.setDebugHook(&dbg);
+    cpu.setProgramCounter(kStoreStart);
+    const int spent = cpu.run(1000);
+
+    assert(dbg.stopRequested() && "the write watchpoint did not fire");
+    const pom2::Debugger::Hit hit = dbg.lastHit();
+    assert(hit.reason == pom2::Debugger::Reason::WatchWrite);
+    assert(hit.addr  == kStoreAddr);
+    assert(hit.value == 0x5A);
+    // The instruction that WROTE, not the one the machine is now on. The CPU's
+    // programCounter has already walked past the opcode and its operands by
+    // the time Memory reports, so this can only be right if the debugger
+    // latched the instruction PC in onInstruction().
+    assert(hit.pc == kStorePc && "the hit must name the instruction that wrote");
+
+    // The stop lands at the NEXT instruction: the access is in flight and
+    // cannot be un-done, so stopping "on" the store would mean re-running it.
+    assert(cpu.getProgramCounter() == kStoreNext);
+    assert(cpu.getAccumulator() == 0x5A && "the LDA after the store must not have run");
+    assert(spent > 0 && spent < 1000 && "the run must end early, not run out");
+
+    // THE thing that would make this feature worse than useless: the write is
+    // diverted off the fast path by clearing writable[], so a bug here
+    // silently write-protects the address and corrupts the machine under the
+    // debugger's nose.
+    assert(mem.peekMainRam(kStoreAddr) == 0x5A && "the watched write was swallowed");
+
+    // Disarming restores the address to an ordinary writable cell — including
+    // its place on memWrite's FAST path, which is only observable by writing.
+    disarmWriteWatch(mem, dbg, kStoreAddr);
+    assert(!dbg.armed() && "the last watchpoint must un-arm the debugger");
+    assert(mem.writeWatchCount() == 0 && !mem.hasWriteWatch(kStoreAddr));
+    mem.memWrite(kStoreAddr, 0x31);
+    assert(mem.peekMainRam(kStoreAddr) == 0x31 &&
+           "disarming left the address write-protected");
+
+    std::printf("[ OK ] a write watchpoint stops, names the writer, and the write lands\n");
+}
+
+// ── 8. The diversion must not invent write permission ────────────────────
+void testWatchDoesNotUnprotectRom()
+{
+    Memory mem;
+    pom2::Debugger dbg;
+    mem.setWatchSink(&dbg);
+
+    // $8000-$8FFF marked ROM BEFORE the watch: the shadowed permission has to
+    // record "not writable", or arming a watch would hand the machine a
+    // writable ROM.
+    mem.markRomRange(0x8000, 0x8FFF);
+    armWriteWatch(mem, dbg, 0x8100);
+    const uint8_t was = mem.peekMainRam(0x8100);
+    mem.memWrite(0x8100, static_cast<uint8_t>(was ^ 0xFF));
+    assert(dbg.lastHit().reason == pom2::Debugger::Reason::WatchWrite &&
+           "a watch must fire on the access even when the write is dropped");
+    assert(mem.peekMainRam(0x8100) == was && "a watched ROM address became writable");
+    dbg.clearHit();
+
+    // …and marked ROM AFTER the watch is armed, which is what a profile
+    // switch reloading ROMs does. The shadow has to follow.
+    armWriteWatch(mem, dbg, 0x9100);
+    mem.markRomRange(0x9000, 0x9FFF);
+    const uint8_t was2 = mem.peekMainRam(0x9100);
+    mem.memWrite(0x9100, static_cast<uint8_t>(was2 ^ 0xFF));
+    assert(mem.peekMainRam(0x9100) == was2 &&
+           "markRomRegion did not reach the watchpoint's shadowed permission");
+    dbg.clearHit();
+
+    // Disarming both leaves ROM as ROM.
+    disarmWriteWatch(mem, dbg, 0x8100);
+    disarmWriteWatch(mem, dbg, 0x9100);
+    mem.memWrite(0x8100, 0x5C);
+    mem.memWrite(0x9100, 0x5C);
+    assert(mem.peekMainRam(0x8100) == was && mem.peekMainRam(0x9100) == was2 &&
+           "disarming a watch on ROM left it writable");
+
+    std::printf("[ OK ] the watch diversion never grants write permission\n");
+}
+
+// ── 9. A snapshot/rewind restore still restores a watched address ────────
+void testRestoreIgnoresTheDiversion()
+{
+    Memory mem;
+    pom2::Debugger dbg;
+    mem.setWatchSink(&dbg);
+    armWriteWatch(mem, dbg, 0x0350);
+
+    // restoreMainRam skips non-writable cells so a snapshot cannot clobber the
+    // ROM mirror. A diverted address reads as non-writable, so without the
+    // shadow this byte — and only this byte — would silently survive every
+    // rewind and every snapshot load for as long as the watch stayed armed.
+    std::vector<uint8_t> blob(0x10000, 0);
+    blob[0x0350] = 0xC7;
+    blob[0x0351] = 0xC8;
+    mem.restoreMainRam(blob.data(), blob.size());
+    assert(mem.peekMainRam(0x0350) == 0xC7 &&
+           "a watched address was skipped by a state restore");
+    assert(mem.peekMainRam(0x0351) == 0xC8);
+
+    std::printf("[ OK ] a state restore ignores the watchpoint diversion\n");
+}
+
 }  // namespace
 
 int main()
@@ -277,6 +436,9 @@ int main()
     testUnarmedIsDetached();
     testTransientFiresOnce();
     testTransientDoesNotEatARealBreakpoint();
+    testWriteWatchStopsAndTheWriteLands();
+    testWatchDoesNotUnprotectRom();
+    testRestoreIgnoresTheDiversion();
     std::printf("debugger: all assertions passed\n");
     return 0;
 }

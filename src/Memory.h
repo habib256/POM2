@@ -32,6 +32,7 @@
 #include "SlotBus.h"
 #include "MemoryProfile.h"
 #include "CpuClock.h"
+#include "MemoryWatchSink.h"
 
 #include <array>
 #include <atomic>
@@ -264,6 +265,44 @@ public:
             }
         }
         memWriteSlow(addr, value);
+    }
+
+    // ── Write watchpoints ────────────────────────────────────────────────
+    // A watchpoint that cost the fast path a branch was measured at +13-16 %
+    // on pom2_bench and thrown away (PERFORMANCE § 8.2). This is the design
+    // that costs nothing: arming a watch **clears the address's `writable[]`
+    // byte**, so `memWrite`'s existing test fails and the write falls into
+    // `memWriteSlow` on its own — no new branch, no new load, not one
+    // instruction added to the hot path. The slow path then reports the
+    // access and performs the write using the REAL permission, shadowed in
+    // `writeWatch_` (bit 1) beside the armed bit (bit 0).
+    //
+    // Consequences worth knowing:
+    //   * $C000 and above needs no diversion at all — those writes already
+    //     go through `memWriteSlow`, so soft switches, slot I/O and the
+    //     language card are watchable for free.
+    //   * The watch is on the ADDRESS, not the bank: on a //e it fires
+    //     whichever of main/aux the paging routes the write to.
+    //   * It fires on the ACCESS, including a write the machine then drops
+    //     (write-protected RAM). "Somebody wrote here" is the question a
+    //     watchpoint is asked; whether the byte stuck is the next one.
+    // `markRomRegion` and `restoreMainRam` are the two other readers of
+    // `writable[]`, and both consult `ramWritable()` so a diverted address
+    // does not read as ROM to them.
+    void setWriteWatch(uint16_t addr, bool on);
+    void clearWriteWatches();
+    bool hasWriteWatch(uint16_t addr) const {
+        return !writeWatch_.empty() && (writeWatch_[addr] & kWatchArmed) != 0;
+    }
+    std::size_t writeWatchCount() const { return writeWatchCount_; }
+    /// Where a watched write is reported. Set once, at wiring time.
+    void setWatchSink(pom2::MemoryWatchSink* sink) { watchSink_ = sink; }
+    /// The address's REAL write permission — what `writable[]` would say if
+    /// no watchpoint had diverted it.
+    bool ramWritable(uint16_t addr) const {
+        if (!writeWatch_.empty() && (writeWatch_[addr] & kWatchArmed))
+            return (writeWatch_[addr] & kWatchWasWritable) != 0;
+        return writable[addr];
     }
 
     // Diagnostic — used by M6502's BRK trace.
@@ -614,6 +653,13 @@ private:
 
     std::array<uint8_t, 0x10000> mem{};       // flat 64 KB RAM/ROM mirror
     std::array<bool,    0x10000> writable{};  // false in ROM regions
+    // Write-watchpoint table: one byte per address, empty until the first
+    // watch is armed (a session that never debugs allocates nothing).
+    static constexpr uint8_t kWatchArmed       = 1u;
+    static constexpr uint8_t kWatchWasWritable = 2u;   // shadowed permission
+    std::vector<uint8_t> writeWatch_;
+    std::size_t          writeWatchCount_ = 0;
+    pom2::MemoryWatchSink* watchSink_ = nullptr;
     // Apple II/II+ 16 KB Language Card. $D000-$DFFF has two 4 KB banks;
     // $E000-$FFFF is one shared 8 KB bank. Together with base 48 KB RAM
     // this gives the II+ its ProDOS-required 64 KB.

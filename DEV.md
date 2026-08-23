@@ -5365,10 +5365,53 @@ chunk. `syncDebugHook()` keeps the hook detached until something is armed.
 Three `pom2_bench` workloads, identical RAM hashes, no measurable change —
 docs/PERFORMANCE.md § 8.
 
-**Watchpoints are NOT implemented**, deliberately, and the API is present
-unhooked rather than faked. The naive tap on `memRead`/`memWrite` measured
-+13.4 % / +16.5 % / +9.2 %, which is not payable for an off-by-default feature.
-The design that would be free for writes is in `TODO.md`. See PERFORMANCE § 8.2.
+**Write watchpoints, and the trick that made them free** (2026-08-23). The
+naive tap — one pointer test at the top of `memRead`/`memWrite`, call a sink
+when it is set — measured **+13.4 % / +16.5 % / +9.2 %** and was thrown away
+(PERFORMANCE § 8.2). What shipped instead adds *nothing at all* to the fast
+path, because it does not test for a watchpoint there: it **removes the
+address from the fast path**. `memWrite`'s hot case already consults a
+per-address `writable[]` byte, so arming a watch clears that byte and the
+write falls into `memWriteSlow` on its own. The slow path reports the access
+and performs the write using the REAL permission, shadowed beside the armed
+bit in `Memory::writeWatch_` (empty, and allocated, only while somebody is
+debugging). Measured on three `pom2_bench` workloads with identical RAM
+hashes: no change — PERFORMANCE § 8.3.
+
+Three things that design has to get right, all pinned by `debugger` cases 7-9:
+
+* **The write must still land.** A diverted address is write-protected as far
+  as `writable[]` is concerned; forgetting the shadow would silently corrupt
+  the machine under the debugger's nose rather than merely failing to stop.
+* **The diversion must not invent permission.** A watch on a ROM address
+  reports the access and still drops the write, and `markRomRegion` — which a
+  profile switch calls while a watch may be armed — updates the shadow, not
+  just `writable[]`.
+* **A state restore must ignore it.** `restoreMainRam` skips non-writable
+  cells so a snapshot cannot clobber the ROM mirror; it consults
+  `ramWritable()` so a watched byte is not the one cell a rewind silently
+  refuses to restore.
+
+$C000 and above needs no diversion at all — those writes already reach
+`memWriteSlow` — so soft switches, slot I/O and the language card are watchable
+for free. The watch is on the ADDRESS, not the bank: on a //e it fires whichever
+of main/aux the paging picks. And it fires on the ACCESS, including a write the
+machine then drops.
+
+`Memory` reports through `MemoryWatchSink` (`MemoryWatchSink.h`), a two-line
+interface, rather than calling `Debugger` directly: `Memory.cpp` is linked into
+two dozen test binaries and a benchmark, and none of them should have to pull
+the debugger in behind it.
+
+The stop lands at the first instruction boundary AFTER the access, which cannot
+be un-done — so `Hit::pc` (latched by `onInstruction` as `curPc_`) names the
+instruction that *wrote*, while the machine's live PC is the instruction after
+it. Both facts are in the stop banner.
+
+**Read watchpoints are still NOT implemented**, and the API accepts a Read
+watch that never fires rather than pretending otherwise (the panel offers only
+writes). `memRead`'s fast path has no per-address table to hide a watch in —
+that is the whole reason the write half was free and the read half is not.
 
 **Known limit.** Step-over reads the opcode at the PC with `peekMainRam`, not
 `memRead` — a debugger must never flip a soft switch to inspect the machine —

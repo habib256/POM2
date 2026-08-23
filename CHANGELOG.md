@@ -5,6 +5,73 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-23 — Write watchpoints, and they cost the hot path nothing
+
+The debugger shipped on 2026-08-22 with breakpoints, step, step-over and
+run-to-cursor — and without watchpoints, because the obvious implementation had
+been measured: wrap `memRead`/`memWrite`, test one pointer, call a sink, and
+pay **+13.4 % / +16.5 % / +9.2 %** on the three `pom2_bench` workloads. Forcing
+the wrapped body inline made it worse, which located the cost in the extra
+branch and the code growth around the hottest function in the emulator rather
+than in an inlining accident. The number was kept and the feature was dropped.
+
+Keeping the number is what made the feature possible a day later, because it
+stated the budget precisely enough to design against: **do not add a test to
+the fast path**. So this one does not test for a watchpoint there. It removes
+the address *from* the fast path.
+
+`memWrite`'s hot case already consults a per-address `writable[]` byte. Arming
+a write watch CLEARS that byte, so the existing test fails for that address and
+the write falls into `memWriteSlow` on its own — no new branch, no new load,
+not one instruction added. The slow path reports the access and performs the
+write from a shadowed copy of the real permission, kept beside the armed bit in
+a table that is empty and unallocated until somebody debugs. Interleaved
+best-of-9 against the previous binary, pinned to one core, RAM hashes identical
+on every workload: −2.1 % / −0.7 % / −0.1 %, which is this host's noise floor —
+no measurable cost. Numbers and method: `docs/PERFORMANCE.md` § 8.3.
+
+Three ways this design can go wrong, all pinned by `debugger` cases 7-9:
+
+* **The write must still land.** A diverted address is write-protected as far
+  as `writable[]` knows. Forget the shadow and a watchpoint silently corrupts
+  the machine under the debugger's nose — a worse failure than not stopping.
+* **The diversion must not invent permission.** A watch on ROM reports the
+  access and still drops the write, and `markRomRegion` — which a profile
+  switch runs while a watch may be armed — updates the shadow too.
+* **A state restore must ignore it.** `restoreMainRam` skips non-writable cells
+  so a snapshot cannot clobber the ROM mirror; it now asks `ramWritable()`, or
+  a watched byte would be the one cell every rewind quietly refused to restore.
+
+One of the two caveats recorded when the design was sketched **turned out not
+to exist**: Language-Card paging does not rewrite `writable[]` at all —
+`markRomRegion` is its only mutator and the LC has its own path — so the shadow
+had exactly one function to survive rather than a soft switch on the hot path.
+
+Addresses from $C000 up need no diversion at all, since those writes already
+reach `memWriteSlow`: soft switches, slot I/O and the language card are
+watchable for free. The stop lands at the first instruction boundary after the
+access (it cannot be un-done), so the banner reports two different and equally
+useful addresses — what was written, and the instruction that wrote it, latched
+by `onInstruction` because the CPU's own PC has walked past the operands by the
+time Memory reports.
+
+**Read watchpoints are still not implemented**, and the API still accepts a
+Read watch that never fires rather than faking one. `memRead`'s fast path has
+no per-address table to hide a watch in, which is precisely why the write half
+was free and the read half is not. The panel offers writes only, and says so.
+
+`Memory` reports through `MemoryWatchSink` — a two-line interface — rather than
+calling `Debugger` directly, because `Memory.cpp` is linked into two dozen test
+binaries and a benchmark that have no business pulling in the debugger.
+
+The file-size ratchet failed on `src/Memory.cpp` (+59 lines) and the budget was
+raised in the same commit rather than split into a new translation unit: that
+is the question the ratchet exists to force, and the answer here is that the
+`Memory` split has a prerequisite — TODO's P2 says it waits for an I/O-path
+test net — so doing it now to save 59 lines would be doing the wrong half of it.
+
+Suite 194/194.
+
 ## 2026-08-23 — Rewind stops recording a timeline that runs backwards
 
 `RewindBuffer`'s whole seek layer assumes one thing about the ring: cycle
