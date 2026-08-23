@@ -196,7 +196,9 @@ set(SOURCES
     src/M68705P3.cpp
     src/MainWindow.cpp
     src/MainWindow_MemoryMaps.cpp
+    src/MainWindow_Panels.cpp
     src/MainWindow_Slots.cpp
+    src/PanelRegistry.cpp
     src/MC6821.cpp
     src/MemoryViewer_ImGui.cpp
     src/Mockingboard.cpp

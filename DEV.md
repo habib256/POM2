@@ -4400,6 +4400,78 @@ sliver once the panel is docked into a side dock — every label in it clipped t
 sections stack, with the assignment child taking
 `ImGuiChildFlags_AutoResizeY` so the media section starts right under it.
 
+### Panel registry (`PanelCatalog.h`, `PanelRegistry.*`, `MainWindow_Panels.cpp`)
+
+The UI's god-object problem is not that `MainWindow.cpp` is long. It is that
+a panel used to be described in **six** places at once, none of which could be
+checked against the others:
+
+| The list | Where it lived | Rows |
+|---|---|---|
+| load its visibility | `MainWindow.cpp` ctor | 32 |
+| save its visibility | `~MainWindow` | 32 |
+| offer it in the palette | `renderCommandPalette` | 38 |
+| dispatch that command | `runCommand` | 38 |
+| its menu row (label, tip, greyed-when) | 6 different menus | 37 |
+| hide it on the browser build | the WASM chrome-light block | 28 |
+
+Splitting the file into `MainWindow_<Area>.cpp` moves those rows around; it
+does not remove one of them. They had already drifted, in ways that were
+invisible precisely because nothing held them together:
+
+* **Seven panels had no settings key at all.** The palette opened them and
+  they were gone next launch — including the Debugger and the memory viewer.
+  Nothing recorded whether that was a decision.
+* **The WASM chrome-light block named 28 panels**, so every panel added after
+  it was written stayed open on the browser build. A list that can only rot.
+* **The Help menu attached ROM Status's tooltip to Abstraction Levels** (two
+  `IsItemHovered` blocks after the same `MenuItem`), so one row showed the
+  other's tip and one showed none.
+* The palette and the menus carried **different labels for the same window**
+  ("Disk II drive" vs "Disk II (slot 6)").
+
+**`PanelCatalog.h` is now the one list**: 38 rows of `{id, title, menu group,
+settings key, shortcut, tooltip}`. `PanelRegistry` binds each row to the `bool`
+that holds its visibility, plus two optional runtime bits — an availability
+predicate (`smartPortCard != nullptr` greys the row) and a dynamic title (the
+label that carries a slot number). `MainWindow_Panels.cpp` holds that binding
+table and the four functions the rest of the UI is derived from:
+
+```
+panelMenuGroup(PanelGroup::DevStorage)   // a whole menu section
+panelMenuItem("panel.crt")               // one row, anywhere
+forEachPanelCommand(add)                 // the palette's Panel category
+runPanelCommand(id)                      // its dispatch
+loadPanelVisibility() / savePanelVisibility()
+hideAllPanels()                          // the WASM chrome-light
+```
+
+The Devices menu went from 157 lines of hand-written rows to eight: four
+`SeparatorText` headers and four `panelMenuGroup` calls. `MainWindow.cpp` lost
+**312 lines** net and, more to the point, stopped being where panel *facts*
+live. Adding a panel is a catalog row plus a `bind` line; forgetting the bind
+is caught at startup by `PanelRegistry::unbound()`, which logs the panel by
+name instead of leaving a menu row that toggles nothing.
+
+**Order comes from the catalog, not from bind order.** Menus, palette and the
+settings file all iterate the registry, so a sequence that depended on when a
+binding happened would reshuffle the user's menus whenever an unrelated
+binding moved. `bind()` inserts in catalog position; `panel_registry` pins it.
+
+**What this is not (yet).** The registry holds `bool*` into MainWindow's
+members — the storage is still 40 `bool showXxx` fields, because moving it
+inside the registry means touching the ~150 places that read those members
+directly. That is the next step and the one that finally deletes the wall of
+members; this one removes the six lists, which is what was actually causing
+drift. The panels' *rendering* is likewise untouched: ~43 `renderXxxWindow()`
+calls still sit in `MainWindow::render`, each self-gating on its flag.
+
+**Deliberately a table, not self-registration.** Static registrars in 40
+translation units would scatter the UI surface back across the codebase; the
+whole value here is that one file answers "what panels does POM2 have, where
+do they live, and what persists". Same argument the palette makes for its
+non-panel commands, one level up.
+
 ### Command palette (`CommandPalette_ImGui`)
 
 Ctrl+Shift+P fuzzy launcher over every menu item, panel toggle, profile,
@@ -4418,7 +4490,10 @@ out.
 is open (so `enabled`/`checked` track live machine state) and dispatches the
 returned id in `MainWindow::runCommand`. One list, one switch — deliberately not
 a callback registry, because the value of the palette is that every command is
-visible in one place when you read the source.
+visible in one place when you read the source. The ~38 **panel** toggles are the
+exception, and for the same reason rather than against it: they come from the
+panel registry above, which is itself one readable table — keeping them here
+meant a second copy of it, and a third in `runCommand`'s dispatch.
 
 Unavailable commands stay in the list, greyed, rather than being filtered out:
 seeing "Phasor (no card plugged)" teaches where the thing lives; silently

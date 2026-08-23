@@ -24,6 +24,7 @@
 #include "MouseGrab.h"      // pom2::mousegrab::Context (mouseGrabContext)
 #include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
 #include "PrinterScreenDump.h" // pom2::ScreenDumpOptions member
+#include "PanelRegistry.h"  // pom2::PanelRegistry member (the panel table)
 
 #include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
@@ -458,6 +459,35 @@ private:
     void renderDockSpace();
     /// Build the command list, draw the palette, dispatch the pick.
     void renderCommandPalette();
+
+    // ── Panels ───────────────────────────────────────────────────────────
+    // One table (PanelCatalog.h) + one binding list (MainWindow_Panels.cpp),
+    // and the menus / palette / palette dispatch / settings round-trip are
+    // all derived from it. They used to be six hand-kept lists.
+    /// Bind every catalog entry to its flag. Called once, before settings are
+    /// read — `loadPanelVisibility()` needs the bindings to exist.
+    void registerPanels();
+    /// One menu row for `id`: label (dynamic when the panel carries a slot),
+    /// shortcut, tooltip, greyed when its card is not plugged.
+    void panelMenuItem(const char* id);
+    /// Every panel of one menu group, in catalog order.
+    void panelMenuGroup(pom2::PanelGroup group);
+    /// Feed every panel to the command palette. A callback rather than the
+    /// palette's own Command type so MainWindow.h keeps its forward
+    /// declaration of CommandPalette_ImGui; the shape matches the `add`
+    /// lambda renderCommandPalette already uses for every other command.
+    void forEachPanelCommand(
+        const std::function<void(const char* id, const std::string& label,
+                                 const char* shortcut, bool enabled,
+                                 bool checked)>& add) const;
+    /// Toggle a "panel.*" command. False = not a panel id, keep looking.
+    bool runPanelCommand(const std::string& id);
+    void loadPanelVisibility();
+    void savePanelVisibility();
+    /// Close every panel (the browser build's chrome-light startup).
+    void hideAllPanels();
+
+    pom2::PanelRegistry panels_;
     /// Execute a palette command by id. Single dispatch point — the
     /// palette itself has no idea what any command does.
     void runCommand(const std::string& id);

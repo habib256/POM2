@@ -5292,6 +5292,19 @@ target_include_directories(test_atomic_file_replace PRIVATE ${CMAKE_SOURCE_DIR}/
 add_test(NAME atomic_file_replace COMMAND test_atomic_file_replace)
 set_tests_properties(atomic_file_replace PROPERTIES TIMEOUT 30)
 
+# ─── Panel catalog + registry ───────────────────────────────────────────
+# Pins src/PanelCatalog.h + src/PanelRegistry.*: the one list the menus, the
+# command palette, the palette's dispatch and the settings round-trip are all
+# derived from. Six hand-kept lists before; the cases pin what makes one list
+# trustworthy (unique ids/keys, catalog order, unbound entries reported).
+add_executable(test_panel_registry
+    panel_registry_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PanelRegistry.cpp
+)
+target_include_directories(test_panel_registry PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME panel_registry COMMAND test_panel_registry)
+set_tests_properties(panel_registry PROPERTIES TIMEOUT 30)
+
 # ─── Thread exception barrier ───────────────────────────────────────────
 # Pins src/ThreadGuard.h. A regression here does not fail an assertion, it
 # kills the process — so the throwing cases run in a forked child whose exit
