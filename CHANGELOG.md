@@ -5,6 +5,66 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-26 — The coordinator branch lands the half that ports
+
+`refactor/core-boundaries-and-coordinators` was written against `be055e2` and
+sat unmerged while main went 83 commits ahead to v0.8.5. Both lines had
+independently decomposed the same two god-objects, differently: the branch split
+`Memory` into `Keyboard` + `PaddleInputs` (with a `.cpp`) and `MainWindow` into
+`_Command`/`_Screen`/`_Media`/`_Input`/`_AuxPanels`; main split them into
+`Keyboard` + a header-only `PaddleInputs` and `_Panels`/`_AudioPanels`/
+`_SettingsPanels`/`_MiscPanels`. A textual merge offered 139 conflict hunks, 61
+of them with real logic on both sides.
+
+**The rule used to resolve them: the released code wins on every collision.**
+Where the two lines had rewritten the same thing, v0.8.5's version was kept and
+the branch's dropped — not because it is better, but because resolving toward
+the branch silently reverts fixes that shipped. The concrete case that settled
+it: the branch's `W5100HostSockets.cpp` has no `disableSigpipe` and no
+`MSG_NOSIGNAL` send, because main's SIGPIPE hardening landed 2026-08-22, after
+the branch forked. Merging that seam would have restored a defect that kills
+the whole process — no log line, no dialog — when a TCP peer vanishes.
+
+**What landed.** The ten host-policy coordinators plus `SlotCardFactory`, and
+the nine tests that pin them. These port unchanged because they were written as
+renderer-free value/command boundaries over `SlotBus` + `EmulationController`:
+none of them includes `MainWindow`, so which panel decomposition is in the tree
+is not their business. They compile and pass against v0.8.5's card APIs.
+
+Also landed, from the branch's test infrastructure: `pom2_core_test`, an
+assertion-enabled static archive of the core minus the renderer, so a test
+declares its own sources instead of re-listing a private bundle of core ones. It
+is expressed against v0.8.5's flat source list (the core 91 of 137 `SOURCES`,
+less `JoystickInput.cpp` for GLFW and `DebugCoordinator.cpp` for Dear ImGui)
+rather than the branch's CMake object layers. New tests link it per target, so
+the 197 pre-existing tests keep the explicit bundles they were written with.
+
+The public facade `include/pom2/core.hpp` + `src/Pom2Core.cpp` landed with its
+contract test. That test failed on arrival, and the failure was a real bug worth
+porting on its own: `CassetteDevice::beginRecordingIfNeeded` inferred "no
+recording underway yet" from `lastOutputToggleCycle == 0 && recordedDurations
+.empty()`. That is not the same predicate — after a reset or a cleared tape both
+hold again while recording is still armed, so the first `$C020` toggle re-ran
+the start path and the capture never began. Now an explicit `recordingStarted`
+flag, cleared in `reset()` and `clearRecordedTape()`.
+
+**What did not land, and why.** The branch's `MainWindow` and `Memory`
+decompositions, superseded by v0.8.5's. The device injection seams
+(`W5100Socket`, `SuperSerialTransport`, `FujiNetLink`) and the deterministic
+fakes built on them — they need main's later socket hardening, thread guards and
+torn-read fix re-derived on top of them first, which is a port to do
+deliberately rather than inside a merge. `NetworkCoordinator` with them, since
+it is the one coordinator that does depend on those seams. The CMake layer
+guard and the `find_package(pom2_core)` install contract, which rest on the
+branch's layered object libraries; the flat v0.8.5 tree has no installable
+library target for them to attach to.
+
+The coordinators are therefore in the tree and under test, but not yet wired
+into `MainWindow` — that wiring is the next step, and it is now an ordinary
+refactor against one decomposition instead of a merge between two.
+
+207/207 ctest green.
+
 ## 2026-08-23 — Keyboard and PaddleInputs leave the Memory god-object
 
 The order the TODO insisted on: the I/O-path test net first, the split second.

@@ -370,6 +370,7 @@ void CassetteDevice::reset()
     currentCycle = 0;
     outputLevel  = false;
     recordedInitialLevel = false;
+    recordingStarted = false;
     lastOutputToggleCycle = 0;
     recordedDurations.clear();
     recordingOverflow = false;
@@ -521,10 +522,11 @@ void CassetteDevice::advanceRewind(uint32_t cycles)
 
 void CassetteDevice::beginRecordingIfNeeded()
 {
-    if (lastOutputToggleCycle == 0 && recordedDurations.empty()) {
+    if (!recordingStarted) {
         clearLiveAudioState();
         recordedInitialLevel = outputLevel;
         lastOutputToggleCycle = currentCycle;
+        recordingStarted = true;
     }
 }
 
@@ -664,6 +666,7 @@ void CassetteDevice::clearRecordedTape()
     recordedDurations.clear();
     recordingOverflow = false;
     recordedInitialLevel = outputLevel;
+    recordingStarted = false;
     lastOutputToggleCycle = 0;
     clearLiveAudioState();
 }

@@ -253,6 +253,13 @@ private:
 
     bool     outputLevel             = false;
     bool     recordedInitialLevel    = false;
+    // Explicit "a recording is underway" flag. The old test — no toggle
+    // recorded yet AND no durations — is not the same predicate: after a
+    // reset or a cleared tape both hold again while recording is still
+    // armed, so the first $C020 toggle after that re-ran the start path and
+    // the capture never began. Ported from
+    // refactor/core-boundaries-and-coordinators, pinned by pom2_core_api.
+    bool     recordingStarted        = false;
     uint64_t lastOutputToggleCycle   = 0;
     std::vector<uint32_t> recordedDurations;
     bool recordingOverflow = false;

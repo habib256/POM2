@@ -147,7 +147,8 @@ set(POM2_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 set(POM2_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
 configure_file(
     ${POM2_SRC_DIR}/Version.h.in
-    ${POM2_GENERATED_DIR}/Version.h
+    ${POM2_GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include/Version.h
     @ONLY)
 
 set(SOURCES
@@ -205,6 +206,25 @@ set(SOURCES
     src/MainWindow_MiscPanels.cpp
     src/MainWindow_Slots.cpp
     src/PanelRegistry.cpp
+    # Host-policy coordinators ported from refactor/core-boundaries-and-coordinators.
+    # Renderer-free value/command boundaries over SlotBus + EmulationController;
+    # they take no MainWindow dependency, which is why they port across the
+    # v0.8.5 panel decomposition unchanged.
+    # Public C++17 facade (include/pom2/core.hpp) — PIMPL over Memory/M6502,
+    # ported with its contract test. The installable find_package(pom2_core)
+    # half stays on the branch: it needs a real library target, which the
+    # v0.8.5 tree does not have.
+    src/Pom2Core.cpp
+    src/AudioCoordinator.cpp
+    src/DebugCoordinator.cpp
+    src/DevicePanelCoordinator.cpp
+    src/MouseCoordinator.cpp
+    src/PrinterCoordinator.cpp
+    src/SlotCardFactory.cpp
+    src/SlotConfigurationCoordinator.cpp
+    src/SlotProvisioningCoordinator.cpp
+    src/SlotRebuildCoordinator.cpp
+    src/StorageCoordinator.cpp
     src/MC6821.cpp
     src/MemoryViewer_ImGui.cpp
     src/Mockingboard.cpp
@@ -486,7 +506,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${POM2_SRC_DIR}
     ${POM2_SRC_DIR}/hgrpaint   # portable HGR Paint editor (shared with POM1)
     ${POM2_SRC_DIR}/hgrsprite  # portable HGR sprite editor (same host seam)
-    ${POM2_GENERATED_DIR}   # generated Version.h
+    ${POM2_GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include   # generated Version.h
 )
 
 # ─── Platform deps ───────────────────────────────────────────────────────
@@ -676,6 +697,138 @@ else()
     endif()
 endif()
 
+# ─── pom2_core_test ───────────────────────────────────────────────────────
+# Assertion-enabled twin of the emulator core, ported from
+# refactor/core-boundaries-and-coordinators. Tests link this one archive
+# instead of each re-listing a private bundle of core sources; static-archive
+# semantics keep unused device objects out of every executable.
+#
+# It is the core MINUS the renderer: no MainWindow, no *_ImGui, no GL, no
+# hgrpaint/hgrsprite. That is the same boundary the branch drew with CMake
+# object layers; expressed here against v0.8.5's flat source list so the
+# released decomposition is left alone.
+#
+# JoystickInput.cpp (GLFW) and DebugCoordinator.cpp (Dear ImGui) are the two
+# core-list files that do reach the renderer, so they stay out of the archive.
+#
+# -UNDEBUG is applied by tests/CMakeLists.txt at directory scope, so this
+# archive is compiled with asserts live — see the note at the top of that file.
+if(NOT EMSCRIPTEN)
+add_library(pom2_core_test STATIC
+    src/M6502.cpp
+    src/Z80.cpp
+    src/SoftCardZ80.cpp
+    src/Memory.cpp
+    src/MemoryWatch.cpp
+    src/Keyboard.cpp
+    src/MemoryProfile_IIcClass.cpp
+    src/MachineSnapshot.cpp
+    src/RewindBuffer.cpp
+    src/AiControlServer.cpp
+    src/Pom2Core.cpp
+    src/Apple2Display.cpp
+    src/AppleWinNtsc.cpp
+    src/AtaBlockDevice.cpp
+    src/AudioDevice.cpp
+    src/CassetteDevice.cpp
+    src/CffaCard.cpp
+    src/CliDispatcher.cpp
+    src/CliRunner.cpp
+    src/ClockCard.cpp
+    src/Disassembler6502.cpp
+    src/Disk35Image.cpp
+    src/DiskIICard.cpp
+    src/Debugger.cpp
+    src/MediaMount.cpp
+    src/DiskImage.cpp
+    src/EchoPlusCard.cpp
+    src/EchoPlusTMS5220Card.cpp
+    src/EmulationController.cpp
+    src/FloppySoundDevice.cpp
+    src/IWMDevice.cpp
+    src/SmartPortHub.cpp
+    src/Sony35Gcr.cpp
+    src/Sony35Drive.cpp
+    src/CharRomCatalog.cpp
+    src/LeChatMauveCard.cpp
+    src/M68705P3.cpp
+    src/AudioCoordinator.cpp
+    src/DevicePanelCoordinator.cpp
+    src/MouseCoordinator.cpp
+    src/PrinterCoordinator.cpp
+    src/SlotCardFactory.cpp
+    src/SlotConfigurationCoordinator.cpp
+    src/SlotProvisioningCoordinator.cpp
+    src/SlotRebuildCoordinator.cpp
+    src/StorageCoordinator.cpp
+    src/MC6821.cpp
+    src/Mockingboard.cpp
+    src/MouseCard.cpp
+    src/MouseCardAppleWin.cpp
+    src/NoSlotClock.cpp
+    src/GrapplerCard.cpp
+    src/PhasorCard.cpp
+    src/PrinterCard.cpp
+    src/ImageWriter.cpp
+    src/ImageWriterPdf.cpp
+    src/Ssi263.cpp
+    src/Ssi263PhonemeData.cpp
+    src/Block512Backing.cpp
+    src/ProDOSHardDiskCard.cpp
+    src/ProDOSVolume.cpp
+    src/ResourcePaths.cpp
+    src/RomLoader.cpp
+    src/FloppyEmuDevice.cpp
+    src/Settings.cpp
+    src/SlotBus.cpp
+    src/Cs8900aDevice.cpp
+    src/UthernetCard.cpp
+    src/W5100Device.cpp
+    src/UthernetIICard.cpp
+    src/SlirpNetworkBackend.cpp
+    src/SmartPort35Unit.cpp
+    src/SmartPortCard.cpp
+    src/SerialPort.cpp
+    src/ChildProcess.cpp
+    src/PrinterScreenDump.cpp
+    src/PrinterSoundDevice.cpp
+    src/PrinterHistory.cpp
+    src/SpOverSlipLink.cpp
+    src/SpTcpTransport.cpp
+    src/SpSerialTransport.cpp
+    src/FujiNetCard.cpp
+    src/FujiNetNetDevice.cpp
+    src/SmartPortHdvUnit.cpp
+    src/SmartPortUnit.cpp
+    src/SnapshotIO.cpp
+    src/SpeakerDevice.cpp
+    src/SuperSerialCard.cpp
+    src/SystemProfile.cpp
+    src/AppleIIeKeyboardLayout.cpp
+)
+target_include_directories(pom2_core_test PUBLIC
+    ${POM2_SRC_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${POM2_GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${IMGUI_DIR}     # miniaudio.h location only, no ImGui linkage
+)
+target_compile_options(pom2_core_test PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(pom2_core_test PUBLIC ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(pom2_core_test PUBLIC
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(pom2_core_test PUBLIC winmm ws2_32)
+endif()
+if(POM2_SLIRP_TARGET)
+    target_link_libraries(pom2_core_test PUBLIC ${POM2_SLIRP_TARGET})
+endif()
+endif()
+
 # ─── pom2_headless ────────────────────────────────────────────────────────
 # Console-only binary: same emulator core (Memory + M6502 + SlotBus + the
 # Disk II / Super Serial cards) wired to a TCP listener via the SSC, so
@@ -726,7 +879,8 @@ add_executable(pom2_headless
 )
 target_include_directories(pom2_headless PRIVATE
     ${POM2_SRC_DIR}
-    ${POM2_GENERATED_DIR}   # generated Version.h
+    ${POM2_GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include   # generated Version.h
     ${IMGUI_DIR}     # only for miniaudio.h location, no ImGui linkage
 )
 if(UNIX AND NOT APPLE)
@@ -793,6 +947,7 @@ add_executable(pom2_bench
 target_include_directories(pom2_bench PRIVATE
     ${POM2_SRC_DIR}
     ${POM2_GENERATED_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${IMGUI_DIR}     # miniaudio.h location only, no ImGui linkage
 )
 if(UNIX AND NOT APPLE)

@@ -5623,3 +5623,71 @@ foreach(_pom2_t IN LISTS POM2_WALLCLOCK_TESTS)
             "Renamed or removed? Update the list in tests/CMakeLists.txt.")
     endif()
 endforeach()
+
+# ─── Host-policy coordinators ───────────────────────────────────────────
+# Ported from refactor/core-boundaries-and-coordinators. The coordinators are
+# renderer-free value/command boundaries over SlotBus + EmulationController —
+# they take no MainWindow dependency, which is why they cross the v0.8.5 panel
+# decomposition unchanged and their tests come with them.
+#
+# These link pom2_core_test (the assertion-enabled core archive) per target
+# rather than at directory scope, so the 197 pre-existing tests keep the
+# explicit source bundles they were written with.
+if(TARGET pom2_core_test)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Pom2Test.cmake)
+
+pom2_add_headless_test(test_printer_coordinator
+    NAME printer_coordinator TIMEOUT 20
+    SOURCES printer_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+
+pom2_add_headless_test(test_storage_coordinator
+    NAME storage_coordinator TIMEOUT 20
+    SOURCES storage_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test
+    COMPILE_DEFINITIONS POM2_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+pom2_add_headless_test(test_audio_coordinator
+    NAME audio_coordinator TIMEOUT 20
+    SOURCES audio_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+
+pom2_add_headless_test(test_mouse_coordinator
+    NAME mouse_coordinator TIMEOUT 20
+    SOURCES mouse_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+
+pom2_add_headless_test(test_slot_configuration_coordinator
+    NAME slot_configuration_coordinator TIMEOUT 10 PORTABLE
+    SOURCES slot_configuration_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+
+pom2_add_headless_test(test_slot_card_factory
+    NAME slot_card_factory TIMEOUT 20 PORTABLE
+    SOURCES slot_card_factory_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+
+pom2_add_headless_test(test_slot_provisioning_coordinator
+    NAME slot_provisioning_coordinator TIMEOUT 20 PORTABLE
+    SOURCES slot_provisioning_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+
+pom2_add_headless_test(test_slot_rebuild_coordinator
+    NAME slot_rebuild_coordinator TIMEOUT 10 PORTABLE
+    SOURCES slot_rebuild_coordinator_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+endif()
+
+# ─── Public facade contract ─────────────────────────────────────────────
+# Pins include/pom2/core.hpp + src/Pom2Core.cpp: the PIMPL API must not leak
+# internal Memory / M6502 definitions to a consumer. Ported without the
+# find_package(pom2_core) install contract, which needs an installable library
+# target that the v0.8.5 tree does not define.
+if(TARGET pom2_core_test)
+pom2_add_headless_test(test_pom2_core_api
+    NAME pom2_core_api TIMEOUT 10 PORTABLE
+    SOURCES pom2_core_api_test.cpp
+    LINK_LIBRARIES pom2_core_test
+    INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/include
+    COMPILE_DEFINITIONS POM2_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()

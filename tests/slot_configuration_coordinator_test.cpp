@@ -1,0 +1,164 @@
+// Slot-configuration policy smoke test.
+//
+// The frontend builds card objects, but the effective mapping is owned and
+// resolved by SlotConfigurationCoordinator. Pin the rules which previously
+// lived as mutable policy in MainWindow.cpp.
+
+#include "CffaCard.h"
+#include "ClockCard.h"
+#include "Settings.h"
+#include "DiskIICard.h"
+#include "EchoPlusCard.h"
+#include "EchoPlusTMS5220Card.h"
+#include "FujiNetCard.h"
+#include "GrapplerCard.h"
+#include "LeChatMauveCard.h"
+#include "Mockingboard.h"
+#include "MouseCard.h"
+#include "MouseCardAppleWin.h"
+#include "PhasorCard.h"
+#include "PrinterCard.h"
+#include "ProDOSHardDiskCard.h"
+#include "SlotConfigurationCoordinator.h"
+#include "SlotBus.h"
+#include "SmartPortCard.h"
+#include "SoftCardZ80.h"
+#include "SuperSerialCard.h"
+#include "UthernetCard.h"
+#include "UthernetIICard.h"
+
+#include <cassert>
+#include <cstdio>
+#include <memory>
+#include <type_traits>
+#include <utility>
+
+using Coordinator = pom2::SlotConfigurationCoordinator;
+static_assert(std::is_same_v<
+    decltype(std::declval<Coordinator&>().effectivePlan()),
+    const Coordinator::CardMap&>);
+
+int main()
+{
+    pom2::Settings settings;
+    pom2::SlotConfigurationCoordinator slots;
+
+    // Fresh-install //e mapping.
+    const auto& defaults = slots.resolve(settings,
+        pom2::SystemProfile::AppleIIe);
+    assert(defaults[0].empty());
+    assert(defaults[1] == "grappler");
+    assert(defaults[2] == "mouseaw");
+    assert(defaults[3].empty());
+    assert(defaults[4] == "mockingboard");
+    assert(defaults[5] == "smartport35");
+    assert(defaults[6] == "diskii");
+    assert(defaults[7] == "chatmauve");
+
+    // Staged edits have an explicit owner and cannot mutate the plan used to
+    // build the current machine until settings are deliberately committed.
+    slots.draft()[1] = "clock";
+    assert(slots.draft()[1] == "clock");
+    assert(slots.effectivePlan()[1] == "grappler");
+    slots.resetDraft();
+    assert(slots.draft() == slots.effectivePlan());
+
+    // Ordinary cards are unique: the first requested occurrence wins.
+    settings.setString("slot_1_card", "mockingboard");
+    settings.setString("slot_2_card", "mockingboard");
+    settings.setString("slot_3_card", "");
+    settings.setString("slot_4_card", "");
+    settings.setString("slot_5_card", "");
+    settings.setString("slot_6_card", "");
+    settings.setString("slot_7_card", "");
+    const auto& unique = slots.resolve(settings,
+        pom2::SystemProfile::AppleIIe);
+    assert(unique[1] == "mockingboard");
+    assert(unique[2].empty());
+
+    // Storage devices with per-slot state deliberately support multiples.
+    settings.setString("slot_1_card", "diskii");
+    settings.setString("slot_2_card", "diskii");
+    settings.setString("slot_3_card", "cffa");
+    settings.setString("slot_4_card", "cffa");
+    settings.setString("slot_5_card", "smartport35");
+    settings.setString("slot_6_card", "smartport35");
+    const auto& multiple = slots.resolve(settings,
+        pom2::SystemProfile::AppleIIe);
+    assert(multiple[1] == "diskii" && multiple[2] == "diskii");
+    assert(multiple[3] == "cffa" && multiple[4] == "cffa");
+    assert(multiple[5] == "smartport35" && multiple[6] == "smartport35");
+
+    // A //c has fixed virtual devices and no physical expansion slots. Its
+    // two built-in SSCs are a legitimate duplicate; a rear Chat Mauve video
+    // adapter remains allowed because it does not use the expansion bus.
+    settings.setString("slot_1_card", "phasor");
+    settings.setString("slot_2_card", "uthernet");
+    settings.setString("slot_3_card", "cffa");
+    settings.setString("slot_4_card", "mockingboard");
+    settings.setString("slot_5_card", "hdv");
+    settings.setString("slot_6_card", "clock");
+    settings.setString("slot_7_card", "chatmauve");
+    const auto& iic = slots.resolve(settings,
+        pom2::SystemProfile::AppleIIc);
+    assert(iic[1] == "ssc" && iic[2] == "ssc");
+    assert(iic[3].empty());
+    assert(iic[4] == "mouseaw");
+    assert(iic[5] == "smartport35");
+    assert(iic[6] == "diskii");
+    assert(iic[7] == "chatmauve");
+
+    assert(pom2::SlotConfigurationCoordinator::isMultiInstance("diskii"));
+    assert(!pom2::SlotConfigurationCoordinator::isMultiInstance("ssc"));
+
+    // Live topology is copied from SlotBus, independently of the effective
+    // configuration. Exact implementation variants keep distinct keys.
+    SlotBus bus;
+    auto expectLiveKey = [&](std::unique_ptr<SlotPeripheral> card,
+                             const char* expected) {
+        bus.plug(3, std::move(card));
+        const auto live = slots.captureLive(bus);
+        assert(live.keys[3] == expected);
+        assert(live.plugged(3));
+        assert(!live.names[3].empty());
+    };
+    expectLiveKey(std::make_unique<DiskIICard>(3), "diskii");
+    expectLiveKey(std::make_unique<ProDOSHardDiskCard>(3), "hdv");
+    expectLiveKey(std::make_unique<pom2::CffaCard>(3), "cffa");
+    expectLiveKey(std::make_unique<pom2::SmartPortCard>(3), "smartport35");
+    expectLiveKey(std::make_unique<SuperSerialCard>(3), "ssc");
+    expectLiveKey(std::make_unique<PrinterCard>(3), "printer");
+    expectLiveKey(std::make_unique<GrapplerCard>(3), "grappler");
+    expectLiveKey(std::make_unique<ClockCard>(3), "clock");
+    expectLiveKey(std::make_unique<SoftCardZ80>(), "softcard");
+    expectLiveKey(std::make_unique<LeChatMauveCard>(3), "chatmauve");
+    expectLiveKey(std::make_unique<MouseCard>(3), "mouse");
+    expectLiveKey(std::make_unique<MouseCardAppleWin>(3), "mouseaw");
+    expectLiveKey(std::make_unique<MockingboardCard>(
+        3, MockingboardCard::Variant::AC), "mockingboard");
+    expectLiveKey(std::make_unique<MockingboardCard>(
+        3, MockingboardCard::Variant::SoundII), "mockingboard_c");
+    expectLiveKey(std::make_unique<PhasorCard>(3), "phasor");
+    expectLiveKey(std::make_unique<EchoPlusCard>(3), "echoplus");
+    expectLiveKey(std::make_unique<EchoPlusTMS5220Card>(3), "echoplus_tms");
+    expectLiveKey(std::make_unique<pom2::UthernetCard>(3), "uthernet");
+    expectLiveKey(std::make_unique<pom2::UthernetIICard>(3), "uthernet2");
+    expectLiveKey(std::make_unique<pom2::FujiNetCard>(3), "fujinet");
+
+    // A live failure/absence must never erase the effective request. This is
+    // the contract that preserves a CFFA assignment while its ROM is missing.
+    settings.setString("slot_1_card", "cffa");
+    settings.setString("slot_2_card", "");
+    settings.setString("slot_3_card", "");
+    settings.setString("slot_4_card", "");
+    settings.setString("slot_5_card", "");
+    settings.setString("slot_6_card", "");
+    settings.setString("slot_7_card", "");
+    slots.resolve(settings, pom2::SystemProfile::AppleIIe);
+    assert(slots.effectivePlan()[1] == "cffa");
+    (void)slots.captureLive(SlotBus{});
+    assert(slots.effectivePlan()[1] == "cffa");
+
+    std::printf("slot_configuration_coordinator_test: OK\n");
+    return 0;
+}

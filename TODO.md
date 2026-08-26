@@ -699,6 +699,30 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `renderScreenWindow`, tightly coupled to the GL upload. Target is still
   &lt; 3 000 lines/file. *1-2 d.*
   → [DEV](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp)
+- 🟠 **Wire the landed coordinators into `MainWindow`** *(2026-08-26 merge)* —
+  the ten host-policy coordinators + `SlotCardFactory` are in the tree and
+  under test (nine tests, all green) but nothing calls them yet: `MainWindow`
+  still owns the storage/audio/printer/mouse card aliases and the slot-rebuild
+  protocol inline. Wiring them is what removes those aliases and closes the
+  lifetime holes they were written for (a card pointer fetched before the lock,
+  or reused across several independent lock acquisitions). Now an ordinary
+  refactor against one decomposition rather than a merge between two.
+  → `CHANGELOG.md` 2026-08-26. *3-5 d.*
+- 🟡 **Re-derive the device injection seams on top of v0.8.5** *(2026-08-26
+  merge)* — `W5100Socket` / `SuperSerialTransport` / `FujiNetLink` and their
+  deterministic fakes stayed on `refactor/core-boundaries-and-coordinators`
+  because the branch's versions predate main's socket hardening
+  (`disableSigpipe`, `MSG_NOSIGNAL`), `ThreadGuard` and the torn-RSR-read fix.
+  The seams are worth having — they buy device tests that open no host socket,
+  serial listener or process — but they must be rebuilt over the hardened code,
+  not merged under it. `NetworkCoordinator` lands with them. *2-3 d.*
+- 🟢 **The SDK install contract + the CMake layer guard** *(2026-08-26 merge)* —
+  `find_package(pom2_core)` / `POM2::core`, the standalone consumer example and
+  the configure-time rejection of upward includes all rest on the branch's
+  layered object libraries (media / machine / devices / runtime). The flat
+  v0.8.5 source lists have no installable library target to attach them to, so
+  these land with that layering or not at all. The facade itself
+  (`include/pom2/core.hpp`, pinned by `pom2_core_api`) is already in.
 - 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
   to centralize into a `Config` (env → CLI → Settings → defaults),
   list env vars in `--help`. *1 d.* Architect **P4**.
