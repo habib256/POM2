@@ -25,6 +25,7 @@
 #include "Memory.h"
 #include "ResourcePaths.h"
 #include "SuperSerialCard.h"
+#include "SuperSerialTcpTransport.h"
 #include "Version.h"
 
 #include <atomic>
@@ -274,6 +275,7 @@ int main(int argc, char** argv)
     // port on a shared CI runner), and nothing in capture mode talks to it.
     if (!captureMode) {
         auto ssc = std::make_unique<SuperSerialCard>(SuperSerialCard::kDefaultSlot);
+        ssc->setTransport(pom2::makeSuperSerialTcpTransport(*ssc));
         ssc->setKeyboardSink(
             [&mem = controller.memory()](uint8_t b) {
                 const char buf[1] = { static_cast<char>(b) };

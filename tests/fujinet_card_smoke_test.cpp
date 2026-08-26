@@ -43,6 +43,7 @@
 #include "Memory.h"
 #include "SlipFramer.h"
 #include "SocketCompat.h"
+#include "SpOverSlipLink.h"
 
 #include <cassert>
 #include <cstdio>
@@ -211,6 +212,7 @@ struct Machine {
     Memory       mem;
     std::unique_ptr<M6502> cpu;
     FujiNetCard* card = nullptr;
+    SpOverSlipLink* link = nullptr;
     uint16_t     port = 0;
 
     Machine()
@@ -222,9 +224,12 @@ struct Machine {
         cpu->hardReset();
 
         auto c = std::make_unique<FujiNetCard>(kSlot);
+        auto hostLink = std::make_unique<SpOverSlipLink>();
+        link = hostLink.get();
         card = c.get();
         card->setMemory(&mem);
         card->setCpu(cpu.get());
+        card->setLink(std::move(hostLink));
         mem.slotBus().plug(kSlot, std::move(c));
     }
 
@@ -233,8 +238,8 @@ struct Machine {
     {
         std::string err;
         for (uint16_t p = 19900; p < 19940; ++p) {
-            card->link().setTcpMode(p);
-            if (card->link().start(err)) { port = p; return; }
+            link->setTcpMode(p);
+            if (link->start(err)) { port = p; return; }
         }
         assert(false && "no free test port");
     }
@@ -342,7 +347,7 @@ void testBootWithPeer()
     Machine m;
     m.startLink();
     FakePeer peer(m.port, standardHandler);
-    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+    assert(waitFor([&] { return m.link->deviceCount() == 2; }));
 
     // Enter the card the way the autostart scan does.
     m.cpu->setProgramCounter(kSlotRom);
@@ -358,7 +363,7 @@ void testBootWithPeer()
     assert(m.cpu->getXRegister() == static_cast<uint8_t>(kSlot << 4));
 
     peer.stop();
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: boots block 0 into $0800 and runs it\n");
 }
 
@@ -384,7 +389,7 @@ void testBootWithNoPeerContinuesSlotScan()
     // its way through rather than expecting the CPU to settle there.
     assert(m.runUntilPc(0xFABA));
 
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: no peer → autostart slot scan continues ($FABA)\n");
 }
 
@@ -396,7 +401,7 @@ void testSmartPortStatusCall()
     Machine m;
     m.startLink();
     FakePeer peer(m.port, standardHandler);
-    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+    assert(waitFor([&] { return m.link->deviceCount() == 2; }));
 
     // Parameter list at $0310: count, unit, payload pointer, status code.
     m.mem.memWrite(0x0310, 0x03);
@@ -421,7 +426,7 @@ void testSmartPortStatusCall()
     assert(m.mem.memRead(0x4002) == 0x06);
 
     peer.stop();
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: SmartPort STATUS — stack fixup, payload, A/X/Y, carry\n");
 }
 
@@ -430,7 +435,7 @@ void testSmartPortReadBlock()
     Machine m;
     m.startLink();
     FakePeer peer(m.port, standardHandler);
-    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+    assert(waitFor([&] { return m.link->deviceCount() == 2; }));
 
     m.mem.memWrite(0x0310, 0x03);
     m.mem.memWrite(0x0311, 0x01);
@@ -452,7 +457,7 @@ void testSmartPortReadBlock()
                static_cast<uint8_t>((7 * 5 + i) & 0xFF));
 
     peer.stop();
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: SmartPort READ BLOCK — 512 bytes into guest RAM\n");
 }
 
@@ -461,7 +466,7 @@ void testStackWrapAtPageBoundary()
     Machine m;
     m.startLink();
     FakePeer peer(m.port, standardHandler);
-    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+    assert(waitFor([&] { return m.link->deviceCount() == 2; }));
 
     m.mem.memWrite(0x0310, 0x03);
     m.mem.memWrite(0x0311, 0x01);
@@ -486,7 +491,7 @@ void testStackWrapAtPageBoundary()
     assert(m.mem.memRead(0x0201) == 0xA5);
 
     peer.stop();
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: stack fixup wraps inside page 1 (SP = $01)\n");
 }
 
@@ -521,12 +526,12 @@ void testDeviceCountWithoutPeer()
     // speed — and it duly fired under a valgrind run of the suite, on a path
     // with nothing network about it. The link's own counters state the
     // intended property directly, and no slowdown can perturb them.
-    const auto stats = m.card->link().stats();
+    const auto stats = m.link->stats();
     assert(stats.calls == 0);
     assert(stats.timeouts == 0);
     assert(m.card->localCount() == 1);
 
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: device-count probe answered locally, no peer needed\n");
 }
 
@@ -548,7 +553,7 @@ void testForwardedCallWithoutPeerIsNoDevice()
     assert(m.cpu->getAccumulator() == kSpNoDevice);          // $28
     assert((m.cpu->getStatusRegister() & M6502::Status::C) != 0);  // carry = error
 
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: no peer → $28 (no device) with carry set\n");
 }
 
@@ -560,7 +565,7 @@ void testIoPageBufferRefused()
     Machine m;
     m.startLink();
     FakePeer peer(m.port, standardHandler);
-    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+    assert(waitFor([&] { return m.link->deviceCount() == 2; }));
 
     // Point the buffer at $C050 — the TEXT/GRAPHICS soft switch. If the card
     // marshalled through Memory blindly, servicing this call would flip the
@@ -582,7 +587,7 @@ void testIoPageBufferRefused()
     assert(m.mem.getDisplayState().textMode == textBefore);                 // and inert
 
     peer.stop();
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: a buffer inside $C0xx is refused, soft switches untouched\n");
 }
 
@@ -635,7 +640,7 @@ void testPrinterTap()
     Machine m;
     m.startLink();
     FakePeer peer(m.port, standardHandler);
-    assert(waitFor([&] { return m.card->link().deviceCount() == 2; }));
+    assert(waitFor([&] { return m.link->deviceCount() == 2; }));
 
     // Unit 2 advertises itself with type $15 (MODEM) because the FujiNet
     // firmware mislabels its own printer — the name is what identifies it.
@@ -686,7 +691,7 @@ void testPrinterTap()
     assert(m.card->bytesWritten() == sizeof(job));   // unchanged
 
     peer.stop();
-    m.card->link().stop();
+    m.link->stop();
     std::printf("  ok: printer tap spools only the printer unit's writes\n");
 }
 

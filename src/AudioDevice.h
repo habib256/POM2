@@ -25,6 +25,8 @@
 #ifndef POM2_AUDIO_DEVICE_H
 #define POM2_AUDIO_DEVICE_H
 
+#include "AudioSource.h"
+
 #include <algorithm>   // std::max — getMasterPeak folds the two channels
 #include <atomic>
 #include <cstdint>
@@ -34,61 +36,10 @@
 
 struct ma_device;
 
-class AudioSource
-{
-public:
-    virtual ~AudioSource() = default;
-    /// Fill `output` with `frameCount` mono float32 samples. Called from
-    /// the audio callback thread — must be fast and thread-safe.
-    /// The mixer places the result in the stereo field using `pan`.
-    virtual void fillAudioBuffer(float* output, int frameCount) = 0;
-
-    /// Optional native-stereo path, for sources whose hardware really has
-    /// two outputs (Mockingboard: AY1 left / AY2 right; Phasor: one AY
-    /// pair per side). `left` and `right` are separate `frameCount`-sample
-    /// planes, both pre-zeroed by the mixer, and `pan` is NOT applied —
-    /// the source owns its own placement, exactly as the card's wiring
-    /// does. Return true when filled; the default returns false and the
-    /// mixer falls back to the mono path above, so existing sources need
-    /// no change.
-    virtual bool fillAudioBufferStereo(float* /*left*/, float* /*right*/,
-                                       int /*frameCount*/) { return false; }
-
-    /// Post-fill peak abs amplitude of the last buffer this source
-    /// produced, with a short release envelope (decays ~85% per 5 ms
-    /// buffer → invisible after ~100 ms of silence). Updated by
-    /// AudioDevice::mixSources right after calling fillAudioBuffer; the
-    /// UI mixer panel reads it to draw a small level meter so users can
-    /// immediately confirm a channel is alive. Stored on AudioSource
-    /// (not AudioDevice) so it survives source list reshuffles and
-    /// avoids a parallel-vector lookup on the audio thread.
-    std::atomic<float> lastBufferPeak{0.0f};
-
-    /// Stereo placement for the MONO path, -1 = hard left, 0 = centre,
-    /// +1 = hard right. A balance law, not a constant-power one: the
-    /// centre position is unity on both channels, so making the bus
-    /// stereo did not change the level of any existing mono source.
-    /// Ignored by sources that implement `fillAudioBufferStereo`.
-    std::atomic<float> pan{0.0f};
-};
-
-/// Optional mixin for sources whose synthesis depends on the host audio
-/// rate. AudioDevice::addSource auto-calls setSampleRate(actualSampleRate)
-/// on any source that also inherits this — defensive against forgetting
-/// the explicit call after a hot-plug. Existing call sites keep their
-/// manual setSampleRate; the auto path just guarantees the source is
-/// configured before the first fillAudioBuffer.
-class RateAware
-{
-public:
-    virtual ~RateAware() = default;
-    virtual void setSampleRate(uint32_t hz) = 0;
-};
-
 class AudioDevice
 {
 public:
-    static constexpr uint32_t kSampleRate = 44100;
+    static constexpr uint32_t kSampleRate = AudioSource::kDefaultSampleRate;
     /// Interleaved stereo. `mixSources` writes frameCount * kChannels
     /// floats — callers sizing a buffer must account for both.
     static constexpr uint32_t kChannels   = 2;

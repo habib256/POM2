@@ -36,7 +36,7 @@
 #ifndef POM2_CASSETTE_DEVICE_H
 #define POM2_CASSETTE_DEVICE_H
 
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "CpuClock.h"
 #include "third_party/miniaudio.h"
 
@@ -253,6 +253,7 @@ private:
 
     bool     outputLevel             = false;
     bool     recordedInitialLevel    = false;
+    bool     recordingStarted        = false;
     uint64_t lastOutputToggleCycle   = 0;
     std::vector<uint32_t> recordedDurations;
     bool recordingOverflow = false;

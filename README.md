@@ -519,8 +519,38 @@ the profiling recipe.
 
 - [`CLAUDE.md`](CLAUDE.md) — always-loaded orientation index (build, memory map, profiles, reset architecture, CLI).
 - [`DEV.md`](DEV.md) — implementation deep-dives, MAME-parity ports, internals, gotchas, pinned tests.
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — enforced source layers and dependency direction.
 - [`TODO.md`](TODO.md) — active backlog + MAME ↔ POM2 parity dashboard.
 - [`CHANGELOG.md`](CHANGELOG.md) — resolved items and the **why** behind non-obvious fixes.
+
+### Embedding `pom2_core`
+
+`pom2_core` exposes a small, single-threaded C++17 API in
+`<pom2/core.hpp>`. It performs no wall-clock pacing and opens no window,
+audio device or socket; the embedding host drives `run()` / `step()` itself.
+The facade also provides keyboard injection, host-neutral joystick/paddle
+inputs, two Disk II drives, cassette transport/recording and a CPU-only RGBA
+framebuffer. Built-in speaker audio is exposed as host-pulled mono float32 PCM;
+cassette monitoring is centred in the complete interleaved mix, while an
+optional Mockingboard adds hard-panned AY stereo (and Sound II speech). No API
+opens an OS audio device, so an independent frontend does not need private
+headers.
+Build and install the optional SDK with:
+
+```bash
+cmake -S . -B build-core-sdk \
+  -DPOM2_BUILD_FRONTEND=OFF \
+  -DPOM2_ENABLE_TESTS=ON -DPOM2_INSTALL_CORE_SDK=ON \
+  -DCMAKE_INSTALL_PREFIX=/path/to/prefix
+cmake --build build-core-sdk --target pom2_core
+cmake --install build-core-sdk --component pom2_core_sdk
+```
+
+A consumer can then use `find_package(pom2_core CONFIG REQUIRED)` and link
+`POM2::core`; [`examples/pom2_core_consumer`](examples/pom2_core_consumer)
+is the minimal standalone project. The supported boundary, compatibility
+policy and criteria for a future split are documented in
+[`docs/SDK.md`](docs/SDK.md).
 
 **Conventions**: one concern per `.cpp/.h` pair · MAME = source of truth (cite the file + line range, pin a smoke test under `tests/`) · `emuCycles` everywhere — CPU → audio/UI events carry a cycle stamp, never wall-clock · reach the emulated state through `controller->lockState()`, which hands back `Memory` and the CPU *through* the state lock, so the access cannot be written without it (bare `stateMutex()` is for mutual exclusion that touches neither).
 

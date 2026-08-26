@@ -67,7 +67,7 @@ void SpeakerDevice::reset()
 
 void SpeakerDevice::setSampleRate(uint32_t hz)
 {
-    if (hz == 0) hz = AudioDevice::kSampleRate;
+    if (hz == 0) hz = AudioSource::kDefaultSampleRate;
     outputSampleRate.store(hz, std::memory_order_relaxed);
     // Kernel is sample-rate-independent (FILTER_STEP only depends on
     // RATE_MULTIPLIER) — no rebuild needed.

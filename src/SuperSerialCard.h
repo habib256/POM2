@@ -30,31 +30,28 @@
 // that hands character I/O off to the device-select range. Boot from $Cs00
 // isn't supported — the SSC was rarely a boot device on real hardware.
 //
-// TCP bridge: a worker thread listens on 127.0.0.1:`port` (default 6502)
-// and accepts at most one client at a time. Bytes flow through two
-// 4 KB ring buffers under a mutex. Inbound telnet IAC negotiation is
-// silently dropped and line endings normalised so a vanilla `telnet`
-// binary connects cleanly without hand-shaking; outbound data is
-// telnet-escaped per RFC 854 ($FF → IAC IAC, bare CR → CR NUL). Raw mode
-// (`ssc_raw_mode`) bypasses all of that in both directions for 8-bit
-// binary protocols.
+// Host bridge: runtime may inject a SuperSerialTransport. The default TCP
+// adapter listens on 127.0.0.1:`port` (default 6502), accepts one client and
+// owns the worker thread, sockets and wall-clock pacing. This card owns only
+// the 4 KB FIFOs and guest-visible 6551 state. Inbound telnet negotiation and
+// line endings are decoded through the card's byte-level codec; raw mode
+// bypasses that codec for 8-bit protocols.
 
 #ifndef POM2_SUPER_SERIAL_CARD_H
 #define POM2_SUPER_SERIAL_CARD_H
 
 #include "SlotPeripheral.h"
-#include "SocketCompat.h"   // socket_t / kInvalidSocket for the telnet fds
+#include "SuperSerialTransport.h"
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 class SuperSerialCard : public SlotPeripheral
@@ -74,12 +71,18 @@ public:
 
     int getSlot() const { return slot; }
 
-    /// Start listening on 127.0.0.1:port. Returns false if the bind fails;
-    /// the card stays plugged but `clientConnected()` will always be false.
+    /// Start the injected transport on port. Returns false if no transport is
+    /// installed or the bind fails. Port 0 requests an ephemeral host port.
     bool startListening(uint16_t port);
     /// Tear down the listener and any active connection. Safe to call from
-    /// the UI thread; the worker is joined before returning.
+    /// the UI thread; a runtime worker is joined before returning.
     void stopListening();
+
+    /// Inject or replace the host-side transport. A card constructed without
+    /// one remains a fully functional deterministic 6551, but startListening
+    /// returns false until runtime supplies an adapter.
+    void setTransport(std::unique_ptr<pom2::SuperSerialTransport> transport);
+    bool hasTransport() const { return transport_ != nullptr; }
 
     /// Optional "telnet → keyboard" bridge. When set, every byte the
     /// SSC receives over TCP in telnet TEXT mode is *also* forwarded to
@@ -97,9 +100,9 @@ public:
         keyboardSink = std::move(sink);
     }
 
-    bool isListening()      const { return listening; }
-    bool clientConnected()  const { return connected;  }
-    uint16_t getPort()      const { return port;       }
+    bool isListening() const;
+    bool clientConnected() const { return connected; }
+    uint16_t getPort() const;
     uint64_t bytesRx()      const { return rxCount;    }
     uint64_t bytesTx()      const { return txCount;    }
 
@@ -114,10 +117,10 @@ public:
     bool rawMode()   const    { return rawMode_; }
 
     /// Inject bytes as if they had just arrived on the TCP socket. The
-    /// path matches the worker thread's: SR_OVERRUN on ring overflow,
+    /// path matches an injected transport's: SR_OVERRUN on ring overflow,
     /// RX IRQ raise gated by `rxIrqEnable_`, echo-mode loopback into the
     /// TX queue. Test-only public entry point — production code uses the
-    /// worker thread which calls the same method internally.
+    /// transport adapter which calls the same method internally.
     void deliverRxBytes(const uint8_t* data, size_t n);
 
     /// Printer tap — the //c's real printer port IS this card (slot 1),
@@ -162,6 +165,14 @@ public:
     size_t processTelnetRx(uint8_t* data, size_t n);
     void   resetTelnet() { telnetState_ = TelnetState::Text; telnetPrevCR_ = false; }
 
+    /// Runtime transport hooks. They deliberately exchange bytes and line
+    /// state only—no socket handle, thread or wall-clock type crosses into
+    /// the device layer.
+    size_t processTransportTextRx(uint8_t* data, size_t n);
+    void deliverTransportBytes(const uint8_t* data, size_t n, bool textMode);
+    size_t drainTransportTx(uint8_t* out, size_t capacity);
+    void setTransportConnected(bool nowConnected);
+
     /// Telnet TX escaping (RFC 854): append `b` to `out`, doubling $FF
     /// (IAC IAC) and following a bare CR with NUL (the Apple II's newline
     /// is a lone CR, which telnet transmits as CR NUL). Applied by the TX
@@ -171,7 +182,7 @@ public:
 
     // Test/debug introspection — read-only reflection of the decoded
     // command/control register state.
-    double  bytesPerSecond() const { return bytesPerSecond_; }
+    double  bytesPerSecond() const;
     bool    dtrAsserted()    const { return dtrAsserted_;    }
     bool    echoMode()       const { return echoMode_;       }
     bool    rxIrqEnabled()   const { return rxIrqEnable_;    }
@@ -210,9 +221,9 @@ public:
 private:
     int slot;
     std::array<uint8_t, 256> rom{};
-    std::atomic<bool> listening { false };
     std::atomic<bool> connected { false };
     uint16_t port = kDefaultPort;
+    std::unique_ptr<pom2::SuperSerialTransport> transport_;
 
     // Persistent telnet IAC parser state (worker thread only). Survives
     // recv() chunk boundaries so a split IAC / SB sequence parses correctly.
@@ -221,20 +232,6 @@ private:
     /// CR-seen state for normalizeLineEndings, persistent across recv()
     /// chunks for the same reason telnetState_ is (see resetTelnet()).
     bool telnetPrevCR_ = false;
-
-    // Atomic so the UI/dtor thread can shutdown() these to wake the worker
-    // out of accept()/recv() without a torn read, and so close() happens
-    // exactly once (the worker is the sole closer of clientFd). See
-    // stopListening()/closeClient().
-    // pom2::socket_t, not int: Winsock's SOCKET is an unsigned handle whose
-    // failure value is INVALID_SOCKET rather than -1 (SocketCompat.h).
-    std::atomic<pom2::socket_t> listenFd { pom2::kInvalidSocket };
-    std::atomic<pom2::socket_t> clientFd { pom2::kInvalidSocket };
-    // Prevent shutdown/load from acting on a descriptor after closeClient()
-    // closed it and the kernel recycled the numeric handle.
-    mutable std::mutex fdLifeMtx_;
-    std::thread worker;
-    std::atomic<bool> stopRequested { false };
 
     // 6551 status-register bit layout (MAME `mos6551.h:53-61`).
     static constexpr uint8_t SR_PARITY_ERROR  = 0x01;
@@ -301,14 +298,6 @@ private:
     // together in this model (SSC + telnet has no separate carrier-vs-DTR
     // signalling), but we keep two IRQ source bits to mirror MAME.
     bool prevConnected_ = false;
-
-    // TX rate-limit accounting (worker thread). `lastDrainTime_` is the
-    // last wall-clock at which we replenished `sendBudget_`. Both reset on
-    // every control-reg write so a change of baud rate doesn't dump a
-    // backlog at once.
-    double sendBudget_ = 0.0;
-    std::chrono::steady_clock::time_point lastDrainTime_;
-
 
     /// Apply a write to the command register: decode DTR/echo/RX-IRQ,
     /// clear pending RX IRQ when its enable bit goes off (MAME
@@ -379,8 +368,6 @@ private:
     bool   printerSpoolTrimWarned_ = false;
 
     void buildRom();
-    void runWorker();
-    void closeClient();
 };
 
 #endif // POM2_SUPER_SERIAL_CARD_H

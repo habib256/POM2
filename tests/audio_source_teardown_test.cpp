@@ -9,10 +9,9 @@
 // source before `slotBus().clear()` destroyed BOTH cards. The audio callback
 // thread then dereferenced the survivor every ~5 ms.
 //
-// The fix is structural: MainWindow keeps an inventory of every AudioSource
-// it registered (`registeredAudioSources_`) and unregisters all of them.
-// MainWindow itself needs GLFW/GL and can't be instantiated headlessly, so
-// this test pins the two facts the fix rests on, against the real cards and
+// The fix is structural: AudioCoordinator owns the inventory of every source
+// registered with AudioDevice and drains it before slot cards are destroyed.
+// This test exercises that production coordinator against the real cards and
 // the real AudioDevice:
 //
 //   1. The two variants really are two coexisting cards on one bus, with two
@@ -27,6 +26,7 @@
 // answers "is this source still registered?" without any accessor.
 
 #include "AudioDevice.h"
+#include "AudioCoordinator.h"
 #include "Mockingboard.h"
 #include "SlotBus.h"
 
@@ -74,12 +74,12 @@ int main()
     assert(bus.peripheral(4) == acRaw);
     assert(bus.peripheral(5) == s2Raw);
 
-    // The inventory MainWindow::registerAudioSource() maintains.
-    std::vector<AudioSource*> registered;
+    pom2::AudioCoordinator audio(dev);
     for (AudioSource* s : { acSrc, s2Src }) {
-        dev.addSource(s);
-        registered.push_back(s);
+        audio.registerSource(s);
     }
+    audio.registerSource(acSrc); // idempotent
+    assert(audio.sourceCount() == 2);
     assert(stillRegistered(dev, acSrc));
     assert(stillRegistered(dev, s2Src));
 
@@ -87,13 +87,13 @@ int main()
     //     (which pointed at the LAST card plugged). The other card's source
     //     stays live in the device — that is the dangling pointer the audio
     //     thread called through after slotBus().clear().
-    dev.removeSource(s2Src);
+    dev.removeSource(s2Src); // deliberately bypass the coordinator
     assert(!stillRegistered(dev, s2Src));
     assert(stillRegistered(dev, acSrc));
 
     // The inventory teardown drains everything, whatever the aliases say.
-    for (AudioSource* s : registered) dev.removeSource(s);
-    registered.clear();
+    audio.unregisterAll();
+    assert(audio.sourceCount() == 0);
     assert(!stillRegistered(dev, acSrc));
     assert(!stillRegistered(dev, s2Src));
 

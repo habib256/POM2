@@ -98,7 +98,7 @@
 #define POM2_PHASOR_CARD_H
 
 #include "Ay3_8910.h"
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "SlotPeripheral.h"
 #include "Via6522.h"
 

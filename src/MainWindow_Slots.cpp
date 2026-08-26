@@ -13,17 +13,24 @@
 // thread, which:
 //
 //   1. Stops the worker (controller->stop()).
-//   2. Tears down the SlotBus via `clear()` (each card's onUnplug runs).
+//   2. Runs SlotRebuildCoordinator's ordered consumer/topology teardown.
 //   3. Re-runs `plugSlotsFromSettings()` so the new mapping takes effect.
-//   4. Hard-resets the CPU (so PC lands on the new ROM's reset vector).
+//   4. Cold-boots the replacement hardware.
 //   5. Re-starts the worker.
 //
-// Validation: each card type can only be assigned to one slot at a time.
-// Duplicate selections are highlighted in red and Apply stays disabled.
+// Validation: ordinary card types can only be assigned once; storage cards
+// explicitly supporting multiple instances retain per-slot state.
 // Mouse Card additionally requires both Apple ROMs to be present —
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "MainWindowUiState.h"
+#include "DevicePanelCoordinator.h"
+#include "NetworkCoordinator.h"
+#include "PrinterCoordinator.h"
+#include "SlotConfigurationCoordinator.h"
+#include "SlotRebuildCoordinator.h"
+#include "StorageCoordinator.h"
 
 // Same heavy-includes-here pattern as MainWindow.cpp — MainWindow.h
 // forward-declares the controller / cards / panels.
@@ -32,7 +39,7 @@
 #include "Version.h"
 #include "CffaCard.h"
 #include "CharRomCatalog.h"
-#include "ClockCard.h"
+#include "FujiNetHost.h"
 #include "DiskController_ImGui.h"
 #include "DiskIICard.h"
 #include "EchoPlusCard.h"
@@ -41,7 +48,6 @@
 #include "Logger.h"
 #include "Memory.h"
 #include "Mockingboard.h"
-#include "MouseCard.h"
 #include "PhasorCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "ResourcePaths.h"
@@ -72,43 +78,21 @@ using pom2::mouseRomsPresent;
 using pom2::mouseAwRomPresent;
 using pom2::cffaRomPresent;
 
-// Persist a media bay's state with the right key scheme for its card type
-// (SmartPort per-unit, CFFA per-slot, synthetic HDV a legacy global key).
-// Called under stateMutex right after a mount/eject/type/write-back action.
-// Promoted to a member so renderSlotConfigPanel's media column can reuse it
-// (was a lambda in the now-removed Slot Manager).
-void MainWindow::persistMediaBay(int slot, int bay, SlotPeripheral* p)
-{
-    if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(p)) {
-        const std::string base = "smartport_slot" + std::to_string(slot) +
-                                 "_unit" + std::to_string(bay);
-        const pom2::SmartPortUnit* u = sp->unit(static_cast<size_t>(bay));
-        settings->setString(base + "_type",
-                            u ? std::string(u->kindKey()) : std::string());
-        settings->setString(base + "_path", u ? u->path() : std::string());
-        settings->setBool  (base + "_writeback",
-                            u ? u->isWriteBackEnabled() : false);
-    } else if (auto* cffa = dynamic_cast<pom2::CffaCard*>(p)) {
-        const std::string base = "cffa_slot" + std::to_string(slot);
-        settings->setString(base + "_path", cffa->getImagePath());
-        settings->setBool  (base + "_writeback", cffa->isWriteBackEnabled());
-    } else if (auto* hdv = dynamic_cast<ProDOSHardDiskCard*>(p)) {
-        settings->setString("hdv_path", hdv->getImagePath());
-        settings->setBool  ("hdv_writeback", hdv->isWriteBackEnabled());
-        hdvPath   = hdv->getImagePath();
-        hdvStatus = hdv->isImageLoaded()
-                      ? ("loaded: " + hdv->getImagePath())
-                      : std::string("no image mounted");
-    }
-}
-
 void MainWindow::renderSlotConfigPanel()
 {
-    if (!showSlotConfigPanel) return;
+    if (!uiState_->showSlotConfigPanel) return;
+
+    const auto& effectivePlan = slotCoordinator_->effectivePlan();
+    auto& draft = slotCoordinator_->draft();
+    pom2::SlotConfigurationCoordinator::LiveSnapshot liveSlots;
+    {
+        auto state = controller->lockState();
+        liveSlots = slotCoordinator_->captureLive(state.memory().slotBus());
+    }
 
     // 880 px was sized for two columns; one column needs about half that.
     ImGui::SetNextWindowSize(ImVec2(520, 460), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Slot Configuration", &showSlotConfigPanel)) {
+    if (!ImGui::Begin("Slot Configuration", &uiState_->showSlotConfigPanel)) {
         ImGui::End();
         return;
     }
@@ -145,19 +129,6 @@ void MainWindow::renderSlotConfigPanel()
             ImGui::SameLine(slotGutter);
             ImGui::SetNextItemWidth(-FLT_MIN);
         };
-
-        // Snapshot the canonical mapping into a working copy so the user's
-        // edits are local until Apply.
-        static std::array<std::string, 8> draft{};
-        // Re-seed the working copy from the live slotCards[] whenever a
-        // profile switch / settings restart rebuilt them. slotDraftInited_ is
-        // a MainWindow member that applyProfile/restartEmulationFromSettings
-        // reset for exactly this purpose — a plain `static bool` here would
-        // never observe the rebuild and would keep stale assignments.
-        if (!slotDraftInited_) {
-            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
-            slotDraftInited_ = true;
-        }
 
         const bool mouseAvailable    = mouseRomsPresent();
         const bool mouseAwAvailable  = mouseAwRomPresent();
@@ -279,17 +250,33 @@ void MainWindow::renderSlotConfigPanel()
 
             // A staged row is marked where the user is looking — on the row
             // itself — not only by the button at the bottom of the column.
-            const bool staged = (draft[s] != slotCards[s]);
-            if (staged) {
+            const bool staged = (draft[s] != effectivePlan[s]);
+            const bool liveDiffers = (liveSlots.keys[s] != effectivePlan[s]);
+            if (!staged && liveDiffers) {
+                ImGui::TextColored(ImVec4(0.95f, 0.65f, 0.25f, 1.0f),
+                                   ICON_FA_PLUG_CIRCLE_EXCLAMATION);
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip(
+                        "Configured: %s\nActually plugged: %s\n"
+                        "The plan is preserved; this can be a missing ROM, "
+                        "a fallback implementation or a session-only card.",
+                        pom2::cardLabelForKey(effectivePlan[s]),
+                        liveSlots.plugged(s) ? liveSlots.names[s].c_str()
+                                             : "(empty)");
+                }
+                ImGui::SameLine(0.0f, 0.0f);
+            } else if (staged) {
                 ImGui::PushStyleColor(ImGuiCol_Text,
                     ImGui::ColorConvertU32ToFloat4(pom2::palette().accent));
                 ImGui::TextUnformatted(ICON_FA_CIRCLE_DOT);
                 ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) {
-                    const char* wasLabel = "(empty)";
-                    for (const auto& ct : kCardTypes)
-                        if (ct.key == slotCards[s]) { wasLabel = ct.label; break; }
-                    ImGui::SetTooltip("Staged. Currently plugged: %s", wasLabel);
+                    ImGui::SetTooltip(
+                        "Staged. Effective configuration: %s\n"
+                        "Actually plugged: %s",
+                        pom2::cardLabelForKey(effectivePlan[s]),
+                        liveSlots.plugged(s) ? liveSlots.names[s].c_str()
+                                             : "(empty)");
                 }
                 ImGui::SameLine(0.0f, 0.0f);
             }
@@ -417,7 +404,7 @@ void MainWindow::renderSlotConfigPanel()
         int pending = 0;
         for (int s = 1; s <= 7; ++s) {
             if (profileCfg.builtInSlots[s].has_value()) continue;
-            if (draft[s] != slotCards[s]) ++pending;
+            if (draft[s] != effectivePlan[s]) ++pending;
         }
 
         if (pending > 0) {
@@ -461,9 +448,9 @@ void MainWindow::renderSlotConfigPanel()
                     if (changed[s]) settings->setString(
                         "slot_" + std::to_string(s) + "_card", previous[s]);
                 }
-                tapeStatusMessage = "Slot changes not applied — settings could not be saved.";
-                tapeStatusUntil = lastFrameTime + 8.0;
-                pom2::log().warn("Slots", tapeStatusMessage);
+                uiState_->tapeStatusMessage = "Slot changes not applied — settings could not be saved.";
+                uiState_->tapeStatusUntil = uiState_->lastFrameTime + 8.0;
+                pom2::log().warn("Slots", uiState_->tapeStatusMessage);
             } else if (!restartEmulationFromSettings()) {
                 // The live machine was deliberately left intact. Restore the
                 // persisted mapping too, otherwise the refused draft would be
@@ -479,12 +466,12 @@ void MainWindow::renderSlotConfigPanel()
                 // restartEmulationFromSettings also captured live media paths
                 // after the first save; make those refreshed values durable.
                 if (!settings->save()) {
-                    tapeStatusMessage =
+                    uiState_->tapeStatusMessage =
                         "Slots applied, but updated settings could not be saved.";
-                    tapeStatusUntil = lastFrameTime + 8.0;
-                    pom2::log().warn("Slots", tapeStatusMessage);
+                    uiState_->tapeStatusUntil = uiState_->lastFrameTime + 8.0;
+                    pom2::log().warn("Slots", uiState_->tapeStatusMessage);
                 }
-                for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+                slotCoordinator_->resetDraft();
             }
         }
         ImGui::EndDisabled();
@@ -499,8 +486,7 @@ void MainWindow::renderSlotConfigPanel()
                 "Internal Disks & Media has already taken effect.");
         ImGui::SameLine();
         ImGui::BeginDisabled(pending == 0);
-        if (ImGui::Button("Revert"))
-            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+        if (ImGui::Button("Revert")) slotCoordinator_->resetDraft();
         ImGui::EndDisabled();
         if (pending > 0 && ImGui::IsItemHovered())
             ImGui::SetTooltip("Discard the %d staged slot change%s.\n"
@@ -519,10 +505,16 @@ void MainWindow::renderSlotConfigPanel()
 // longer share a window.
 void MainWindow::renderMediaPanel()
 {
-    if (!showMediaPanel) return;
+    if (!uiState_->showMediaPanel) return;
+
+    pom2::SlotConfigurationCoordinator::LiveSnapshot liveSlots;
+    {
+        auto state = controller->lockState();
+        liveSlots = slotCoordinator_->captureLive(state.memory().slotBus());
+    }
 
     ImGui::SetNextWindowSize(ImVec2(520, 480), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Internal Disks & Media", &showMediaPanel)) {
+    if (!ImGui::Begin("Internal Disks & Media", &uiState_->showMediaPanel)) {
         ImGui::End();
         return;
     }
@@ -570,7 +562,7 @@ void MainWindow::renderMediaPanel()
                 any = true;
                 ImGui::PushID(2000 + s);
                 ImGui::Text("Slot %d — %s%s", s,
-                            pom2::cardLabelForKey(slotCards[s]),
+                            liveSlots.names[s].c_str(),
                             builtIn ? " (built-in)" : "");
 
                 int nb = media->bayCount();
@@ -616,13 +608,11 @@ void MainWindow::renderMediaPanel()
                                 const bool sel = (o.first == info.typeKey);
                                 if (ImGui::Selectable(o.second.c_str(), sel) &&
                                     o.first != info.typeKey) {
-                                    {
-                                        std::lock_guard<std::mutex> lk(controller->stateMutex());
-                                        media->setBayType(b, o.first);
-                                        persistMediaBay(s, b, p);
-                                    }
-                                    settings->save();
-                                    mPrimed[s][b] = false;
+                                    const auto command =
+                                        storageCoordinator_->setMediaBayType(
+                                            *controller, *settings, s, b,
+                                            o.first);
+                                    if (command.ok) mPrimed[s][b] = false;
                                 }
                                 if (sel) ImGui::SetItemDefaultFocus();
                             }
@@ -643,38 +633,27 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(buf[0] == '\0' || !typeAllows);
                     if (ImGui::Button("Mount")) {
-                        std::string err;
-                        bool ok = false;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = media->mountBay(b, buf, err);
-                            if (ok) persistMediaBay(s, b, p);
-                        }
-                        if (ok) settings->save();
-                        tapeStatusMessage = ok
+                        const auto command =
+                            storageCoordinator_->mountMediaBay(
+                                *controller, *settings, s, b, buf);
+                        uiState_->tapeStatusMessage = command.ok
                             ? ("Slot " + std::to_string(s) + ": mounted " + buf)
-                            : ("Slot " + std::to_string(s) + ": mount failed: " + err);
-                        tapeStatusUntil = lastFrameTime + 4.0;
+                            : ("Slot " + std::to_string(s) +
+                               ": mount failed: " + command.error);
+                        uiState_->tapeStatusUntil = uiState_->lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     ImGui::BeginDisabled(!info.loaded);
                     if (ImGui::Button("Eject")) {
-                        bool ok = false;
-                        std::string err;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = media->ejectBay(b);
-                            if (ok) persistMediaBay(s, b, p);
-                            else err = media->bayInfo(b).lastError;
-                        }
-                        if (ok) {
-                            settings->save();
-                            mPrimed[s][b] = false;
-                        }
-                        tapeStatusMessage = "Slot " + std::to_string(s) +
-                            (ok ? ": ejected" : ": eject failed: " + err);
-                        tapeStatusUntil = lastFrameTime + 4.0;
+                        const auto command =
+                            storageCoordinator_->ejectMediaBay(
+                                *controller, *settings, s, b);
+                        if (command.ok) mPrimed[s][b] = false;
+                        uiState_->tapeStatusMessage = "Slot " + std::to_string(s) +
+                            (command.ok ? ": ejected"
+                                        : ": eject failed: " + command.error);
+                        uiState_->tapeStatusUntil = uiState_->lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
 
@@ -682,12 +661,8 @@ void MainWindow::renderMediaPanel()
                         bool wb = info.writeBackEnabled;
                         ImGui::BeginDisabled(!typeAllows);
                         if (ImGui::Checkbox("Write-back (save on eject)", &wb)) {
-                            {
-                                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                                media->setBayWriteBack(b, wb);
-                                persistMediaBay(s, b, p);
-                            }
-                            settings->save();
+                            (void)storageCoordinator_->setMediaBayWriteBack(
+                                *controller, *settings, s, b, wb);
                         }
                         ImGui::EndDisabled();
                     }
@@ -704,8 +679,8 @@ void MainWindow::renderMediaPanel()
                 ImGui::BeginDisabled(!bootable);
                 if (ImGui::SmallButton("Boot slot")) {
                     controller->bootFromSlot(s);
-                    tapeStatusMessage = "Booting slot " + std::to_string(s);
-                    tapeStatusUntil = lastFrameTime + 3.0;
+                    uiState_->tapeStatusMessage = "Booting slot " + std::to_string(s);
+                    uiState_->tapeStatusUntil = uiState_->lastFrameTime + 3.0;
                 }
                 ImGui::EndDisabled();
                 ImGui::PopID();
@@ -716,7 +691,7 @@ void MainWindow::renderMediaPanel()
                 any = true;
                 ImGui::PushID(3000 + s);
                 ImGui::Text("Slot %d — %s%s", s,
-                            pom2::cardLabelForKey(slotCards[s]),
+                            liveSlots.names[s].c_str(),
                             builtIn ? " (built-in)" : "");
 
                 bool bootable = false;
@@ -748,46 +723,27 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(buf[0] == '\0');
                     if (ImGui::Button("Insert")) {
-                        bool ok = false;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = d2->insertDisk(drv, buf);
-                            if (ok) d2->seekTrack0();
-                        }
-                        // Only drive 1 has a persisted path key (disk_path_slotN);
-                        // drive 2 mounts are session-only (matches legacy scheme).
-                        if (ok && drv == 0) {
-                            settings->setString(
-                                "disk_path_slot" + std::to_string(s), std::string(buf));
-                            settings->save();
-                        }
-                        tapeStatusMessage = ok
+                        const auto command = storageCoordinator_->mountDiskII(
+                            *controller, *settings, s, drv, buf, true);
+                        uiState_->tapeStatusMessage = command.ok
                             ? ("Slot " + std::to_string(s) + " drive " +
                                std::to_string(drv + 1) + ": inserted")
                             : ("Slot " + std::to_string(s) + ": insert failed: " +
-                               d2->getLastError(drv));
-                        tapeStatusUntil = lastFrameTime + 4.0;
+                               command.error);
+                        uiState_->tapeStatusUntil = uiState_->lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     ImGui::BeginDisabled(!loaded);
                     if (ImGui::Button("Eject")) {
-                        bool ok = false;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = d2->ejectDisk(drv);
-                        }
-                        if (ok && drv == 0) {
-                            settings->setString(
-                                "disk_path_slot" + std::to_string(s), std::string());
-                            settings->save();
-                        }
-                        if (ok) dPrimed[s][drv] = false;
-                        tapeStatusMessage = "Slot " + std::to_string(s) +
+                        const auto command = storageCoordinator_->ejectDiskII(
+                            *controller, *settings, s, drv);
+                        if (command.ok) dPrimed[s][drv] = false;
+                        uiState_->tapeStatusMessage = "Slot " + std::to_string(s) +
                             " drive " + std::to_string(drv + 1) +
-                            (ok ? ": ejected" : ": eject failed: " +
-                                  d2->getLastError(drv));
-                        tapeStatusUntil = lastFrameTime + 4.0;
+                            (command.ok ? ": ejected" : ": eject failed: " +
+                                          command.error);
+                        uiState_->tapeStatusUntil = uiState_->lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
                     ImGui::Unindent();
@@ -797,8 +753,8 @@ void MainWindow::renderMediaPanel()
                 ImGui::BeginDisabled(!bootable);
                 if (ImGui::SmallButton("Boot slot")) {
                     controller->bootFromSlot(s);
-                    tapeStatusMessage = "Booting slot " + std::to_string(s);
-                    tapeStatusUntil = lastFrameTime + 3.0;
+                    uiState_->tapeStatusMessage = "Booting slot " + std::to_string(s);
+                    uiState_->tapeStatusUntil = uiState_->lastFrameTime + 3.0;
                 }
                 ImGui::EndDisabled();
                 ImGui::PopID();
@@ -876,7 +832,7 @@ void MainWindow::setGlfwWindow(GLFWwindow* w)
         // default size stands. A saved position is clamped back onto a
         // monitor so a window saved on a since-disconnected screen can't
         // reopen off-screen.
-        if (!kiosk_ && loadWindowGeometryFromSettings()) {
+        if (!uiState_->kiosk && loadWindowGeometryFromSettings()) {
             // Validate against the WHOLE virtual desktop, not just the
             // primary monitor: a monitor to the left of primary has
             // NEGATIVE virtual-screen X and one to the right has X beyond
@@ -891,25 +847,25 @@ void MainWindow::setGlfwWindow(GLFWwindow* w)
                 glfwGetMonitorWorkarea(mons[i], &mx, &my, &mw, &mh);
                 // "Visible enough to grab": the title bar's left corner
                 // must sit inside this monitor's work area.
-                if (savedWinX_ >= mx - 32 && savedWinX_ <= mx + mw - 64 &&
-                    savedWinY_ >= my - 32 && savedWinY_ <= my + mh - 64)
+                if (uiState_->savedWindowX >= mx - 32 && uiState_->savedWindowX <= mx + mw - 64 &&
+                    uiState_->savedWindowY >= my - 32 && uiState_->savedWindowY <= my + mh - 64)
                     onSomeMonitor = true;
             }
             GLFWmonitor* mon = glfwGetPrimaryMonitor();
             const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
             if (vm) {
-                if (savedWinW_ > vm->width)  savedWinW_ = vm->width;
-                if (savedWinH_ > vm->height) savedWinH_ = vm->height;
+                if (uiState_->savedWindowWidth > vm->width)  uiState_->savedWindowWidth = vm->width;
+                if (uiState_->savedWindowHeight > vm->height) uiState_->savedWindowHeight = vm->height;
             }
             if (!onSomeMonitor && vm) {
                 // Saved on a since-disconnected screen — recentre on
                 // primary rather than reopening off-screen.
-                savedWinX_ = (vm->width  - savedWinW_) / 2;
-                savedWinY_ = (vm->height - savedWinH_) / 2;
+                uiState_->savedWindowX = (vm->width  - uiState_->savedWindowWidth) / 2;
+                uiState_->savedWindowY = (vm->height - uiState_->savedWindowHeight) / 2;
             }
-            glfwSetWindowSize(window, savedWinW_, savedWinH_);
-            glfwSetWindowPos (window, savedWinX_, savedWinY_);
-            if (savedWinMaximized_) glfwMaximizeWindow(window);
+            glfwSetWindowSize(window, uiState_->savedWindowWidth, uiState_->savedWindowHeight);
+            glfwSetWindowPos (window, uiState_->savedWindowX, uiState_->savedWindowY);
+            if (uiState_->savedWindowMaximized) glfwMaximizeWindow(window);
         }
     }
 }
@@ -925,18 +881,17 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     controller->stop();
     std::string flushErr;
     if (!flushSlotMedia(flushErr)) {
-        tapeStatusMessage = "Profile switch refused — save failed: " + flushErr;
-        tapeStatusUntil = lastFrameTime + 8.0;
-        pom2::log().warn("Profile", tapeStatusMessage);
+        uiState_->tapeStatusMessage = "Profile switch refused — save failed: " + flushErr;
+        uiState_->tapeStatusUntil = uiState_->lastFrameTime + 8.0;
+        pom2::log().warn("Profile", uiState_->tapeStatusMessage);
         if (wasRunning) controller->start();
         return;
     }
 
-    // The session-local auto-plugged HDV (POM2 <image.hdv> one-shot boot) is
-    // destroyed by the slot rebuild below; clear its marker so a later real
-    // HDV in the same slot number isn't wrongly skipped at shutdown.
-    autoProvisionedHdvSlot_ = -1;
-    autoProvisionedSmartPortSlot_ = -1;
+    // Durability is established: start the shared topology transaction. It
+    // invalidates rewind state and session-local auto-provision markers now,
+    // before any card is destroyed.
+    slotRebuildCoordinator_->prepareAfterFlush();
 
     // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
     //    which reads `activeProfile` to apply the profile's built-in locked slots
@@ -950,125 +905,25 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
 
     // 1. The worker was stopped before the media flush above, so card
     //    destructors cannot race a CPU step or worker idle-loop probe.
-    // The rewind ring recorded the PREVIOUS machine: steps below wipe
-    // RAM/aux/ROM and rebuild the card set, so an F6 restore after the
-    // switch would push the old machine's RAM/CPU/slot state onto the new
-    // hardware (II+ Applesoft PC on a //e ROM → crash). Only coldBoot
-    // cleared it before.
-    controller->rewind().clear();
+    // The transaction has already dropped the rewind ring: it describes the
+    // previous machine and cannot be restored onto the replacement topology.
 
-    // 2. Snapshot the currently-mounted media so we can re-mount after
-    //    the cold reset. The user wants to test the same disk under
-    //    different machine models; everything else (CPU state, RAM,
-    //    soft switches) is wiped intentionally.
-    //
-    //    Read the LIVE card state (not `settings->getString("disk_path")`
-    //    which is only written to disk in the MainWindow dtor) — so a
-    //    disk inserted mid-session via the Disk II / HDV panel survives
-    //    a profile switch. Skip the synthesised host-folder HDV volume
-    //    (its "path" is a `[host folder] <dir>` sentinel, not a real
-    //    file) since `loadImage` would fail on the sentinel; the user
-    //    can re-synthesise from the Library after the switch.
-    //
-    //    Built under stateMutex and copied BY VALUE. `controller->stop()`
-    //    above parks the CPU worker but nothing quiesces the AI control
-    //    server's HTTP thread, whose /disk insert + eject handlers reassign
-    //    the very std::string that getDiskPath()/getImagePath() return a
-    //    reference into. aiServer->detach() only happens in step 3, below.
-    std::string savedHdvPath;
-    // Capture every plugged Disk II's path so multi-instance setups
-    // (DiskII slot 6 + DiskII slot 4) survive the profile switch. Indexed
-    // by slot number, not by diskCards[] order, so re-plugging in the
-    // same slot picks the right path even if SettingsBackedSlots returns
-    // them in a different order.
-    // Pair the path with the live write-back toggle, same as savedCffaPaths
-    // below: plugSlotsFromSettings restores the *persisted* opt-in, but a
-    // toggle made from the Disk II panel this session isn't in settings yet
-    // and would be silently reverted to read-only by the re-plug.
-    // `nullopt` = no Disk II in that slot before the switch, so the card the
-    // new profile plugs there keeps whatever plugSlotsFromSettings restored
-    // from the persisted keys instead of inheriting a fabricated read-only.
-    std::array<std::optional<std::pair<std::string, bool>>, 8> savedDiskPaths{};
-    // Same idea for CFFA: a Disk-Library mid-session mount only updates the
-    // live card, not settings, so plugSlotsFromSettings's cffa_slotN_path
-    // restore would otherwise silently revert to the pre-session path (or
-    // drop the mount entirely if there wasn't one). Pair the path with the
-    // user's write-back toggle — re-plug defaults to read-only.
-    std::array<std::pair<std::string, bool>, 8> savedCffaPaths{};
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskCards) {
-            if (!c) continue;
-            savedDiskPaths[static_cast<size_t>(c->getSlot())] =
-                std::make_pair(c->isDiskLoaded() ? c->getDiskPath() : std::string(),
-                               c->isWriteBackEnabled());
-        }
-        if (hdvCard && hdvCard->isImageLoaded()) {
-            const std::string path = hdvCard->getImagePath();
-            if (path.rfind("[host folder] ", 0) == std::string::npos) {
-                savedHdvPath = path;
-            }
-        }
-        for (auto* blk : blockCards()) {
-            auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-            if (!cffa || !cffa->isImageLoaded()) continue;
-            savedCffaPaths[static_cast<size_t>(cffa->getSlot())] =
-                { cffa->getImagePath(), cffa->isWriteBackEnabled() };
-        }
-    }
-
-    // 3. Tear down all slot cards under the state mutex. Mockingboard's
-    //    AudioSource must be detached BEFORE the slot bus destroys the
-    //    card (the audio thread's next callback would dereference a
-    //    freed source otherwise — same gotcha as restartEmulationFromSettings).
+    // 2. Snapshot currently-mounted media by value so a user can test the
+    //    same disks under another machine profile. StorageCoordinator owns
+    //    the Disk II/HDV/CFFA policies and no card alias escapes this lock.
+    pom2::StorageCoordinator::RebuildSnapshot savedMedia;
     {
         auto st = controller->lockState();
-        // First: null the AI control server's card pointers under the
-        // same lock that handlers grab. A request that already passed
-        // its lock acquisition is using the still-alive card; later
-        // requests will see null and return 503. We re-attach at the
-        // end after the new cards are in place.
-        aiServer->detach();
-        // Any card that registered an AudioSource with the audio device
-        // must be unregistered BEFORE slotBus().clear() destroys it —
-        // otherwise the audio thread's next callback dereferences a
-        // freed source. Drive this off the registration inventory, not the
-        // `*Card` aliases: those are last-one-wins and a config with two
-        // Mockingboard variants (A/C + Sound II) left the first card's
-        // source registered against freed memory. Mirrored in
-        // restartEmulationFromSettings.
-        unregisterAllAudioSources();
-        diskCard         = nullptr;
-        diskCards.clear();
-        diskPanels.clear();
-        diskPanel        = nullptr;
-        hdvCard          = nullptr;
-        cffaCard         = nullptr;
-        chatMauveCard    = nullptr;
-        sscCard          = nullptr;
-        sscCards.clear();
-        clockCard        = nullptr;
-        mouseCard        = nullptr;
-        mouseAwCard      = nullptr;
-        mockingboardCard = nullptr;
-        phasorCard       = nullptr;
-        echoPlusCard     = nullptr;
-        echoPlusTmsCard  = nullptr;
-        printerCard      = nullptr;
-        // grapplerCard feeds pumpImageWriter() every frame — leaving it
-        // dangling here is a use-after-free the moment the card is gone.
-        grapplerCard     = nullptr;
-        // Same hazard: the Ethernet panel dereferences these every frame.
-        uthernetCard     = nullptr;
-        uthernetIICard   = nullptr;
-        // The FujiNet card owns a listening socket / open serial device and
-        // a worker thread; slotBus().clear() destroys it, which joins the
-        // thread. Dropping our alias first keeps the panel from touching a
-        // card that is mid-teardown.
-        fujiNetCard      = nullptr;
-        smartPortCard    = nullptr;
-        st.memory().slotBus().clear();
-        display->setChatMauveCard(nullptr);
+        savedMedia = storageCoordinator_->captureRebuildSnapshot(
+            st.memory().slotBus());
+    }
+
+    // 3. Tear down all slot cards under the state mutex. The shared
+    //    coordinator gates AI, detaches audio/UI consumers, clears SlotBus,
+    //    and retires network/display state in one fixed order.
+    {
+        auto st = controller->lockState();
+        slotRebuildCoordinator_->beginLocked(st);
 
         // 4. Cold-reset memory: wipe user RAM, aux RAM (if IIe), LC banks,
         //    soft switches. setIIEMode FIRST, for two reasons:
@@ -1184,9 +1039,9 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    (e.g. a user who put SSC in slot 4 keeps it across profile
     //    switches).
     plugSlotsFromSettings(st);
-    // Force the Slot Config panel to re-seed its draft from the rebuilt
-    // slotCards[] on its next render (stale-draft-after-profile-switch fix).
-    slotDraftInited_ = false;
+    restoreSlotMediaFromSettings(st);
+    // resolve() inside plugSlotsFromSettings also re-seeds the staged draft
+    // from the newly effective profile plan.
 
     }   // end stateMutex scope over steps 5-7
 
@@ -1203,49 +1058,19 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             if (cfg.builtInSlots[s].has_value() &&
                 cfg.builtInSlots[s]->cardKey == "chatmauve")
                 builtinRgb = true;
-        if (builtinRgb && chatMauveCard)
+        if (builtinRgb &&
+            devicePanelCoordinator_->captureInventory().chatMauvePlugged())
             display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
     }
 
-    // 8. Re-mount preserved media. Iterate every newly-plugged DiskII
-    //    and look up its slot in the snapshot — empty entries mean no
-    //    disk was mounted there at the profile-switch time.
-    for (auto* c : diskCards) {
-        if (!c) continue;
-        const auto& saved = savedDiskPaths[static_cast<size_t>(c->getSlot())];
-        if (!saved) continue;               // no DiskII here before the switch
-        const auto& [path, writeBack] = *saved;
-        // Write-back BEFORE the mount: insertDisk copies the card flag into
-        // the freshly loaded image, and a card that comes up read-only makes
-        // the guest see a write-protected disk (DOS 3.3 "WRITE PROTECTED",
-        // Print Shop hanging on its setup save).
-        c->setWriteBackEnabled(writeBack);
-        if (path.empty()) continue;
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(path, ec)) {
-            (void)c->insertDisk(path);
-        }
-    }
-    if (hdvCard && !savedHdvPath.empty()) {
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(savedHdvPath, ec)) {
-            (void)hdvCard->loadImage(savedHdvPath);
-        }
-    }
-    // CFFA: plugSlotsFromSettings already mounted whatever `cffa_slotN_path`
-    // settings held; if the user mounted a different image mid-session, the
-    // live snapshot wins (matches Disk II / HDV above). Empty snapshot ⇒
-    // leave plugSlots' settings-driven mount alone.
-    for (auto* blk : blockCards()) {
-        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-        if (!cffa) continue;
-        const auto& [path, wb] = savedCffaPaths[static_cast<size_t>(cffa->getSlot())];
-        if (path.empty()) continue;
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(path, ec)) {
-            (void)cffa->loadImage(path);
-            cffa->setWriteBackEnabled(wb);
-        }
+    // 8. Re-mount the live session snapshot. The coordinator resolves every
+    //    target from the replacement SlotBus and silently skips card-type or
+    //    file changes. Keep this under the same state lock used by AI media
+    //    handlers; the CPU is stopped but those HTTP handlers remain live.
+    {
+        auto st = controller->lockState();
+        storageCoordinator_->restoreRebuildSnapshot(
+            st.memory().slotBus(), savedMedia);
     }
 
     // 9. CPU mode (profile default with optional user override).
@@ -1279,7 +1104,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     controller->floppySound525().setMotorPitch(floppyMotorPitchForProfile(p));
     // Kiosk is read-only: `POM2 --kiosk --preset ...` must not clobber the
     // user's saved system_profile (or persist anything else) on the way in.
-    if (!kiosk_) {
+    if (!uiState_->kiosk) {
         settings->setString("system_profile", std::string(cfg.key));
         settings->save();
     }
@@ -1300,57 +1125,27 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         ", CPU = " +
         (cpuIsCmos ? "65C02" : "NMOS"));
 
-    // Re-bind the AI control server to the freshly rebuilt slot pointers.
-    // (Profile switch rebuilds the SlotBus; diskCard/hdvCard pointers from
-    // the previous profile are stale.) Held under stateMutex so a
-    // handler observing the pointers between detach() and now sees the
-    // null (→ 503) rather than a torn intermediate state.
+    // Publish slot endpoints only after the rebuilt machine, remounted media
+    // and reset sequence are all coherent.
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
+        auto st = controller->lockState();
+        slotRebuildCoordinator_->publishLocked(st);
     }
     aiServer->setProfileLabel(std::string(cfg.displayName));
 }
 
 bool MainWindow::restartEmulationFromSettings()
 {
-    // 0. Snapshot LIVE media into settings BEFORE teardown. Menu Insert/Eject
-    //    and the HDV/CFFA library mounts update the live cards but NOT the
-    //    settings keys (those are written only at shutdown), so without this a
-    //    Slot-Config "Apply" rebuilds from stale keys and silently drops the
-    //    mounted disk/HDV/CFFA. plugSlotsFromSettings + step 4 restore FROM
-    //    settings, so persisting the live state here preserves it.
-    //
-    //    Read under stateMutex and copy BY VALUE: getDiskPath() /
-    //    getImagePath() hand back a reference into the card's live
-    //    DiskImage, and the AI control server's HTTP thread (which nothing
-    //    has parked yet — aiServer->detach() is step 2) reassigns exactly
-    //    that string from its /disk insert + eject handlers.
+    // 0. Snapshot LIVE media BEFORE teardown. Menu Insert/Eject and library
+    //    mounts update cards before settings, so Slot-Config must synchronize
+    //    this value-only state before plugSlotsFromSettings rebuilds them.
+    pom2::StorageCoordinator::RebuildSnapshot savedMedia;
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskCards) {
-            if (!c) continue;
-            const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-            settings->setString("disk_path" + slotKey,
-                c->isDiskLoaded() ? std::string(c->getDiskPath()) : std::string());
-            settings->setBool("disk_writeback" + slotKey, c->isWriteBackEnabled());
-        }
-        if (hdvCard && hdvCard->getSlot() != autoProvisionedHdvSlot_ &&
-            hdvCard->isImageLoaded()) {
-            const std::string p = hdvCard->getImagePath();
-            if (p.rfind("[host folder] ", 0) == std::string::npos)
-                settings->setString("hdv_path", p);
-        }
-        for (auto* blk : blockCards()) {
-            auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-            if (!cffa) continue;
-            const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
-            settings->setString(key + "_path",
-                cffa->isImageLoaded() ? std::string(cffa->getImagePath())
-                                      : std::string());
-            settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
-        }
+        auto st = controller->lockState();
+        savedMedia = storageCoordinator_->captureRebuildSnapshot(
+            st.memory().slotBus());
     }
+    storageCoordinator_->persistRebuildSettings(*settings, savedMedia);
     // (3.5"/SmartPort media is already saved eagerly on mount.)
 
     // 1. Stop the worker thread so card destructors don't race against a
@@ -1360,67 +1155,22 @@ bool MainWindow::restartEmulationFromSettings()
     controller->stop();
     std::string flushErr;
     if (!flushSlotMedia(flushErr)) {
-        tapeStatusMessage = "Slot rebuild refused — save failed: " + flushErr;
-        tapeStatusUntil = lastFrameTime + 8.0;
-        pom2::log().warn("Slots", tapeStatusMessage);
+        uiState_->tapeStatusMessage = "Slot rebuild refused — save failed: " + flushErr;
+        uiState_->tapeStatusUntil = uiState_->lastFrameTime + 8.0;
+        pom2::log().warn("Slots", uiState_->tapeStatusMessage);
         controller->setMode(previousMode);
         return false;
     }
-    // The rebuild is now committed. Its session-local auto-plugged media will
-    // be destroyed below, so their shutdown-persistence markers no longer
-    // describe a live card.
-    autoProvisionedHdvSlot_ = -1;
-    autoProvisionedSmartPortSlot_ = -1;
-    // Drop the rewind ring: its SLOTn sections describe the card set being
-    // torn down; restoring one onto the rebuilt (possibly different) cards
-    // would be incoherent. Same rationale as applyProfile.
-    controller->rewind().clear();
+    // The rebuild is committed only after durability succeeds. The shared
+    // transaction now invalidates topology-bound history and session-local
+    // auto-provision markers before teardown.
+    slotRebuildCoordinator_->prepareAfterFlush();
 
-    // 2. Tear down all cards and clear our raw pointers. Holding the
-    //    state mutex isn't strictly necessary now that the worker is
-    //    stopped, but it's cheap insurance against any UI thread that
-    //    might be peeking — AND it serialises with the AI control
-    //    server's handlers (which take the same mutex around card
-    //    pointer reads). aiServer->detach() must happen under this
-    //    lock to safely null disk6_/hdv5_ before slotBus.clear()
-    //    destroys their pointees.
+    // 2. Run the exact same ordered teardown used by profile switches.
+    //    StateAccess proves the bus mutation is serialized with AI handlers.
     {
         auto st = controller->lockState();
-        aiServer->detach();
-        // Every card that owns an AudioSource (Mockingboard / Phasor /
-        // Echo+) must be unregistered from the audio device BEFORE the
-        // slot bus destroys it — otherwise the audio thread's next
-        // callback dereferences a freed source. The inventory covers every
-        // registered source, including the second of two coexisting
-        // Mockingboard variants that the single `mockingboardCard` alias
-        // cannot represent. Same gotcha mirrored in applyProfile's teardown.
-        unregisterAllAudioSources();
-        diskCard         = nullptr;
-        diskCards.clear();
-        diskPanels.clear();
-        diskPanel        = nullptr;
-        hdvCard          = nullptr;
-        cffaCard         = nullptr;
-        chatMauveCard    = nullptr;
-        sscCard          = nullptr;
-        sscCards.clear();
-        clockCard        = nullptr;
-        mouseCard        = nullptr;
-        mouseAwCard      = nullptr;
-        mockingboardCard = nullptr;
-        phasorCard       = nullptr;
-        echoPlusCard     = nullptr;
-        echoPlusTmsCard  = nullptr;
-        printerCard      = nullptr;
-        grapplerCard     = nullptr;   // see pumpImageWriter() — non-owning
-        uthernetCard     = nullptr;   // see the Ethernet panel — non-owning
-        uthernetIICard   = nullptr;
-        fujiNetCard      = nullptr;   // owns a socket + worker thread
-        smartPortCard    = nullptr;
-        st.memory().slotBus().clear();
-        // Also drop any cached display->setChatMauveCard pointer — the
-        // next plug call will set it again.
-        display->setChatMauveCard(nullptr);
+        slotRebuildCoordinator_->beginLocked(st);
     }
 
     // 3-4 run under stateMutex — same rationale as applyProfile steps
@@ -1432,31 +1182,12 @@ bool MainWindow::restartEmulationFromSettings()
 
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
     plugSlotsFromSettings(st);
-    // Re-seed the Slot Config draft from the rebuilt slotCards[] next render.
-    slotDraftInited_ = false;
+    restoreSlotMediaFromSettings(st);
+    // resolve() inside plugSlotsFromSettings also re-seeded the staged draft.
 
-    // 4. Restore each DiskII's persisted state (matches MainWindow ctor).
-    //    Per-slot keys for multi-instance configs. Legacy `disk_path` /
-    //    `disk_writeback` (no slot suffix) is still read as the fallback
-    //    for the primary (lowest-slot) card so settings.ini files written
-    //    before option C 2026-05-15 keep working.
-    for (auto* c : diskCards) {
-        if (!c) continue;
-        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-        const bool isPrimary = (c == diskCard);
-        const bool wb = settings->getBool(
-            "disk_writeback" + slotKey,
-            isPrimary ? settings->getBool("disk_writeback", false) : false);
-        c->setWriteBackEnabled(wb);
-        const std::string diskPath = settings->getString(
-            "disk_path" + slotKey,
-            isPrimary ? settings->getString("disk_path", "") : std::string());
-        std::error_code ec;
-        if (!diskPath.empty() &&
-            std::filesystem::is_regular_file(diskPath, ec)) {
-            (void)c->insertDisk(diskPath);
-        }
-    }
+    // 4. StorageCoordinator restored Disk II/HDV/CFFA only after every
+    //    replacement card existed, including a Disk II newly added by the
+    //    staged plan and therefore absent from the old topology snapshot.
 
     }   // end stateMutex scope over steps 3-4
 
@@ -1486,14 +1217,10 @@ bool MainWindow::restartEmulationFromSettings()
     controller->coldBoot();
     controller->start();
 
-    // 6. Re-attach the AI control server with the freshly rebuilt card
-    //    pointers — the slot-bus tear-down above invalidated whatever
-    //    diskCard/hdvCard the server was holding. Held under stateMutex
-    //    so any handler that observed the detached null sees the new
-    //    pointers atomically with respect to its own lock acquisition.
+    // 6. Publish AI slot endpoints after the rebuilt bus is coherent.
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
+        auto st = controller->lockState();
+        slotRebuildCoordinator_->publishLocked(st);
     }
 
     pom2::log().info("Slots",
@@ -1512,12 +1239,12 @@ bool MainWindow::restartEmulationFromSettings()
 
 void MainWindow::saveWindowGeometryToSettings()
 {
-    if (savedWinW_ <= 0 || !settings) return;
-    settings->setInt ("window_x", savedWinX_);
-    settings->setInt ("window_y", savedWinY_);
-    settings->setInt ("window_w", savedWinW_);
-    settings->setInt ("window_h", savedWinH_);
-    settings->setBool("window_maximized", savedWinMaximized_);
+    if (uiState_->savedWindowWidth <= 0 || !settings) return;
+    settings->setInt ("window_x", uiState_->savedWindowX);
+    settings->setInt ("window_y", uiState_->savedWindowY);
+    settings->setInt ("window_w", uiState_->savedWindowWidth);
+    settings->setInt ("window_h", uiState_->savedWindowHeight);
+    settings->setBool("window_maximized", uiState_->savedWindowMaximized);
 }
 
 bool MainWindow::loadWindowGeometryFromSettings()
@@ -1526,24 +1253,24 @@ bool MainWindow::loadWindowGeometryFromSettings()
     const int w = settings->getInt("window_w", 0);
     const int h = settings->getInt("window_h", 0);
     if (w <= 0 || h <= 0) return false;
-    savedWinX_ = settings->getInt("window_x", 0);
-    savedWinY_ = settings->getInt("window_y", 0);
-    savedWinW_ = w;
-    savedWinH_ = h;
-    savedWinMaximized_ = settings->getBool("window_maximized", false);
+    uiState_->savedWindowX = settings->getInt("window_x", 0);
+    uiState_->savedWindowY = settings->getInt("window_y", 0);
+    uiState_->savedWindowWidth = w;
+    uiState_->savedWindowHeight = h;
+    uiState_->savedWindowMaximized = settings->getBool("window_maximized", false);
     return true;
 }
 
 void MainWindow::setKioskMode(bool k)
 {
-    kiosk_           = k;
-    launchedInKiosk_ = k;
+    uiState_->kiosk           = k;
+    uiState_->launchedInKiosk = k;
     if (k && settings) settings->setReadOnly(true);
 }
 
 void MainWindow::captureWindowGeometryNow()
 {
-    if (!window || kiosk_ || settingsReadOnly()) return;
+    if (!window || uiState_->kiosk || settingsReadOnly()) return;
     // A MAXIMIZED window reports the maximized rect. Do NOT un-maximize to
     // measure: on X11 glfwRestoreWindow only posts a _NET_WM_STATE message
     // and returns, so the very next query still reads the maximized rect —
@@ -1553,17 +1280,17 @@ void MainWindow::captureWindowGeometryNow()
     // restore lands correctly and un-maximizing afterwards gives a sane
     // floating size instead of a screen-sized rectangle.
     const bool maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED) != 0;
-    savedWinMaximized_ = maximized;
+    uiState_->savedWindowMaximized = maximized;
     if (!maximized) {
-        glfwGetWindowPos(window, &savedWinX_, &savedWinY_);
-        glfwGetWindowSize(window, &savedWinW_, &savedWinH_);
+        glfwGetWindowPos(window, &uiState_->savedWindowX, &uiState_->savedWindowY);
+        glfwGetWindowSize(window, &uiState_->savedWindowWidth, &uiState_->savedWindowHeight);
     }
     saveWindowGeometryToSettings();
 }
 
 void MainWindow::setKioskModeRuntime(bool k)
 {
-    if (k == kiosk_) return;
+    if (k == uiState_->kiosk) return;
 
     if (k) {
         // Entering kiosk. Persist first: kiosk deliberately never writes
@@ -1614,7 +1341,7 @@ void MainWindow::setKioskModeRuntime(bool k)
             saveWindowGeometryToSettings();
             settings->save();
         }
-        kiosk_ = true;
+        uiState_->kiosk = true;
         settings->setReadOnly(true);   // covers every UI save site
         pom2::log().info("Kiosk", "entered (full-screen, chrome-free, "
                                   "settings read-only)");
@@ -1635,9 +1362,9 @@ void MainWindow::setKioskModeRuntime(bool k)
         // menu pauses the machine while it is up, and leaving kiosk from an
         // open menu would otherwise strand the user in the GUI with a
         // silently stopped CPU.
-        kioskMenuOpen_ = false;
+        uiState_->kioskMenuOpen = false;
         // Undo only the pause the MENU imposed — kioskSetPaused keeps a
-        // user-initiated pause intact (see kioskPauseWasAlreadyStopped_).
+        // user-initiated pause intact (see uiState_->kioskPauseWasAlreadyStopped).
         kioskSetPaused(false);
         if (window) {
 #ifdef __EMSCRIPTEN__
@@ -1648,35 +1375,35 @@ void MainWindow::setKioskModeRuntime(bool k)
             // is the one that used to kill the emulator mid-session.
             pom2::log().info("Kiosk", "browser build — canvas size unchanged");
 #else
-            if (savedWinW_ > 0) {
-                glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
-                                     savedWinW_, savedWinH_, GLFW_DONT_CARE);
+            if (uiState_->savedWindowWidth > 0) {
+                glfwSetWindowMonitor(window, nullptr, uiState_->savedWindowX, uiState_->savedWindowY,
+                                     uiState_->savedWindowWidth, uiState_->savedWindowHeight, GLFW_DONT_CARE);
                 // Many window managers IGNORE the position/size passed to
                 // glfwSetWindowMonitor when leaving full-screen (they just
                 // un-fullscreen and keep their own idea of the geometry) —
                 // this is the standard GLFW workaround. Harmless when the
                 // WM already honoured the call.
-                glfwSetWindowSize(window, savedWinW_, savedWinH_);
-                glfwSetWindowPos (window, savedWinX_, savedWinY_);
-                if (savedWinMaximized_) glfwMaximizeWindow(window);
+                glfwSetWindowSize(window, uiState_->savedWindowWidth, uiState_->savedWindowHeight);
+                glfwSetWindowPos (window, uiState_->savedWindowX, uiState_->savedWindowY);
+                if (uiState_->savedWindowMaximized) glfwMaximizeWindow(window);
                 pom2::log().info("Kiosk",
-                    "restored window " + std::to_string(savedWinW_) + "x" +
-                    std::to_string(savedWinH_) + " at " +
-                    std::to_string(savedWinX_) + "," +
-                    std::to_string(savedWinY_) +
-                    (savedWinMaximized_ ? " (maximized)" : ""));
+                    "restored window " + std::to_string(uiState_->savedWindowWidth) + "x" +
+                    std::to_string(uiState_->savedWindowHeight) + " at " +
+                    std::to_string(uiState_->savedWindowX) + "," +
+                    std::to_string(uiState_->savedWindowY) +
+                    (uiState_->savedWindowMaximized ? " (maximized)" : ""));
             } else if (loadWindowGeometryFromSettings()) {
                 // Launched with --kiosk: nothing was measured this session,
                 // but a previous GUI session persisted its geometry.
-                glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
-                                     savedWinW_, savedWinH_, GLFW_DONT_CARE);
-                glfwSetWindowSize(window, savedWinW_, savedWinH_);
-                glfwSetWindowPos (window, savedWinX_, savedWinY_);
-                if (savedWinMaximized_) glfwMaximizeWindow(window);
+                glfwSetWindowMonitor(window, nullptr, uiState_->savedWindowX, uiState_->savedWindowY,
+                                     uiState_->savedWindowWidth, uiState_->savedWindowHeight, GLFW_DONT_CARE);
+                glfwSetWindowSize(window, uiState_->savedWindowWidth, uiState_->savedWindowHeight);
+                glfwSetWindowPos (window, uiState_->savedWindowX, uiState_->savedWindowY);
+                if (uiState_->savedWindowMaximized) glfwMaximizeWindow(window);
                 pom2::log().info("Kiosk",
                     "restored window from settings " +
-                    std::to_string(savedWinW_) + "x" +
-                    std::to_string(savedWinH_));
+                    std::to_string(uiState_->savedWindowWidth) + "x" +
+                    std::to_string(uiState_->savedWindowHeight));
             } else {
                 // Never ran windowed on this machine: centred default.
                 GLFWmonitor* mon = glfwGetPrimaryMonitor();
@@ -1687,21 +1414,21 @@ void MainWindow::setKioskModeRuntime(bool k)
                 glfwSetWindowMonitor(window, nullptr, x, y, w, h, GLFW_DONT_CARE);
                 glfwSetWindowSize(window, w, h);
                 glfwSetWindowPos (window, x, y);
-                savedWinX_ = x; savedWinY_ = y; savedWinW_ = w; savedWinH_ = h;
+                uiState_->savedWindowX = x; uiState_->savedWindowY = y; uiState_->savedWindowWidth = w; uiState_->savedWindowHeight = h;
             }
 #endif
         }
-        kiosk_ = false;
+        uiState_->kiosk = false;
         // A session LAUNCHED with --kiosk stays read-only for life (the
         // documented "can't disturb your desktop setup" promise); a GUI
         // session that merely visited kiosk resumes writing.
-        settings->setReadOnly(launchedInKiosk_);
+        settings->setReadOnly(uiState_->launchedInKiosk);
         pom2::log().info("Kiosk", "left (windowed, full UI)");
     }
 }
 
 bool MainWindow::toggleKioskMode()
 {
-    setKioskModeRuntime(!kiosk_);
-    return kiosk_;
+    setKioskModeRuntime(!uiState_->kiosk);
+    return uiState_->kiosk;
 }

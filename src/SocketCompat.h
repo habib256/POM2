@@ -5,9 +5,8 @@
 //
 // SocketCompat.h — the ONE place that answers "POSIX sockets or Winsock?".
 //
-// POM2's four networking translation units (AiControlServer's HTTP control
-// API, SuperSerialCard's telnet bridge, W5100Device's Uthernet II host TCP/IP,
-// SpTcpTransport's FujiNet SP-over-SLIP pipe)
+// POM2's runtime networking translation units (AiControlServer,
+// SuperSerialTcpTransport, W5100HostSockets and SpTcpTransport)
 // were written against BSD sockets. Winsock2 is the same protocol stack behind
 // a gratuitously different API, and the differences are *silent* ones — code
 // that compiles clean against Winsock can still be wrong. The seven traps, all
@@ -61,10 +60,9 @@
 #include <string>
 
 #if !POM2_HAS_SOCKETS
-// No host sockets (Emscripten). The socket TYPE still has to exist so that
-// headers holding a handle — W5100Device::Socket::fd — compile unchanged;
-// only the API is absent. Nothing can open one, so the value is never
-// anything but kInvalidSocket.
+// No host sockets (Emscripten). Runtime transport code still shares a few
+// signatures with native builds, so keep an inert handle type while omitting
+// the platform API. Nothing can open one; it remains kInvalidSocket.
 namespace pom2 {
 using socket_t = int;
 inline constexpr socket_t kInvalidSocket = -1;
@@ -74,12 +72,9 @@ inline bool isValidSocket(socket_t s) { return s != kInvalidSocket; }
 
 // ─── Byte order + protocol selectors, available in BOTH builds ───────────
 //
-// The W5100's MACRAW/IPRAW framing goes through NetworkBackend, not through
-// a socket, so it is compiled even on Emscripten — yet it still has to build
-// big-endian IPv4 and Ethernet headers, and it still names a protocol in the
-// SnMR mode switch. Taking those from <arpa/inet.h> tied code that opens no
-// socket to the socket stack, and broke the WASM build for exactly that
-// reason (undeclared htons / SOCK_STREAM / IPPROTO_TCP).
+// Runtime wire formats still need endian conversion in socketless builds.
+// Taking it from <arpa/inet.h> would tie otherwise portable framing code to a
+// platform API which Emscripten does not expose.
 //
 // A 16-bit byte swap is arithmetic, not networking, so POM2 spells it out
 // rather than reaching for the platform header. `__BYTE_ORDER__` is a
@@ -109,10 +104,8 @@ inline constexpr uint16_t netToHost16(uint16_t v) { return byteSwap16(v); }
 
 #if !POM2_HAS_SOCKETS
 namespace pom2 {
-// Socketless build: the SnMR mode switch still names these, but
-// `openSystemSocket()` refuses before reaching a syscall, so the values are
-// inert. They keep the BSD numbering so a reader comparing against
-// Uthernet2.cpp is not misled.
+// Socketless build: runtime adapters compile their disabled branches against
+// these inert selectors. Keep the customary BSD numbers for diagnostics.
 inline constexpr int kSockStream = 1;
 inline constexpr int kSockDgram  = 2;
 inline constexpr int kIpProtoTcp = 6;
@@ -162,8 +155,8 @@ WIN32_LEAN_AND_MEAN before the windows.h include)."
 namespace pom2 {
 
 // ── Protocol selectors ────────────────────────────────────────────────
-// Named here rather than used raw at the call site so the SnMR mode switch
-// in W5100Device compiles identically with and without a host socket stack.
+// Named here rather than used raw at call sites so disabled runtime adapters
+// compile identically with and without a host socket stack.
 inline constexpr int kSockStream = SOCK_STREAM;
 inline constexpr int kSockDgram  = SOCK_DGRAM;
 inline constexpr int kIpProtoTcp = IPPROTO_TCP;
@@ -456,7 +449,7 @@ enum class WaitResult {
 /// Wait for one socket to become readable or writable.
 ///
 /// WINDOWS USES select(), NOT WSAPoll(), and the reason is the caller in
-/// W5100Device::poll(): it waits for WRITE on a socket with a non-blocking
+/// W5100HostSockets: it waits for WRITE on a socket with a non-blocking
 /// connect in flight, and it has to learn about a REFUSED connection, not
 /// just a successful one. On Winsock the documented channel for that is
 /// select()'s `exceptfds` — a failed connection attempt is signalled in
@@ -552,7 +545,7 @@ inline bool setSockOptInt(socket_t s, int level, int name, int value)
 }
 
 /// The bind policy for POM2's two loopback listeners (AiControlServer's
-/// HTTP control API, SuperSerialCard's telnet bridge): *this process may
+/// HTTP control API and SuperSerialTcpTransport): *this process may
 /// re-bind its own port straight after a restart, and no other process may
 /// take it while we hold it*. Call it after socket() and before bind().
 ///

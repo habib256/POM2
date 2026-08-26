@@ -14,6 +14,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# Build the native regression suite by default.  Declared up front because the
+# reusable core has a test twin (same sources, assertions kept enabled) when
+# this option is on; the add_subdirectory(tests) call remains near the bottom.
+option(POM2_ENABLE_TESTS "Build POM2 unit tests" ON)
+option(POM2_BUILD_FRONTEND
+       "Build the Dear ImGui/GLFW desktop or WebAssembly frontend" ON)
+option(POM2_INSTALL_CORE_SDK
+       "Install pom2_core headers and CMake package metadata" OFF)
+include(GNUInstallDirs)
+
 # ─── Package payload manifest ──────────────────────────────────────────────
 # `packaging/bundle.manifest` is the SINGLE list of what ships inside a POM2
 # package, read here once and consumed twice: by the WASM --preload-file block
@@ -119,20 +129,26 @@ endif()
 
 # ─── Dear ImGui (vendored) ────────────────────────────────────────────────
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/imgui)
-if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
-    message(FATAL_ERROR
-        "Dear ImGui not found in ${IMGUI_DIR}. Run ./setup_imgui.sh first.")
-endif()
+set(IMGUI_SOURCES "")
+if(POM2_BUILD_FRONTEND)
+    if(NOT EXISTS "${IMGUI_DIR}/imgui.cpp")
+        message(FATAL_ERROR
+            "Dear ImGui not found in ${IMGUI_DIR}. Run ./setup_imgui.sh first, "
+            "or configure -DPOM2_BUILD_FRONTEND=OFF for core/headless work.")
+    endif()
 
-file(GLOB IMGUI_SOURCES
-    ${IMGUI_DIR}/imgui.cpp
-    ${IMGUI_DIR}/imgui_demo.cpp
-    ${IMGUI_DIR}/imgui_draw.cpp
-    ${IMGUI_DIR}/imgui_tables.cpp
-    ${IMGUI_DIR}/imgui_widgets.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
-)
+    file(GLOB IMGUI_SOURCES
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_demo.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+        ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    )
+elseif(EMSCRIPTEN)
+    message(FATAL_ERROR "POM2_BUILD_FRONTEND=OFF is not a valid WASM product")
+endif()
 
 # ─── POM2 sources ────────────────────────────────────────────────────────
 # All first-party C++ lives under src/. The prefix is spelled here once per
@@ -150,114 +166,168 @@ configure_file(
     ${POM2_GENERATED_DIR}/Version.h
     @ONLY)
 
-set(SOURCES
+# Architectural source manifests. They compile in internal OBJECT targets and
+# compose one public static archive; ownership and upward includes are checked
+# below before any target is generated.
+# Dependency direction is:
+#   foundation headers <- media <- machine <- devices <- runtime <- frontend
+set(POM2_MEDIA_SOURCES
+    src/AtaBlockDevice.cpp
+    src/Block512Backing.cpp
+    src/Disk35Image.cpp
+    src/DiskImage.cpp
+    src/ProDOSVolume.cpp
+    src/ResourcePaths.cpp
+    src/SnapshotIO.cpp
+    src/Sony35Gcr.cpp
+)
+
+set(POM2_MACHINE_SOURCES
+    src/Keyboard.cpp
     src/M6502.cpp
     src/Z80.cpp
-    src/SoftCardZ80.cpp
     src/Memory.cpp
     src/MemoryProfile_IIcClass.cpp
-    src/MachineSnapshot.cpp
-    src/RewindBuffer.cpp
-    src/AiControlServer.cpp
-    src/Apple2Display.cpp
     src/AppleWinNtsc.cpp
-    src/AtaBlockDevice.cpp
-    src/AudioDevice.cpp
     src/CassetteDevice.cpp
-    src/CffaCard.cpp
-    src/CassetteDeck_ImGui.cpp
-    src/CliDispatcher.cpp
-    src/CliRunner.cpp
-    src/ClockCard.cpp
     src/Disassembler6502.cpp
-    src/Disk35Image.cpp
-    src/Disk35Controller_ImGui.cpp
-    src/DiskController_ImGui.cpp
-    src/DiskIICard.cpp
-    src/DiskImage.cpp
-    src/DiskLibrary_ImGui.cpp
-    src/EchoPlusCard.cpp
-    src/EchoPlusTMS5220Card.cpp
-    src/EmulationController.cpp
-    src/FloppySoundDevice.cpp
-    src/HdvController_ImGui.cpp
     src/IWMDevice.cpp
     src/SmartPortHub.cpp
-    src/Sony35Gcr.cpp
     src/Sony35Drive.cpp
-    src/CharRomCatalog.cpp
-    src/JoystickInput.cpp
-    src/JoystickPanel_ImGui.cpp
+    src/NoSlotClock.cpp
+    src/PaddleInputs.cpp
+    src/SlotBus.cpp
+    src/SpeakerDevice.cpp
+    src/SystemProfile.cpp
+)
+
+set(POM2_DEVICES_SOURCES
+    src/CffaCard.cpp
+    src/ClockCard.cpp
+    src/Cs8900aDevice.cpp
+    src/DiskIICard.cpp
+    src/EchoPlusCard.cpp
+    src/EchoPlusTMS5220Card.cpp
+    src/FloppyEmuDevice.cpp
+    src/FujiNetCard.cpp
+    src/GrapplerCard.cpp
     src/LeChatMauveCard.cpp
-    src/LeChatMauve_ImGui.cpp
     src/M68705P3.cpp
-    src/MainWindow.cpp
-    src/MainWindow_MemoryMaps.cpp
-    src/MainWindow_Slots.cpp
     src/MC6821.cpp
-    src/MemoryViewer_ImGui.cpp
     src/Mockingboard.cpp
     src/MouseCard.cpp
     src/MouseCardAppleWin.cpp
-    src/NoSlotClock.cpp
-    src/GrapplerCard.cpp
+    src/PhasorCard.cpp
+    src/PrinterCard.cpp
+    src/ProDOSHardDiskCard.cpp
+    src/SmartPort35Unit.cpp
+    src/SmartPortCard.cpp
+    src/SmartPortHdvUnit.cpp
+    src/SmartPortUnit.cpp
+    src/SoftCardZ80.cpp
+    src/Ssi263.cpp
+    src/Ssi263PhonemeData.cpp
+    src/SuperSerialCard.cpp
+    src/UthernetCard.cpp
+    src/UthernetIICard.cpp
+    src/W5100Device.cpp
+)
+
+set(POM2_RUNTIME_SOURCES
+    src/Pom2Core.cpp
+    src/AiControlServer.cpp
+    src/Apple2Display.cpp
+    src/AudioDevice.cpp
+    src/CharRomCatalog.cpp
+    src/ChildProcess.cpp
+    src/EmulationController.cpp
+    src/FloppySoundDevice.cpp
+    src/FujiNetHost.cpp
+    src/ImageWriter.cpp
+    src/ImageWriterPdf.cpp
+    src/MachineSnapshot.cpp
+    src/PrinterHistory.cpp
+    src/PrinterScreenDump.cpp
+    src/PrinterSoundDevice.cpp
+    src/RewindBuffer.cpp
+    src/RomLoader.cpp
+    src/SerialPort.cpp
+    src/SlirpNetworkBackend.cpp
+    src/SpOverSlipLink.cpp
+    src/SpSerialTransport.cpp
+    src/SpTcpTransport.cpp
+    src/SuperSerialTcpTransport.cpp
+    src/W5100HostSockets.cpp
+    src/hgrpaint/HgrFont.cpp
+)
+
+set(POM2_CORE_SOURCES
+    ${POM2_MEDIA_SOURCES}
+    ${POM2_MACHINE_SOURCES}
+    ${POM2_DEVICES_SOURCES}
+    ${POM2_RUNTIME_SOURCES}
+)
+
+set(POM2_CORE_PUBLIC_HEADERS
+    include/pom2/core.hpp
+)
+
+# Host application and presentation layer.  Nothing in pom2_core includes
+# ImGui, GLFW or OpenGL; these sources are deliberately kept on the executable
+# side of the boundary so headless consumers can link the core alone.
+set(POM2_FRONTEND_SOURCES
+    src/AudioCoordinator.cpp
+    src/DebugCoordinator.cpp
+    src/DevicePanelCoordinator.cpp
+    src/MouseCoordinator.cpp
+    src/NetworkCoordinator.cpp
+    src/PrinterCoordinator.cpp
+    src/SlotCardFactory.cpp
+    src/SlotConfigurationCoordinator.cpp
+    src/SlotProvisioningCoordinator.cpp
+    src/SlotRebuildCoordinator.cpp
+    src/StorageCoordinator.cpp
+    src/CassetteDeck_ImGui.cpp
+    src/CliDispatcher.cpp
+    src/CliRunner.cpp
+    src/Disk35Controller_ImGui.cpp
+    src/DiskController_ImGui.cpp
+    src/DiskLibrary_ImGui.cpp
+    src/HdvController_ImGui.cpp
+    src/JoystickInput.cpp
+    src/JoystickPanel_ImGui.cpp
+    src/LeChatMauve_ImGui.cpp
+    src/MainWindow.cpp
+    src/MainWindow_AuxPanels.cpp
+    src/MainWindow_Command.cpp
+    src/MainWindow_DevicePanels.cpp
+    src/MainWindow_Input.cpp
+    src/MainWindow_Media.cpp
+    src/MainWindow_MemoryMaps.cpp
+    src/MainWindow_Screen.cpp
+    src/MainWindow_Slots.cpp
+    src/MemoryViewer_ImGui.cpp
     src/NtscPostProcessor.cpp
     src/CrtEffectStack.cpp
     src/Voxel3DRenderer.cpp
     src/OpenGLShader.cpp
-    src/PhasorCard.cpp
-    src/PrinterCard.cpp
-    src/ImageWriter.cpp
-    src/ImageWriterPdf.cpp
     src/ImageWriter_ImGui.cpp
     src/Rewind_ImGui.cpp
-    src/Ssi263.cpp
-    src/Ssi263PhonemeData.cpp
-    src/Block512Backing.cpp
-    src/ProDOSHardDiskCard.cpp
-    src/ProDOSVolume.cpp
-    src/ResourcePaths.cpp
-    src/RomLoader.cpp
-    src/FloppyEmuDevice.cpp
     src/FloppyEmu_ImGui.cpp
     src/Settings.cpp
     src/Pom2HgrPaintHost.cpp
     src/hgrpaint/Cam16.cpp
     src/hgrpaint/DhgrNtsc8Palette.cpp
     src/hgrpaint/HgrConvert.cpp
-    src/hgrpaint/HgrFont.cpp
     src/hgrpaint/HgrImageDecode.cpp
     src/hgrpaint/HgrPaintEditor.cpp
     src/hgrpaint/HgrPaintModel.cpp
     src/hgrsprite/HgrSpriteAsmExport.cpp
     src/hgrsprite/HgrSpriteBlit.cpp
     src/hgrsprite/HgrSpriteEditor.cpp
-    src/SlotBus.cpp
-    src/Cs8900aDevice.cpp
-    src/UthernetCard.cpp
-    src/W5100Device.cpp
-    src/UthernetIICard.cpp
-    src/SlirpNetworkBackend.cpp
     src/Uthernet_ImGui.cpp
-    src/SmartPort35Unit.cpp
-    src/SmartPortCard.cpp
-    src/SerialPort.cpp
-    src/ChildProcess.cpp
-    src/PrinterScreenDump.cpp
-    src/PrinterSoundDevice.cpp
-    src/PrinterHistory.cpp
-    src/SpOverSlipLink.cpp
-    src/SpTcpTransport.cpp
-    src/SpSerialTransport.cpp
-    src/FujiNetCard.cpp
     src/FujiNet_ImGui.cpp
-    src/SmartPortHdvUnit.cpp
-    src/SmartPortUnit.cpp
     src/SmartPort_ImGui.cpp
-    src/SnapshotIO.cpp
-    src/SpeakerDevice.cpp
-    src/SuperSerialCard.cpp
-    src/SystemProfile.cpp
     src/CommandPalette_ImGui.cpp
     src/Pom2Theme.cpp
     src/RomStatus_ImGui.cpp
@@ -268,7 +338,98 @@ set(SOURCES
     src/main.cpp
 )
 
+# Compatibility name used by the existing executable declarations below.
+set(POM2_APP_SOURCES ${POM2_FRONTEND_SOURCES})
+
+# Header-only contracts have no source stem from which the checker can infer
+# ownership. Keep the cross-layer seams deliberately small and explicit.
+set(POM2_FOUNDATION_HEADERS
+    src/AudioSource.h
+    src/ByteIO.h
+    src/FloppySoundSink.h
+    src/Logger.h
+    src/NetworkBackend.h
+    src/Pom2Build.h
+    src/PrinterSoundSink.h
+)
+set(POM2_MEDIA_HEADERS
+    src/AtomicFileReplace.h
+    src/TwoImg.h
+)
+set(POM2_MACHINE_HEADERS
+    src/Apple2VideoDecode.h
+    src/CpuClock.h
+    src/MemoryProfile.h
+    src/SlotPeripheral.h
+)
+set(POM2_DEVICES_HEADERS
+    src/Ay3_8910.h
+    src/AyPsgSynth.h
+    src/FujiNetLink.h
+    src/MountableMediaCard.h
+    src/ProDOSBlockCard.h
+    src/SuperSerialTransport.h
+    src/Via6522.h
+    src/W5100Socket.h
+)
+set(POM2_RUNTIME_HEADERS
+    include/pom2/core.hpp
+    src/ImageWriterRom.h
+    src/SlipFramer.h
+    src/SocketCompat.h
+    src/SocketUtil.h
+    src/SpTransport.h
+    src/SuperSerialTcpTransport.h
+)
+set(POM2_FRONTEND_HEADERS
+    src/AudioCoordinator.h
+    src/DebugCoordinator.h
+    src/DevicePanelCoordinator.h
+    src/MainWindowUiState.h
+    src/MouseCoordinator.h
+    src/NetworkCoordinator.h
+    src/PrinterCoordinator.h
+    src/SlotCardFactory.h
+    src/SlotConfigurationCoordinator.h
+    src/SlotProvisioningCoordinator.h
+    src/SlotRebuildCoordinator.h
+    src/StorageCoordinator.h
+    src/IconsFontAwesome6.h
+    src/Mat4.h
+    src/MouseGrab.h
+    src/PaintCardBatcher.h
+    src/Pom2GL.h
+    src/PrinterFeedCursor.h
+    src/RomCatalog.h
+    src/SlotCardCatalog.h
+    src/StatusLed.h
+    src/hgrpaint/IHgrPaintHost.h
+    src/hgrpaint/ImportCommon.h
+)
+
+include(cmake/Pom2Architecture.cmake)
+pom2_enforce_source_layers(${CMAKE_CURRENT_SOURCE_DIR})
+pom2_enforce_mainwindow_line_limit(${CMAKE_CURRENT_SOURCE_DIR} 3000)
+
+# Kept as the complete first-party source inventory for warning properties and
+# IDE tooling.  Build targets consume one side of the boundary above.
+set(SOURCES ${POM2_CORE_SOURCES} ${POM2_APP_SOURCES})
+
 set(HEADERS
+    src/AudioCoordinator.h
+    src/DebugCoordinator.h
+    src/DevicePanelCoordinator.h
+    src/MainWindowUiState.h
+    src/MouseCoordinator.h
+    src/NetworkCoordinator.h
+    src/PrinterCoordinator.h
+    src/SlotCardFactory.h
+    src/SlotConfigurationCoordinator.h
+    src/SlotProvisioningCoordinator.h
+    src/SlotRebuildCoordinator.h
+    src/StorageCoordinator.h
+    src/Keyboard.h
+    src/PaddleInputs.h
     src/M6502.h
     src/Z80.h
     src/SoftCardZ80.h
@@ -351,6 +512,8 @@ set(HEADERS
     src/Cs8900aDevice.h
     src/UthernetCard.h
     src/W5100Device.h
+    src/W5100HostSockets.h
+    src/W5100Socket.h
     src/UthernetIICard.h
     src/Uthernet_ImGui.h
     src/SmartPort35Unit.h
@@ -448,14 +611,118 @@ if(WIN32)
     list(APPEND POM2_PLATFORM_SOURCES packaging/windows/POM2.rc)
 endif()
 
-add_executable(${PROJECT_NAME}
-    ${SOURCES} ${HEADERS} ${IMGUI_SOURCES} ${POM2_PLATFORM_SOURCES})
-set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")
+# ─── Reusable emulator core ───────────────────────────────────────────────
+# The logical manifests now have real build identities. OBJECT libraries make
+# accidental source ownership visible in IDEs and build diagnostics while the
+# installed ABI remains one archive: pom2_core. They are deliberately internal
+# implementation targets and never appear in the SDK export set.
+add_library(pom2_foundation INTERFACE)
+target_compile_features(pom2_foundation INTERFACE cxx_std_17)
+target_include_directories(pom2_foundation INTERFACE
+    $<BUILD_INTERFACE:${POM2_SRC_DIR}>
+    $<BUILD_INTERFACE:${POM2_GENERATED_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+)
+
+function(pom2_add_core_object_layer target_name)
+    add_library(${target_name} OBJECT ${ARGN})
+    target_link_libraries(${target_name} PRIVATE pom2_foundation)
+endfunction()
+
+pom2_add_core_object_layer(pom2_media
+    ${POM2_MEDIA_SOURCES} ${POM2_MEDIA_HEADERS})
+pom2_add_core_object_layer(pom2_machine
+    ${POM2_MACHINE_SOURCES} ${POM2_MACHINE_HEADERS})
+pom2_add_core_object_layer(pom2_devices
+    ${POM2_DEVICES_SOURCES} ${POM2_DEVICES_HEADERS})
+pom2_add_core_object_layer(pom2_runtime
+    ${POM2_RUNTIME_SOURCES} ${POM2_RUNTIME_HEADERS})
+
+set(POM2_CORE_OBJECT_TARGETS
+    pom2_media
+    pom2_machine
+    pom2_devices
+    pom2_runtime
+)
+set(POM2_CORE_OBJECTS "")
+foreach(_layer_target IN LISTS POM2_CORE_OBJECT_TARGETS)
+    list(APPEND POM2_CORE_OBJECTS $<TARGET_OBJECTS:${_layer_target}>)
+endforeach()
+
+# The core owns the machine model and non-graphical host services. Its public
+# include path is the existing src/ tree so current consumers keep including
+# headers by their stable names ("Memory.h", "SlotBus.h", ...). The alias is
+# the namespaced spelling intended for new in-tree and external consumers.
+add_library(pom2_core STATIC
+    ${POM2_CORE_OBJECTS}
+    ${POM2_CORE_PUBLIC_HEADERS})
+add_library(POM2::core ALIAS pom2_core)
+set_target_properties(pom2_core PROPERTIES EXPORT_NAME core)
+target_compile_features(pom2_core PUBLIC cxx_std_17)
+target_include_directories(pom2_core PUBLIC
+    $<BUILD_INTERFACE:${POM2_SRC_DIR}>
+    $<BUILD_INTERFACE:${POM2_GENERATED_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
+# Release builds define NDEBUG globally, while the existing tests deliberately
+# compile their embedded core sources with assertions enabled.  Preserve that
+# contract without compiling the core once per test executable: assertion-on
+# twins of the four object layers feed one native-only test archive. None of
+# these targets are installed or linked by products.
+set(POM2_CORE_TARGETS pom2_core)
+set(POM2_CORE_COMPILE_TARGETS ${POM2_CORE_OBJECT_TARGETS})
+set(POM2_RUNTIME_OBJECT_TARGETS pom2_runtime)
+if(POM2_ENABLE_TESTS AND NOT EMSCRIPTEN)
+    set(POM2_CORE_TEST_OBJECT_TARGETS "")
+    set(POM2_CORE_TEST_OBJECTS "")
+    foreach(_layer_target IN LISTS POM2_CORE_OBJECT_TARGETS)
+        get_target_property(_layer_sources ${_layer_target} SOURCES)
+        set(_test_layer_target ${_layer_target}_test_objects)
+        add_library(${_test_layer_target} OBJECT EXCLUDE_FROM_ALL
+            ${_layer_sources})
+        target_link_libraries(${_test_layer_target} PRIVATE pom2_foundation)
+        if(MSVC)
+            target_compile_options(${_test_layer_target} PRIVATE /UNDEBUG)
+        else()
+            target_compile_options(${_test_layer_target} PRIVATE -UNDEBUG)
+        endif()
+        list(APPEND POM2_CORE_TEST_OBJECT_TARGETS ${_test_layer_target})
+        list(APPEND POM2_CORE_TEST_OBJECTS
+            $<TARGET_OBJECTS:${_test_layer_target}>)
+    endforeach()
+
+    add_library(pom2_core_test STATIC EXCLUDE_FROM_ALL
+        ${POM2_CORE_TEST_OBJECTS} ${POM2_CORE_PUBLIC_HEADERS})
+    target_include_directories(pom2_core_test PUBLIC
+        $<BUILD_INTERFACE:${POM2_SRC_DIR}>
+        $<BUILD_INTERFACE:${POM2_GENERATED_DIR}>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    )
+    list(APPEND POM2_CORE_TARGETS pom2_core_test)
+    list(APPEND POM2_CORE_COMPILE_TARGETS ${POM2_CORE_TEST_OBJECT_TARGETS})
+    list(APPEND POM2_RUNTIME_OBJECT_TARGETS pom2_runtime_test_objects)
+endif()
 
 if(POM2_SLIRP_TARGET)
-    target_link_libraries(${PROJECT_NAME} ${POM2_SLIRP_TARGET})
-    target_compile_definitions(${PROJECT_NAME} PRIVATE POM2_HAVE_SLIRP)
+    foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+        target_link_libraries(${_core_target} PUBLIC ${POM2_SLIRP_TARGET})
+    endforeach()
+    # Only the runtime layer compiles the libslirp adapter. A definition on
+    # the aggregate static archive would be too late: its objects already
+    # exist by then.
+    foreach(_runtime_target IN LISTS POM2_RUNTIME_OBJECT_TARGETS)
+        target_link_libraries(${_runtime_target} PRIVATE ${POM2_SLIRP_TARGET})
+        target_compile_definitions(${_runtime_target} PRIVATE POM2_HAVE_SLIRP)
+    endforeach()
 endif()
+
+if(POM2_BUILD_FRONTEND)
+    add_executable(${PROJECT_NAME}
+        ${POM2_APP_SOURCES} ${HEADERS} ${IMGUI_SOURCES} ${POM2_PLATFORM_SOURCES})
+    set_target_properties(${PROJECT_NAME} PROPERTIES OUTPUT_NAME "POM2")
+    target_link_libraries(${PROJECT_NAME} POM2::core)
 
 # Convenience alias: the CMake target is ${PROJECT_NAME} (pom2_imgui) but the
 # output binary is POM2, so `cmake --build . --target POM2` is otherwise a
@@ -478,7 +745,7 @@ if(EMSCRIPTEN)
     # Browser build: Emscripten ships GLFW3 + WebGL2 ports built-in. The
     # host-socket bridges (telnet, AI control HTTP) are compiled out via
     # the POM2_HAS_SOCKETS gate (Pom2Build.h — 0 under Emscripten) in
-    # SuperSerialCard.cpp / AiControlServer.cpp — symbols stay declared
+    # SuperSerialTcpTransport.cpp / AiControlServer.cpp — symbols stay declared
     # so callers still link.
     #
     # Single-threaded build by design — runs on any static host
@@ -628,14 +895,19 @@ else()
     # macOS; nothing extra on Windows beyond winmm.
     if(UNIX AND NOT APPLE)
         find_package(Threads REQUIRED)
-        target_link_libraries(${PROJECT_NAME} ${CMAKE_DL_LIBS} Threads::Threads m)
+        foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+            target_link_libraries(${_core_target} PUBLIC
+                ${CMAKE_DL_LIBS} Threads::Threads m)
+        endforeach()
     endif()
     if(APPLE)
-        target_link_libraries(${PROJECT_NAME}
-            "-framework CoreAudio"
-            "-framework AudioToolbox"
-            "-framework AudioUnit"
-        )
+        foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+            target_link_libraries(${_core_target} PUBLIC
+                "-framework CoreAudio"
+                "-framework AudioToolbox"
+                "-framework AudioUnit"
+            )
+        endforeach()
     endif()
     if(WIN32)
         # ws2_32: the whole Winsock2 API. Since 2026-08-01 Windows is a full
@@ -643,7 +915,9 @@ else()
         # TCP/UDP sockets, the SSC telnet bridge and the AI control server all
         # go through it, on top of the htons/ntohs framing helpers that were
         # the only reason to link it before. See src/SocketCompat.h.
-        target_link_libraries(${PROJECT_NAME} winmm ws2_32)
+        foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+            target_link_libraries(${_core_target} PUBLIC winmm ws2_32)
+        endforeach()
     endif()
 
     if(APPLE)
@@ -659,6 +933,34 @@ else()
         target_link_libraries(${PROJECT_NAME} opengl32)
     endif()
 endif()
+endif() # POM2_BUILD_FRONTEND
+
+# Core/headless configurations deliberately skip GLFW/OpenGL discovery above,
+# but the reusable archive still needs the platform services used by audio and
+# host sockets. The full frontend path already applies the same links inside
+# its native-platform branch.
+if(NOT POM2_BUILD_FRONTEND AND NOT EMSCRIPTEN)
+    if(UNIX AND NOT APPLE)
+        find_package(Threads REQUIRED)
+        foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+            target_link_libraries(${_core_target} PUBLIC
+                ${CMAKE_DL_LIBS} Threads::Threads m)
+        endforeach()
+    endif()
+    if(APPLE)
+        foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+            target_link_libraries(${_core_target} PUBLIC
+                "-framework CoreAudio"
+                "-framework AudioToolbox"
+                "-framework AudioUnit")
+        endforeach()
+    endif()
+    if(WIN32)
+        foreach(_core_target IN LISTS POM2_CORE_TARGETS)
+            target_link_libraries(${_core_target} PUBLIC winmm ws2_32)
+        endforeach()
+    endif()
+endif()
 
 # ─── pom2_headless ────────────────────────────────────────────────────────
 # Console-only binary: same emulator core (Memory + M6502 + SlotBus + the
@@ -669,68 +971,8 @@ endif()
 if(NOT EMSCRIPTEN)
 add_executable(pom2_headless
     src/pom2_headless.cpp
-    # Display + its char-ROM catalogue and the two colour back-ends it can call
-    # into: --frames/--screenshot renders a real frame (the release packages'
-    # boot smoke). No GL anywhere — Apple2Display decodes into a CPU buffer.
-    src/Apple2Display.cpp
-    src/AppleWinNtsc.cpp
-    src/CharRomCatalog.cpp
-    src/AudioDevice.cpp
-    src/CassetteDevice.cpp
-    src/ClockCard.cpp
-    src/Disk35Image.cpp
-    src/DiskImage.cpp
-    src/DiskIICard.cpp
-    src/EmulationController.cpp
-    src/FloppySoundDevice.cpp
-    src/IWMDevice.cpp
-    src/SmartPortHub.cpp
-    src/Sony35Gcr.cpp
-    src/Sony35Drive.cpp
-    src/LeChatMauveCard.cpp
-    src/M6502.cpp
-    src/MachineSnapshot.cpp
-    src/Memory.cpp
-    src/MemoryProfile_IIcClass.cpp
-    src/Mockingboard.cpp
-    src/NoSlotClock.cpp
-    src/ResourcePaths.cpp
-    src/RewindBuffer.cpp
-    src/RomLoader.cpp
-    src/SlotBus.cpp
-    src/SnapshotIO.cpp
-    src/SpeakerDevice.cpp
-    src/Ssi263.cpp
-    src/Ssi263PhonemeData.cpp
-    src/SuperSerialCard.cpp
-    src/SystemProfile.cpp
 )
-target_include_directories(pom2_headless PRIVATE
-    ${POM2_SRC_DIR}
-    ${POM2_GENERATED_DIR}   # generated Version.h
-    ${IMGUI_DIR}     # only for miniaudio.h location, no ImGui linkage
-)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(pom2_headless PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(pom2_headless PRIVATE
-        "-framework CoreAudio"
-        "-framework AudioToolbox"
-        "-framework AudioUnit"
-    )
-endif()
-if(WIN32)
-    # ws2_32 for the same reason the GUI target links it (see above): since
-    # 2026-08-01 POM2_HAS_SOCKETS is 1 on Windows, so SuperSerialCard's telnet
-    # listener and the W5100 sockets are compiled in here too. Before that
-    # commit the socket code vanished behind the guard on Windows and this
-    # target genuinely needed nothing — which is why the omission only
-    # surfaced on the first Windows package build afterwards, as 17 unresolved
-    # Winsock externals out of SuperSerialCard.obj.
-    target_link_libraries(pom2_headless PRIVATE winmm ws2_32)
-endif()
+target_link_libraries(pom2_headless PRIVATE POM2::core)
 endif() # NOT EMSCRIPTEN (pom2_headless)
 
 # ─── pom2_bench ───────────────────────────────────────────────────────────
@@ -746,56 +988,30 @@ endif() # NOT EMSCRIPTEN (pom2_headless)
 if(NOT EMSCRIPTEN)
 add_executable(pom2_bench
     src/pom2_bench.cpp
-    src/Apple2Display.cpp
-    src/AppleWinNtsc.cpp
-    src/AudioDevice.cpp
-    src/CassetteDevice.cpp
-    src/Disk35Image.cpp
-    src/DiskIICard.cpp
-    src/DiskImage.cpp
-    src/FloppySoundDevice.cpp
-    src/IWMDevice.cpp
-    src/LeChatMauveCard.cpp
-    src/M6502.cpp
-    src/Memory.cpp
-    src/MemoryProfile_IIcClass.cpp
-    src/NoSlotClock.cpp
-    src/ResourcePaths.cpp
-    src/RomLoader.cpp
-    src/SlotBus.cpp
-    src/SmartPortHub.cpp
-    src/SnapshotIO.cpp
-    src/Sony35Gcr.cpp
-    src/Sony35Drive.cpp
-    src/SpeakerDevice.cpp
 )
-target_include_directories(pom2_bench PRIVATE
-    ${POM2_SRC_DIR}
-    ${POM2_GENERATED_DIR}
-    ${IMGUI_DIR}     # miniaudio.h location only, no ImGui linkage
-)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(pom2_bench PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(pom2_bench PRIVATE
-        "-framework CoreAudio"
-        "-framework AudioToolbox"
-        "-framework AudioUnit"
-    )
-endif()
-if(WIN32)
-    target_link_libraries(pom2_bench PRIVATE winmm ws2_32)
-endif()
+target_link_libraries(pom2_bench PRIVATE POM2::core)
 endif() # NOT EMSCRIPTEN (pom2_bench)
 
 if(MSVC)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE
-        _CRT_SECURE_NO_WARNINGS
-        NOMINMAX
-        WIN32_LEAN_AND_MEAN)
-    target_compile_options(${PROJECT_NAME} PRIVATE /utf-8)
+    # Core sources compile in the layer OBJECT targets; setting options only
+    # on the aggregate archive would not reach them.
+    set(_pom2_msvc_targets ${POM2_CORE_COMPILE_TARGETS})
+    if(TARGET ${PROJECT_NAME})
+        list(APPEND _pom2_msvc_targets ${PROJECT_NAME})
+    endif()
+    if(TARGET pom2_headless)
+        list(APPEND _pom2_msvc_targets pom2_headless)
+    endif()
+    if(TARGET pom2_bench)
+        list(APPEND _pom2_msvc_targets pom2_bench)
+    endif()
+    foreach(_target IN LISTS _pom2_msvc_targets)
+        target_compile_definitions(${_target} PRIVATE
+            _CRT_SECURE_NO_WARNINGS
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN)
+        target_compile_options(${_target} PRIVATE /utf-8)
+    endforeach()
 endif()
 
 # ─── Windows: static CRT ───────────────────────────────────────────────────
@@ -818,16 +1034,23 @@ endif()
 # dynamic and puts the app-local DLL right back.
 option(POM2_WIN_STATIC_RUNTIME "Link the MSVC runtime statically (/MT)" ON)
 if(MSVC AND POM2_WIN_STATIC_RUNTIME)
-    set_property(TARGET ${PROJECT_NAME} PROPERTY
-                 MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-    if(TARGET pom2_headless)
-        set_property(TARGET pom2_headless PROPERTY
-                     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    set(_pom2_static_crt_targets ${POM2_CORE_COMPILE_TARGETS})
+    if(TARGET ${PROJECT_NAME})
+        list(APPEND _pom2_static_crt_targets ${PROJECT_NAME})
     endif()
+    if(TARGET pom2_headless)
+        list(APPEND _pom2_static_crt_targets pom2_headless)
+    endif()
+    if(TARGET pom2_bench)
+        list(APPEND _pom2_static_crt_targets pom2_bench)
+    endif()
+    foreach(_target IN LISTS _pom2_static_crt_targets)
+        set_property(TARGET ${_target} PROPERTY
+                     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    endforeach()
 endif()
 
 # ─── Tests ───────────────────────────────────────────────────────────────
-option(POM2_ENABLE_TESTS "Build POM2 unit tests" ON)
 if(POM2_ENABLE_TESTS AND NOT EMSCRIPTEN)
     enable_testing()
     add_subdirectory(tests)
@@ -837,10 +1060,24 @@ endif()
 include(CheckIPOSupported)
 check_ipo_supported(RESULT POM2_IPO_SUPPORTED OUTPUT POM2_IPO_ERROR)
 if(POM2_IPO_SUPPORTED)
-    set_property(TARGET ${PROJECT_NAME} PROPERTY
-                 INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
-    set_property(TARGET ${PROJECT_NAME} PROPERTY
-                 INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    if(TARGET ${PROJECT_NAME})
+        set_property(TARGET ${PROJECT_NAME} PROPERTY
+                     INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+        set_property(TARGET ${PROJECT_NAME} PROPERTY
+                     INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+    endif()
+    # The expensive machine code now compiles in the layer OBJECT targets.
+    # Keep the shipped/bench optimisation contract on both those compilation
+    # units and their aggregate archive; an explicitly supplied global IPO
+    # setting still wins for profiling and PGO pass-1 builds.
+    if(NOT DEFINED CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+        foreach(_core_ipo_target pom2_core ${POM2_CORE_OBJECT_TARGETS})
+            set_property(TARGET ${_core_ipo_target} PROPERTY
+                         INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+            set_property(TARGET ${_core_ipo_target} PROPERTY
+                         INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO TRUE)
+        endforeach()
+    endif()
     # pom2_bench must be built EXACTLY like the shipped binary or its numbers
     # describe a build nobody runs — LTO alone is worth ~20 % on the emulation
     # core (docs/PERFORMANCE.md § build recipe). Skipped when the caller sets
@@ -861,14 +1098,66 @@ endif()
 # a relocatable tarball (CPack TGZ), an FHS /usr install (CPack DEB), and an
 # AppImage. The full roms/ tree (system + peripheral dumps + floppy_samples)
 # ships with every artifact so a release boots out of the box.
-include(GNUInstallDirs)
 set(POM2_DATADIR "${CMAKE_INSTALL_DATADIR}/POM2")
 # GNUInstallDirs derives DOCDIR from the (internal) project name pom2_imgui;
 # force the user-facing "POM2" so docs land in share/doc/POM2.
 set(CMAKE_INSTALL_DOCDIR "${CMAKE_INSTALL_DATADIR}/doc/POM2")
 
-install(TARGETS ${PROJECT_NAME}
-        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+# Optional development package for embedding the deterministic emulator core.
+# Runtime packagers leave this OFF so AppImages/application archives do not
+# carry a static archive and C++ headers. SDK builds enable it explicitly.
+if(POM2_INSTALL_CORE_SDK)
+    include(CMakePackageConfigHelpers)
+
+    install(TARGETS pom2_core
+            EXPORT pom2_coreTargets
+            ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+                    COMPONENT pom2_core_sdk
+            LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+                    COMPONENT pom2_core_sdk
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+                    COMPONENT pom2_core_sdk
+            INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+    install(FILES ${POM2_CORE_PUBLIC_HEADERS}
+            DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/pom2"
+            COMPONENT pom2_core_sdk)
+
+    set(POM2_CORE_PACKAGE_NEEDS_THREADS OFF)
+    if(UNIX AND NOT APPLE)
+        set(POM2_CORE_PACKAGE_NEEDS_THREADS ON)
+    endif()
+    set(POM2_CORE_PACKAGE_WITH_SLIRP OFF)
+    if(POM2_SLIRP_TARGET)
+        set(POM2_CORE_PACKAGE_WITH_SLIRP ON)
+    endif()
+
+    set(POM2_CORE_CMAKE_DIR
+        "${CMAKE_INSTALL_LIBDIR}/cmake/pom2_core")
+    configure_package_config_file(
+        cmake/pom2_coreConfig.cmake.in
+        "${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfig.cmake"
+        INSTALL_DESTINATION "${POM2_CORE_CMAKE_DIR}")
+    write_basic_package_version_file(
+        "${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfigVersion.cmake"
+        VERSION "${PROJECT_VERSION}"
+        COMPATIBILITY SameMajorVersion)
+
+    install(EXPORT pom2_coreTargets
+            FILE pom2_coreTargets.cmake
+            NAMESPACE POM2::
+            DESTINATION "${POM2_CORE_CMAKE_DIR}"
+            COMPONENT pom2_core_sdk)
+    install(FILES
+            "${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfig.cmake"
+            "${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfigVersion.cmake"
+            DESTINATION "${POM2_CORE_CMAKE_DIR}"
+            COMPONENT pom2_core_sdk)
+endif()
+
+if(TARGET ${PROJECT_NAME})
+    install(TARGETS ${PROJECT_NAME}
+            RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+endif()
 
 # The console binary ships too. Two reasons, and the second is why it is not
 # optional: it gives users a display-less way to drive the machine (telnet), and

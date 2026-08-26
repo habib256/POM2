@@ -2,15 +2,15 @@
 
 // POM2 Apple II Emulator
 //
-// Small shared socket idioms for the two TCP workers (AiControlServer
-// HTTP + SuperSerialCard telnet bridge). Two hard-won rules live here so
+// Small shared socket idioms for the two TCP workers (AiControlServer HTTP +
+// SuperSerialTcpTransport telnet bridge). Two hard-won rules live here so
 // they are fixed ONCE:
 //
 //   1. poll()-before-accept: `shutdown(listenFd, SHUT_RDWR)` wakes a
 //      blocking accept() on Linux but NOT on macOS/BSD — a worker parked
 //      in accept() there never returns and the owner hangs in join().
 //      This deadlock was found and fixed in AiControlServer, then
-//      re-discovered months later in SuperSerialCard (whose destructor
+//      re-discovered months later in the SSC TCP transport (whose shutdown
 //      runs under stateMutex during profile switches — a UI-thread hang).
 //      Windows is a third variant of the same problem: closesocket() on a
 //      listener does wake a blocked accept(), but the handle is then free

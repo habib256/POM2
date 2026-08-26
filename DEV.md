@@ -1563,8 +1563,9 @@ of a directory scan and cannot afford to open each one.
 
 `insertAndBootImage` (`MainWindow.*`) is the single mount+boot entry point
 behind all three. It auto-plugs a controller when the config lacks one —
-`ensureHdvCardForBoot()` / `ensureSmartPortCardForBoot()`, both
-session-local and never persisted — and it **honours `bootFromSlot`'s
+through `SlotProvisioningCoordinator::ensureHdvBootTarget()` /
+`ensureSmartPortBootTarget()`, both session-local and never persisted — and it
+**honours `bootFromSlot`'s
 `bool`**: that call degrades to a plain cold boot when the card carries no
 `$Cn01/03/05` JSR-dispatch trio, so reporting "booted" without checking it
 was a lie the user saw as a BASIC prompt. A drop with no main ROM loaded is
@@ -1657,12 +1658,16 @@ track_period`. Pinned: `disk_drive2_smoke`,
 `firstOccurrence` walk). Both cards load same `disk2.rom` +
 `diskii_p6.rom`. Per-card 2 drives + LSS state.
 
-**Primary**: `MainWindow` keeps `std::vector<DiskIICard*> diskCards`
-in slot-ascending order. `diskCard` (legacy) = `diskCards.front()` —
-lowest-slot wins. Per-slot persistence: `disk_path_slotN` /
+**Primary**: `StorageCoordinator` walks `SlotBus` into an ephemeral,
+slot-ascending topology; `primaryDiskII` is the first entry, so the
+lowest slot wins without a pointer being retained by `MainWindow`.
+Per-slot persistence: drive 1 uses `disk_path_slotN`, drive 2 uses
+`disk_path_slotN_drive2`, and the card-wide opt-in uses
 `disk_writeback_slotN`. Primary also writes legacy unsuffixed keys
-for older builds. Profile-switch captures `savedDiskPaths[slot]`
-from live cards before tear-down. **IWM wiring**: only slot-6
+for older builds. `StorageCoordinator::captureRebuildSnapshot()` copies
+Disk II/HDV/CFFA media state under the machine lock and restores it by slot
+after topology replacement; `MainWindow` does not carry path arrays across
+tear-down. **IWM wiring**: only slot-6
 `DiskIICard` calls `card->setIWM(&controller->iwm())`.
 
 ### Two read paths
@@ -1729,13 +1734,46 @@ window. Note `disk_write_controller_smoke` exercises the **legacy**
 path — the shipped app bundles `roms/diskii_p6.rom` and always runs the
 LSS/flux one.
 
-**Write-back opt-in plumbing.** `disk_writeback[_slotN]` has to be
-re-applied by `plugSlotsFromSettings`' `plugDiskII` (like `plugHdv` /
-`plugCffa` do) *and* carried through `applyProfile`'s media snapshot as
-`{path, writeBack}`, because `applyProfile` rebuilds every card and the
-MainWindow ctor calls it at startup. Miss either and the guest sees a
-write-protected disk (`isWriteProtected() == fileWriteProtected ||
-!writeBackEnabled`) — DOS 3.3 answers WRITE PROTECTED.
+**Write-back opt-in plumbing.** `plugSlotsFromSettings` constructs empty
+Disk II/HDV/CFFA hardware; only after every card exists does
+`StorageCoordinator::restoreMediaFromSettings()` apply paths and
+`disk_writeback[_slotN]`. `applyProfile` then overlays its live, value-only
+media snapshot, because it rebuilds every card and must preserve session
+toggles. Miss either phase and the guest sees a write-protected disk
+(`isWriteProtected() == fileWriteProtected || !writeBackEnabled`) — DOS 3.3
+answers WRITE PROTECTED.
+
+The reverse path is coordinated too. Every immediate Disk II/HDV/CFFA action
+from `MainWindow` calls `StorageCoordinator` with a slot and drive/bay instead
+of retaining a card alias. The coordinator locks the machine, re-resolves the
+target, applies the command and snapshots the matching settings updates; only
+after unlocking does it write/save those settings. This is important for both
+slot rebuild safety and lock ordering. `ejectAllMedia()` covers both Disk II
+drives plus every block and SmartPort image and aggregates failures without
+discarding dirty media.
+
+**3.5-inch target selection.** `StorageCoordinator::captureDisk35()` is the
+single source of truth: the lowest-slot SmartPort card owns both logical drives
+when present, otherwise the controller's on-board pair does. The corresponding
+mount/eject/write-back commands use the same rule and auto-create a
+`SmartPort35Unit` only after flushing any outgoing unit. WOZ→PO conversion
+copies a stable `Disk35Image` snapshot under the machine lock, performs the
+800K file export after unlocking, then remounts the copy with write-back on.
+The HDV SmartPort fallback uses the same flush-before-type-replacement helper.
+SmartPort unit types/media are restored by `restoreMediaFromSettings()` after
+the complete slot topology exists; construction itself remains media-free.
+
+**Session-only storage controllers.** Explicit CLI, drag-and-drop and Floppy
+Emu boot intent is allowed to add missing hardware without changing the slot
+plan. `SlotProvisioningCoordinator` owns that additive topology policy: HDV
+prefers CFFA, then synthetic HDV, then SmartPort; //c-class is restricted to
+its ROM-visible built-in SmartPort; a new HDV prefers slot 7 and a new Liron
+card prefers slot 5. Construction goes through the injected `SlotCardFactory`,
+SmartPort sound is wired before publication, and the storage coordinator's
+session marker prevents both slot and immediate media-setting persistence.
+This is deliberately
+separate from `SlotRebuildCoordinator`, whose contract is destructive
+teardown and full topology publication.
 
 ### ProDOSHardDiskCard (HDV — synthetic-block model)
 
@@ -1986,9 +2024,9 @@ host-served SmartPort block device — the **same `SmartPortCard`** as
   call (cmd `$00`, `$CnC0` routine) returns block count in X/Y via
   `$C0n5/$C0n6` so ProDOS ONLINE / BITSY size it correctly.
 
-- **Routing** (`MainWindow`): `routeMount35` uses SmartPort on all
-  profiles; `routeMountHdv` + `ensureHdvCardForBoot` send //c-class
-  HDV to slot-5 SmartPort (`SmartPortHdvUnit`), **never** cffa/hdv
+- **Routing** (`StorageCoordinator` + `SlotProvisioningCoordinator`): 3.5-inch
+  mounts use SmartPort when present; HDV boot provisioning sends //c-class
+  media to slot-5 SmartPort (`SmartPortHdvUnit`), **never** cffa/hdv
   slot card (masked, unbootable). Profile //c gains a `smartport35`
   built-in at slot 5; //c+ already had one.
 
@@ -4296,15 +4334,40 @@ tall-enough toolbar can end up behind the Apple II Screen window. Docking
 `MainWindow.h` is forward-decl-only for every plugin/panel/controller
 — includes only `M6502.h`, `Apple2Display.h` (HiResMode), `Mat4.h`
 (`OrbitCamera` member), `MouseGrab.h`, `Pom2Theme.h`,
-`PrinterScreenDump.h` (each for a by-value member) and `imgui.h`.
-32 owning members behind
+and `imgui.h` (each for a by-value member or signature).
+Owning members stay behind
 `std::unique_ptr<T>` (plus a `vector<unique_ptr<>>` of disk panels);
 ctor/dtor/accessor bodies out-of-line so
-unique_ptr destruction sees a complete type. Compile-time: `touch
-CassetteDeck_ImGui.h` → 2 TUs rebuild; `touch MainWindow.h` → 4 TUs.
+unique_ptr destruction sees a complete type. The 38 panel visibility flags and
+their texture/buffer/draft/status working data are in the opaque
+`MainWindowUiState`, taking `MainWindow.h` from 1,217 to 1,030 lines in the
+first extraction pass, to 958 lines after kiosk/window geometry and host mouse
+capture/routing moved behind it, then to 939 after printer aliases disappeared.
+The header remains at 939 after the storage pass: five card members were
+replaced by explicit ephemeral-query declarations of comparable size.
 
-Non-owning `*Card` pointers (`diskCard`, `hdvCard`, …) stay raw —
-`SlotBus` owns the cards.
+`SlotBus` still owns every expansion card. Legacy audio/input routes retain
+some non-owning aliases, but panels must not add new ones: Chat Mauve,
+Uthernet I/II, every Super Serial card and SmartPort now re-resolve through
+their coordinator under
+`lockState()`, hand ImGui an immutable value snapshot, and re-resolve to apply
+the returned command. SmartPort and FujiNet use the same pattern through their
+storage/network coordinators. This survives Slot Config destroying and
+rebuilding the card between frames.
+
+Disk II, HDV, CFFA and SmartPort now follow the same ownership rule.
+`StorageCoordinator::topology()` walks the live bus and returns an ephemeral,
+slot-sorted view for one locked operation; `MainWindow` no longer owns
+`diskCards`, `diskCard`, `hdvCard`, `cffaCard` or `smartPortCard`. Its immutable
+inventory snapshot supplies menus, the toolbar and abstraction diagnostics.
+`AiControlServer` also stopped retaining Disk II/HDV pointers: `/status`,
+`/disk` and `/eject` resolve slot 6 only after acquiring the machine lock.
+
+`PrinterCoordinator` applies the same rule to the complete host printer cable:
+it selects PrinterCard, Grappler+, FujiNet or the lowest tapped SSC under
+`lockState()`, drains an owned byte batch, and releases the lock before the
+ImageWriter mechanism advances. It also owns source-handover cursor identity,
+Grappler BUSY/DIP commands and the immutable text-spool snapshot.
 
 - **MemoryViewer_ImGui** — hex + ASCII over 64 KB. Reads via
   `Memory::data()` under `stateMutex` (held by MainWindow during
@@ -4455,9 +4518,9 @@ scorer now carries row 0 (pinned byte-identical to `renderHiRes` in
 ## Host control center (Slot Configuration + Floppy Emu)
 
 Two host-side facilities above the slot bus — neither is a bus
-device. Both are data-in / actions-out ImGui panels driven from a
-snapshot `MainWindow` builds under `stateMutex` and apply the
-returned actions itself (mount/eject/persist/restart).
+device. Both are data-in / actions-out ImGui panels. `StorageCoordinator`
+builds and applies the SmartPort configuration snapshot/command; the remaining
+generic media paths still route through MainWindow while they are migrated.
 
 ### MountableMediaCard + SlotCardCatalog
 
@@ -4514,7 +4577,7 @@ it. Each window points at the other in its header text.
     (1 bay).
   - else `dynamic_cast<DiskIICard*>` → internal 5.25" drives (1-2),
     each with path + Insert/Eject, Boot slot. Drive 1 persists to
-    `disk_path_slotN`; drive 2 is session-only.
+    `disk_path_slotN`; drive 2 persists to `disk_path_slotN_drive2`.
 
   Each media action takes `stateMutex` and calls `persistMediaBay()`
   (per-unit/per-slot/global keys), then `settings->save()`.
@@ -4781,7 +4844,8 @@ this file, in `CLAUDE.md` or in a code comment always means the same step:
    profile's built-in locked slots.
 1. Stop worker (already stopped above the numbered block, before the media
    flush) and clear the rewind ring: the ring recorded the previous machine.
-2. Snapshot the currently-mounted media so step 8 can re-mount it.
+2. Ask `StorageCoordinator` for a value-only snapshot of the currently-mounted
+   Disk II/HDV/CFFA media so step 8 can re-mount it without retaining cards.
 3. Tear down slot cards under state mutex (Mockingboard's
    `AudioSource` detached from `AudioDevice` FIRST).
 4. Cold-reset memory: wipe RAM/aux/LC + reset soft switches, with
@@ -4829,16 +4893,17 @@ bootDiskPath`; `--kiosk` → `CliPlan::kiosk`. `main.cpp`:
 
 - Picks slot by content via `classifyDiskForSlot(path)`, then calls
   `MainWindow::insertAndBootImage(path, err)` (shared with Disk
-  Library UI; `routeMount35`/`routeMountHdv` are `MainWindow` methods
-  so both callers route identically — SmartPort unit auto-create,
+  Library UI; `StorageCoordinator` routes both callers identically —
+  SmartPort unit auto-create,
   //c+ on-board hub, HDV card vs SmartPort unit 0). 5.25" →
   `DiskIICard::insertDisk` + `bootFromSlot`.
 
 - **HDV auto-provision**: an HDV needs an HDV/SmartPort card. A saved
-  config may have only Disk II cards. `ensureHdvCardForBoot()` plugs a
-  `ProDOSHardDiskCard` into a free slot (prefers 7) for the session
-  if none present. Plug **not persisted** — user's GUI config stays
-  untouched.
+  config may have only Disk II cards.
+  `SlotProvisioningCoordinator::ensureHdvBootTarget()` plugs a factory-built
+  `ProDOSHardDiskCard` into a
+  free slot (prefers 7) for the session if none is present. Plug **not
+  persisted** — user's GUI config stays untouched.
 
 - **No persistence in kiosk**: `~MainWindow`'s `settings->save()` is
   gated `if (!kiosk_)`. `imgui.ini` is also disabled. Bare `POM2

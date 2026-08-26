@@ -54,6 +54,7 @@
 #ifndef POM2_SP_OVER_SLIP_LINK_H
 #define POM2_SP_OVER_SLIP_LINK_H
 
+#include "FujiNetLink.h"
 #include "SlipFramer.h"
 #include "SpTransport.h"
 
@@ -67,69 +68,10 @@
 
 namespace pom2 {
 
-/// SmartPort command numbers, as the spec's tables name them.
-enum SpCommand : uint8_t {
-    kSpStatus     = 0x00,
-    kSpReadBlock  = 0x01,
-    kSpWriteBlock = 0x02,
-    kSpFormat     = 0x03,
-    kSpControl    = 0x04,
-    kSpInit       = 0x05,
-    kSpOpen       = 0x06,
-    kSpClose      = 0x07,
-    kSpRead       = 0x08,
-    kSpWrite      = 0x09,
-};
-
-/// SmartPort status/error codes POM2 produces itself (the peer supplies its
-/// own for everything else). $27 = I/O error, $28 = no device connected.
-enum SpError : uint8_t {
-    kSpOk          = 0x00,
-    kSpBadCommand  = 0x01,
-    kSpIoError     = 0x27,
-    kSpNoDevice    = 0x28,
-    kSpWriteProt   = 0x2B,
-};
-
-/// DIB device-type bytes, verbatim from the FujiNet firmware's
-/// `lib/bus/iwm/iwm.h` (SP_TYPE_BYTE_*). NOT the generic Apple IIgs SmartPort
-/// type list — FujiNet allocates its own $1x range for its virtual devices.
-enum SpDeviceType : uint8_t {
-    kSpType35Disk   = 0x01,
-    kSpTypeHardDisk = 0x02,
-    kSpTypeScsi     = 0x03,
-    kSpTypeFuji     = 0x10,   ///< the Fuji control device itself
-    kSpTypeNetwork  = 0x11,   ///< the N: device
-    kSpTypeCpm      = 0x12,
-    kSpTypeClock    = 0x13,
-    kSpTypePrinter  = 0x14,
-    kSpTypeModem    = 0x15,
-};
-
-/// One device the peer reported, as decoded from its DIB (Status code $03).
-struct SpDevice {
-    uint8_t     unit     = 0;   ///< unit number the guest addresses
-    std::string name;           ///< DIB ID string, trimmed
-    uint8_t     type     = 0;
-    uint8_t     subtype  = 0;
-    uint32_t    blocks   = 0;   ///< 0 for character devices (N:, printer, …)
-
-    /// Is this the printer?
-    ///
-    /// KEYED ON THE NAME, not the type byte, because the firmware's
-    /// `iwmPrinter::create_dib_reply_packet` (lib/device/iwm/printer.cpp:32)
-    /// sets `dib.type = SP_TYPE_BYTE_FUJINET_MODEM` — the printer advertises
-    /// itself as a MODEM. That is an upstream copy-paste bug; the DIB name is
-    /// "PRINTER" and is correct. The proper type byte is accepted as well, so
-    /// this keeps working once upstream fixes it — and a real modem is not
-    /// mistaken for a printer because its name is "MODEM".
-    bool isPrinter() const
-    { return name == "PRINTER" || type == kSpTypePrinter; }
-};
-
-class SpOverSlipLink
+class SpOverSlipLink : public FujiNetLink
 {
 public:
+    using Response = FujiNetLink::Response;
     /// Default round-trip budget. Loopback answers in microseconds and a real
     /// board over USB in single-digit milliseconds, so this is ~50x headroom
     /// for the normal case while keeping a dead peer to a quarter-second
@@ -142,14 +84,6 @@ public:
     /// INIT enumeration sweep.
     static constexpr uint8_t kMaxUnits = 8;
 
-    struct Response {
-        bool                 replied = false;  ///< a matching frame came back
-        uint8_t              status  = 0;      ///< SmartPort status from peer
-        std::vector<uint8_t> data;
-        /// True only when the peer answered AND reported success.
-        bool ok() const { return replied && status == kSpOk; }
-    };
-
     struct Stats {
         uint64_t calls    = 0;
         uint64_t timeouts = 0;
@@ -159,7 +93,7 @@ public:
     };
 
     SpOverSlipLink();
-    ~SpOverSlipLink();
+    ~SpOverSlipLink() override;
 
     SpOverSlipLink(const SpOverSlipLink&)            = delete;
     SpOverSlipLink& operator=(const SpOverSlipLink&) = delete;
@@ -191,11 +125,11 @@ public:
     bool isRunning() const { return running_.load(); }
 
     // ── State for the panel ───────────────────────────────────────────────
-    bool        isConnected() const;
+    bool        isConnected() const override;
     std::string describe() const;
     std::string lastError() const;
-    std::vector<SpDevice> devices() const;
-    std::size_t deviceCount() const;
+    std::vector<SpDevice> devices() const override;
+    std::size_t deviceCount() const override;
     Stats       stats() const;
 
     int  timeoutMs() const { return timeoutMs_.load(); }
@@ -205,26 +139,26 @@ public:
     // `unit` is the SmartPort unit number, 1-based. Unit 0 addresses the bus
     // itself and is answered locally (see FujiNetCard), never forwarded.
 
-    Response status(uint8_t unit, uint8_t statusCode);
-    Response readBlock(uint8_t unit, uint32_t block);
+    Response status(uint8_t unit, uint8_t statusCode) override;
+    Response readBlock(uint8_t unit, uint32_t block) override;
     Response writeBlock(uint8_t unit, uint32_t block,
-                        const uint8_t* data, std::size_t n);
-    Response format(uint8_t unit);
+                        const uint8_t* data, std::size_t n) override;
+    Response format(uint8_t unit) override;
     Response control(uint8_t unit, uint8_t controlCode,
-                     const uint8_t* list, std::size_t n);
-    Response init(uint8_t unit);
-    Response open(uint8_t unit);
-    Response close(uint8_t unit);
-    Response read(uint8_t unit, uint16_t byteCount, uint32_t address);
+                     const uint8_t* list, std::size_t n) override;
+    Response init(uint8_t unit) override;
+    Response open(uint8_t unit) override;
+    Response close(uint8_t unit) override;
+    Response read(uint8_t unit, uint16_t byteCount, uint32_t address) override;
     Response write(uint8_t unit, uint16_t byteCount, uint32_t address,
-                   const uint8_t* data, std::size_t n);
+                   const uint8_t* data, std::size_t n) override;
 
     /// Guest reset. Bumps the sequence number so a response in flight for the
     /// pre-reset request can never be mistaken for an answer to the next one,
     /// then tells every enumerated device (Control code $00) so a modem drops
     /// its connection and a printer ejects its partial page — the behaviour
     /// the spec asks the Apple II side to provide.
-    void notifyGuestReset();
+    void notifyGuestReset() override;
 
     /// Move the sequence number on and drop any half-decoded frame, WITHOUT
     /// telling the devices anything. This is the rewind case: the guest's
@@ -232,7 +166,7 @@ public:
     /// the next request — but the peer did not reset, and telling a modem to
     /// hang up because the *user* rewound would be wrong. See
     /// FujiNetCard::loadSnapshotState.
-    void resync();
+    void resync() override;
 
 private:
     /// One request/response exchange. `fields` is the 5 command-specific

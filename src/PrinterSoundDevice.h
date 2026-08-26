@@ -45,7 +45,7 @@
 #ifndef POM2_PRINTER_SOUND_DEVICE_H
 #define POM2_PRINTER_SOUND_DEVICE_H
 
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "PrinterSoundSink.h"
 
 #include <atomic>

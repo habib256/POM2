@@ -15,9 +15,9 @@
 // and not six.
 //
 // This card is a RELAY, not an emulation. It presents a SmartPort controller
-// to the guest and forwards every call, verbatim, to a real FujiNet over
-// SP-over-SLIP (SpOverSlipLink) — either a FujiNet desktop build over loopback
-// TCP, or a physical board over USB CDC-ACM.
+// to the guest and forwards every call through the injected FujiNetLink
+// protocol seam. The runtime SpOverSlipLink adapter reaches either a FujiNet
+// desktop build over loopback TCP or a physical board over USB CDC-ACM.
 //
 // ── Sources ───────────────────────────────────────────────────────────────
 //
@@ -71,13 +71,13 @@
 #ifndef POM2_FUJINET_CARD_H
 #define POM2_FUJINET_CARD_H
 
-#include "ChildProcess.h"
+#include "FujiNetLink.h"
 #include "SlotPeripheral.h"
-#include "SpOverSlipLink.h"
 
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -115,10 +115,14 @@ public:
     void setMemory(Memory* m) { mem_ = m; }
     void setCpu(M6502* c)     { cpu_ = c; }
 
-    /// The link is owned by the card and exposed so the panel and the host
-    /// can configure the transport, read counters and enumerate devices.
-    SpOverSlipLink&       link()       { return link_; }
-    const SpOverSlipLink& link() const { return link_; }
+    /// Install the runtime protocol adapter. A null adapter restores the
+    /// disconnected fail-safe used by deterministic device tests.
+    void setLink(std::unique_ptr<FujiNetLink> link);
+    /// Host-composition inspection seam. The returned adapter remains owned
+    /// by the card and is valid only while the caller holds the SlotBus state
+    /// lock; frontend coordinators use it to copy status, never to cache it.
+    FujiNetLink* link() noexcept { return link_.get(); }
+    const FujiNetLink* link() const noexcept { return link_.get(); }
 
     // ── Printer tap (phase 2) ─────────────────────────────────────────────
     //
@@ -146,29 +150,10 @@ public:
     /// panel's hint and lets MainWindow skip the card as a printer source.
     bool   hasPrinterUnit() const;
 
-    // ── Helper process (phase 3) ──────────────────────────────────────────
+    // ── Runtime boundary ──────────────────────────────────────────
     //
-    // POM2 can START a FujiNet desktop build for the user rather than making
-    // them run it by hand, and reaps it on exit — a helper left behind holds
-    // the loopback port the next session wants to listen on.
-    //
-    // POM2 does NOT touch the helper's `fnconfig.ini`. That file holds the
-    // user's WiFi credentials, and it does not need touching: the firmware's
-    // Apple default for Bus-over-IP is already 127.0.0.1:1985
-    // (`CONFIG_DEFAULT_BOIP_PORT` in lib/config/fnConfig.h), which is exactly
-    // what this card listens on. If a user has pointed their FujiNet
-    // somewhere else, the panel says the helper started but never connected
-    // rather than silently rewriting their configuration.
-    //
-    // NOTE: this is deliberately NOT the "build the firmware into POM2"
-    // design sketched in docs/fujinet_plan.md § 8. See that section for why
-    // vendoring it was rejected.
-    ChildProcess&       helper()       { return helper_; }
-    const ChildProcess& helper() const { return helper_; }
-
-    /// Start the configured helper. `exePath` empty = look for `fujinet` on
-    /// PATH and in the usual install locations.
-    bool startHelper(const std::string& exePath, std::string& errOut);
+    // Helper-process ownership deliberately lives above this device layer;
+    // the card models only the SmartPort hardware/protocol surface.
 
     // ── SlotPeripheral ────────────────────────────────────────────────────
     std::string_view name() const override { return "FujiNet"; }
@@ -228,8 +213,7 @@ private:
     M6502*   cpu_ = nullptr;
 
     std::array<uint8_t, 256> rom_{};
-    SpOverSlipLink           link_;
-    ChildProcess             helper_;
+    std::unique_ptr<FujiNetLink> link_;
 
     uint64_t callCount_  = 0;
     uint64_t localCount_ = 0;

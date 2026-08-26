@@ -6,7 +6,7 @@
 #include "FujiNet_ImGui.h"
 
 #include "IconsFontAwesome6.h"
-#include "SpOverSlipLink.h"   // SpDeviceType — the DIB type bytes
+#include "FujiNetLink.h"   // SpDeviceType — the DIB type bytes
 #include "StatusLed.h"
 #include "imgui.h"
 

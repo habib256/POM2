@@ -6,11 +6,10 @@
 // FujiNet_ImGui — panel for the FujiNet relay card: which transport to use,
 // whether a peer is attached, what devices it offers, and the call counters.
 //
-// Same shape as the other card panels: pure data-in / actions-out. MainWindow
-// owns the FujiNetCard and applies the requested changes under the state
-// mutex, so this file never touches the link itself — which matters here more
-// than usual, because reconfiguring the transport stops and restarts a worker
-// thread.
+// Same shape as the other card panels: pure data-in / actions-out.
+// NetworkCoordinator resolves the card/runtime link and applies the command
+// under the state mutex, so this file never touches either — which matters
+// here more than usual because transport changes stop/restart a worker thread.
 
 #ifndef POM2_FUJINET_IMGUI_H
 #define POM2_FUJINET_IMGUI_H

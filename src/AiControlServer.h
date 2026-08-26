@@ -67,7 +67,6 @@ class EmulationController;
 class M6502;
 class Memory;
 class DiskIICard;
-class ProDOSHardDiskCard;
 class Apple2Display;
 class MouseCard;
 
@@ -90,26 +89,16 @@ public:
     AiControlServer& operator=(const AiControlServer&) = delete;
 
     /// Wire the controller + display once the emulator is fully constructed.
-    /// All pointers are non-owning; the server holds them across requests but
-    /// never deletes them. Disk/HDV pointers may be null — the corresponding
-    /// endpoints then return 503.
-    ///
-    /// Threading: when `ctrl_` is already bound (i.e., this is a re-attach
-    /// after a profile switch), the caller MUST hold `ctrl->stateMutex()`
-    /// for the duration of the call. Handlers read disk6_/hdv5_ under the
-    /// same mutex, so this serialises the pointer swap against in-flight
-    /// requests. On the very first call (no worker thread alive yet) the
-    /// lock is optional.
+    /// Both pointers are non-owning and outlive the server. Slot cards are
+    /// deliberately not attached: every request resolves its target through
+    /// SlotBus while holding the controller state lock, so a profile/slot
+    /// rebuild cannot leave the HTTP worker with a dangling card pointer.
     void attach(EmulationController* ctrl,
-                Apple2Display*       display,
-                DiskIICard*          disk6,
-                ProDOSHardDiskCard*  hdv5);
+                Apple2Display*       display);
 
-    /// Null the slot-card pointers. Caller MUST hold the controller's
-    /// stateMutex. Use this BEFORE the slot bus tears down its plugged
-    /// cards during a profile switch — between detach() and the next
-    /// attach(), card-touching endpoints return 503 instead of
-    /// dereferencing freed memory. Pairs with attach().
+    /// Temporarily reject slot-card endpoints during a topology rebuild.
+    /// No card pointer is retained; this is only a gate protected by the
+    /// controller state lock. The next attach() re-enables slot access.
     void detach();
 
     /// Update the cached display-side metadata that `/status` reports.
@@ -142,8 +131,7 @@ private:
     // ─── Bound emulator handles (non-owning) ─────────────────────────────
     EmulationController* ctrl_    = nullptr;
     Apple2Display*       display_ = nullptr;
-    DiskIICard*          disk6_   = nullptr;
-    ProDOSHardDiskCard*  hdv5_    = nullptr;
+    bool                 slotAccessEnabled_ = false;
 
     // ─── Listener state ──────────────────────────────────────────────────
     mutable std::mutex     mtx_;

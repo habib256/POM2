@@ -29,6 +29,9 @@
 // as a white bracket so you can see what slice of memory is in focus.
 
 #include "MainWindow.h"
+#include "MainWindowUiState.h"
+
+#include "DebugCoordinator.h"
 
 #include "DiskIICard.h"
 #include "EmulationController.h"
@@ -167,7 +170,7 @@ std::vector<MainWindow::MemRegion> MainWindow::buildMemoryRegions()
     regions.push_back({ 0xC000, 0xC07F, kIOColor,   "Soft switches / I/O" });
     regions.push_back({ 0xC080, 0xC0FF, kIOColor,   "I/O reserved" });
     regions.push_back({ 0xC100, 0xC7FF, kSlotColor, "Slot ROMs" });
-    if (diskCard != nullptr) {
+    if (primaryDiskIICard() != nullptr) {
         // Disk II P5A boot PROM lives at slot 6 ($C600-$C6FF) when the
         // card is plugged. Painted on top of the Slot-ROM band so the
         // user sees exactly which slot owns the bytes the boot trick
@@ -188,7 +191,7 @@ std::vector<MainWindow::MemRegion> MainWindow::buildMemoryRegions()
 void MainWindow::renderMemoryBarWindow()
 {
     ImGui::SetNextWindowSize(ImVec2(420, 540), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Memory Map Bar", &showMemoryBar)) {
+    if (!ImGui::Begin("Memory Map Bar", &uiState_->showMemoryBar)) {
         ImGui::End();
         return;
     }
@@ -421,8 +424,8 @@ void MainWindow::renderMemoryBarWindow()
     }
 
     // --- Memory viewer viewport overlay ---
-    if (showMemViewer) {
-        const auto vp = memViewer->getViewportRange();
+    if (uiState_->showMemViewer) {
+        const auto vp = debugCoordinator_->memoryViewer().getViewportRange();
         float vpY0 = addrToY(vp.startAddress);
         float vpY1 = addrToY(vp.endAddress);
         if (vpY1 - vpY0 < 4.0f) vpY1 = vpY0 + 4.0f;
@@ -476,8 +479,9 @@ void MainWindow::renderMemoryBarWindow()
             ImGui::EndTooltip();
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                showMemViewer = true;
-                memViewer->navigateToAddress(static_cast<int>(hoverAddr));
+                uiState_->showMemViewer = true;
+                debugCoordinator_->memoryViewer().navigateToAddress(
+                    static_cast<int>(hoverAddr));
             }
         }
     }
@@ -494,7 +498,7 @@ void MainWindow::renderMemoryBarWindow()
 void MainWindow::renderMemoryBarHorizontalWindow()
 {
     ImGui::SetNextWindowSize(ImVec2(720, 88), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Memory Map Bar (Horizontal)", &showMemoryBarH)) {
+    if (!ImGui::Begin("Memory Map Bar (Horizontal)", &uiState_->showMemoryBarH)) {
         ImGui::End();
         return;
     }
@@ -670,8 +674,8 @@ void MainWindow::renderMemoryBarHorizontalWindow()
     }
 
     // --- Memory viewer viewport overlay ---
-    if (showMemViewer) {
-        const auto vp = memViewer->getViewportRange();
+    if (uiState_->showMemViewer) {
+        const auto vp = debugCoordinator_->memoryViewer().getViewportRange();
         float vpX0 = addrToX(vp.startAddress);
         float vpX1 = addrToX(vp.endAddress);
         if (vpX1 - vpX0 < 4.0f) vpX1 = vpX0 + 4.0f;
@@ -725,8 +729,9 @@ void MainWindow::renderMemoryBarHorizontalWindow()
             ImGui::EndTooltip();
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                showMemViewer = true;
-                memViewer->navigateToAddress(static_cast<int>(hoverAddr));
+                uiState_->showMemViewer = true;
+                debugCoordinator_->memoryViewer().navigateToAddress(
+                    static_cast<int>(hoverAddr));
             }
         }
     }
@@ -741,7 +746,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
 void MainWindow::renderMemoryGridWindow()
 {
     ImGui::SetNextWindowSize(ImVec2(880, 580), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin("Memory Map Grid", &showMemoryGrid)) {
+    if (!ImGui::Begin("Memory Map Grid", &uiState_->showMemoryGrid)) {
         ImGui::End();
         return;
     }
@@ -828,8 +833,8 @@ void MainWindow::renderMemoryGridWindow()
                     if (mousePos.x >= p0.x && mousePos.x < p1.x &&
                         mousePos.y >= p0.y && mousePos.y < p1.y) {
                         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                            showMemViewer = true;
-                            memViewer->navigateToAddress(addr);
+                            uiState_->showMemViewer = true;
+                            debugCoordinator_->memoryViewer().navigateToAddress(addr);
                         }
                         ImGui::BeginTooltip();
                         ImGui::Text("Page $%02X : $%04X-$%04X", page, addr, addr + 0xFF);
@@ -918,7 +923,7 @@ void MainWindow::renderMemoryGridWindow()
         ImGui::BulletText("$C052/$C053  Full-screen / Mixed");
         ImGui::BulletText("$C054/$C055  Page 1 / Page 2");
         ImGui::BulletText("$C056/$C057  Lo-res / Hi-res");
-        if (diskCard != nullptr) {
+        if (primaryDiskIICard() != nullptr) {
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "  Disk II (slot 6)");
             ImGui::BulletText("$C0E0-$C0E7  Phases 0-3 OFF/ON");

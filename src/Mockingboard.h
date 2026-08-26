@@ -73,7 +73,7 @@
 #define POM2_MOCKINGBOARD_H
 
 #include "Ay3_8910.h"
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "SlotPeripheral.h"
 #include "Ssi263.h"
 #include "Via6522.h"
@@ -130,7 +130,7 @@ public:
     AudioSource* audioSource();
 
     /// Audio output sample rate negotiated with the OS device. Default
-    /// is AudioDevice::kSampleRate; override before plugging if your
+    /// is AudioSource::kDefaultSampleRate; override before plugging if your
     /// device picked a different rate (Apple Silicon often picks 48 kHz).
     void setSampleRate(uint32_t hz);
 

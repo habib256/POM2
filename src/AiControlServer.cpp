@@ -385,30 +385,16 @@ AiControlServer::~AiControlServer()
 }
 
 void AiControlServer::attach(EmulationController* ctrl,
-                             Apple2Display*       display,
-                             DiskIICard*          disk6,
-                             ProDOSHardDiskCard*  hdv5)
+                             Apple2Display*       display)
 {
     ctrl_    = ctrl;
     display_ = display;
-    disk6_   = disk6;
-    hdv5_    = hdv5;
+    slotAccessEnabled_ = true;
 }
 
 void AiControlServer::detach()
 {
-    // Pointer-only clear under caller-held stateMutex. Concurrent
-    // handlers either (a) blocked waiting on the lock and will see the
-    // nulls when they unblock and re-check, or (b) already past their
-    // null-check and inside the lock — in which case the caller is
-    // blocked behind them and applyProfile's actual card teardown
-    // hasn't happened yet, so the still-alive cards are safe to use.
-    // ctrl_ and display_ live across profile switches (members of
-    // MainWindow / EmulationController, not re-created) — only the
-    // slot cards get torn down and rebuilt, so only their pointers
-    // need clearing.
-    disk6_   = nullptr;
-    hdv5_    = nullptr;
+    slotAccessEnabled_ = false;
 }
 
 bool AiControlServer::start(uint16_t port)
@@ -766,8 +752,8 @@ void AiControlServer::handleStatus(socket_t fd, const Request& /*req*/)
     // Sample CPU regs AND disk state under ONE lock so the /status JSON is a
     // single coherent snapshot (the worker releases the lock between 4096-
     // cycle chunks, so two separate lock scopes could straddle an emulated-
-    // time gap). Lock-then-check also serialises against a profile switch
-    // nulling disk6_ (see `detach()`).
+    // time gap). Resolving the card after taking the lock also serialises
+    // this snapshot against profile and slot rebuilds.
     uint16_t pc; uint8_t a, x, y, p, sp; uint64_t cycles;
     std::string cpuMode;
     std::string disks = "[]";
@@ -782,15 +768,17 @@ void AiControlServer::handleStatus(socket_t fd, const Request& /*req*/)
         sp = cpu.getStackPointer();
         cycles = st.memory().getCycleCounter();
         cpuMode = cpuModeName(cpu.getCpuMode());
-        if (disk6_) {
+        auto* disk6 = dynamic_cast<DiskIICard*>(
+            st.memory().slotBus().peripheral(6));
+        if (slotAccessEnabled_ && disk6) {
             std::ostringstream oss;
             oss << "[";
             for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
                 if (d) oss << ",";
                 oss << "{\"slot\":6,\"drive\":" << d
-                    << ",\"path\":\"" << jsonEscape(disk6_->getDiskPath(d)) << "\""
-                    << ",\"loaded\":" << (disk6_->isDiskLoaded(d) ? "true" : "false")
-                    << ",\"track\":" << disk6_->getCurrentTrack(d)
+                    << ",\"path\":\"" << jsonEscape(disk6->getDiskPath(d)) << "\""
+                    << ",\"loaded\":" << (disk6->isDiskLoaded(d) ? "true" : "false")
+                    << ",\"track\":" << disk6->getCurrentTrack(d)
                     << "}";
             }
             oss << "]";
@@ -1034,9 +1022,8 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
 {
     if (req.method != "POST") { sendJsonError(fd, 405, "POST only"); return; }
     // Parse the body BEFORE locking — these are pure JSON ops, no card
-    // access. Defer the disk6_ null-check to inside the lock so a
-    // concurrent profile switch (which detaches() before tearing down
-    // the card) can't slip a null past us.
+    // access. Resolve slot 6 only after taking the lock so a concurrent
+    // profile/slot rebuild cannot invalidate the target.
     long slot  = 6;
     long drive = 0;
     jsonGetInt(req.body, "slot",  slot);
@@ -1059,11 +1046,13 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
     std::string errMsg;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        if (!disk6_) {
+        auto* disk6 = dynamic_cast<DiskIICard*>(
+            ctrl_->memory().slotBus().peripheral(6));
+        if (!slotAccessEnabled_ || !disk6) {
             noCard = true;
         } else {
-            ok = disk6_->insertDisk(static_cast<int>(drive), *safe);
-            if (!ok) errMsg = disk6_->getLastError(static_cast<int>(drive));
+            ok = disk6->insertDisk(static_cast<int>(drive), *safe);
+            if (!ok) errMsg = disk6->getLastError(static_cast<int>(drive));
         }
     }
     if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
@@ -1085,10 +1074,12 @@ void AiControlServer::handleDiskEject(socket_t fd, const Request& req)
     std::string errMsg;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
-        if (!disk6_) noCard = true;
+        auto* disk6 = dynamic_cast<DiskIICard*>(
+            ctrl_->memory().slotBus().peripheral(6));
+        if (!slotAccessEnabled_ || !disk6) noCard = true;
         else {
-            ejected = disk6_->ejectDisk(static_cast<int>(drive));
-            if (!ejected) errMsg = disk6_->getLastError(static_cast<int>(drive));
+            ejected = disk6->ejectDisk(static_cast<int>(drive));
+            if (!ejected) errMsg = disk6->getLastError(static_cast<int>(drive));
         }
     }
     if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }

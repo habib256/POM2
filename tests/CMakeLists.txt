@@ -11,6 +11,124 @@
 # test would print "OK" regardless of whether its checks actually held.
 add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-UNDEBUG>)
 
+# Every test links the assertion-enabled twin of the production core.  A
+# directory-level dependency is intentional here: even the narrow tests may
+# grow a core call without having to restore a private source-file bundle.
+# Static archive semantics keep unused device objects out of each executable.
+if(NOT TARGET pom2_core_test)
+    message(FATAL_ERROR "tests require the pom2_core_test target")
+endif()
+link_libraries(pom2_core_test)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Pom2Test.cmake)
+
+# Renderer-free frontend boundary driven with the real CPU worker, an AI-like
+# state reader and live SlotBus reconfiguration.  This is the primary TSan
+# target: it exercises immutable panel snapshots and command dispatch without
+# pretending Dear ImGui itself is multi-threaded.
+pom2_add_headless_test(test_frontend_device_panel_concurrency
+    NAME frontend_device_panel_concurrency
+    TIMEOUT 120
+    SOURCES
+        frontend_device_panel_concurrency_test.cpp
+        ../src/AudioCoordinator.cpp
+        ../src/DevicePanelCoordinator.cpp
+        ../src/MouseCoordinator.cpp
+        ../src/NetworkCoordinator.cpp
+        ../src/PrinterCoordinator.cpp
+        ../src/SlotConfigurationCoordinator.cpp
+        ../src/StorageCoordinator.cpp
+        ../src/Settings.cpp)
+set_property(TEST frontend_device_panel_concurrency APPEND PROPERTY
+             LABELS frontend-tsan)
+
+pom2_add_headless_test(test_printer_coordinator
+    NAME printer_coordinator
+    TIMEOUT 20
+    SOURCES
+        printer_coordinator_test.cpp
+        ../src/PrinterCoordinator.cpp
+        ../src/Settings.cpp)
+set_property(TEST printer_coordinator APPEND PROPERTY LABELS frontend-tsan)
+
+pom2_add_headless_test(test_storage_coordinator
+    NAME storage_coordinator
+    TIMEOUT 20
+    SOURCES
+        storage_coordinator_test.cpp
+        ../src/StorageCoordinator.cpp
+        ../src/Settings.cpp
+    COMPILE_DEFINITIONS POM2_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+set_property(TEST storage_coordinator APPEND PROPERTY LABELS frontend-tsan)
+
+pom2_add_headless_test(test_audio_coordinator
+    NAME audio_coordinator
+    TIMEOUT 20
+    SOURCES
+        audio_coordinator_test.cpp
+        ../src/AudioCoordinator.cpp
+        ../src/Settings.cpp)
+set_property(TEST audio_coordinator APPEND PROPERTY LABELS frontend-tsan)
+
+pom2_add_headless_test(test_mouse_coordinator
+    NAME mouse_coordinator
+    TIMEOUT 20
+    SOURCES
+        mouse_coordinator_test.cpp
+        ../src/MouseCoordinator.cpp)
+set_property(TEST mouse_coordinator APPEND PROPERTY LABELS frontend-tsan)
+
+# Public facade contract. This target includes only the installed-style header
+# and proves the PIMPL API does not leak internal Memory/M6502 definitions.
+pom2_add_headless_test(test_pom2_core_api
+    NAME pom2_core_api
+    TIMEOUT 10
+    PORTABLE
+    SOURCES pom2_core_api_test.cpp
+    COMPILE_DEFINITIONS POM2_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
+pom2_add_headless_test(test_deterministic_adapter_injection
+    NAME deterministic_adapter_injection
+    TIMEOUT 10
+    PORTABLE
+    SOURCES deterministic_adapter_injection_test.cpp
+    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Install the SDK into an isolated prefix and prove that an out-of-tree project
+# can find, compile, link and run it without access to private source headers.
+if(POM2_INSTALL_CORE_SDK)
+    add_test(NAME pom2_core_sdk_consumer
+        COMMAND ${CMAKE_COMMAND}
+            "-DPOM2_BINARY_DIR=${CMAKE_BINARY_DIR}"
+            "-DPOM2_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+            "-DPOM2_TEST_CONFIG=$<CONFIG>"
+            "-DPOM2_TEST_GENERATOR=${CMAKE_GENERATOR}"
+            "-DPOM2_TEST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}"
+            "-DPOM2_TEST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}"
+            "-DPOM2_TEST_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}"
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/pom2_core_sdk_consumer_test.cmake)
+    set_tests_properties(pom2_core_sdk_consumer PROPERTIES
+        TIMEOUT 120
+        LABELS portable-headless)
+endif()
+
+# The architecture manifests are executable policy, not documentation only:
+# prove a media -> runtime include is rejected by the configure-time guard.
+add_test(NAME architecture_layer_guard
+    COMMAND ${CMAKE_COMMAND}
+        -DPOM2_LAYER_TEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/architecture_layer_fixture
+        -DPOM2_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/architecture_layer_guard_test.cmake)
+set_tests_properties(architecture_layer_guard PROPERTIES TIMEOUT 5)
+
+# Re-run the physical MainWindow split guard at test time as well as configure
+# time. Editing a .cpp alone does not force CMake to configure again, whereas
+# every CI path runs CTest.
+add_test(NAME architecture_mainwindow_tu_size
+    COMMAND ${CMAKE_COMMAND}
+        -DPOM2_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/mainwindow_tu_size_test.cmake)
+set_tests_properties(architecture_mainwindow_tu_size PROPERTIES TIMEOUT 5)
+
 # Download through a temporary file and verify the digest only after a
 # successful transfer. CMake's file(DOWNLOAD EXPECTED_HASH ...) reports a
 # failed transfer as a fatal configure error before STATUS can be inspected,
@@ -63,31 +181,8 @@ if(NOT EXISTS "${KLAUS_BIN}")
     endif()
 endif()
 
-# Minimal core needed for the test. Memory's destructor invokes the slot
-# bus + cassette destructors, so they have to link too.
-set(POM2_TEST_CORE_SOURCES
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
-    ${CMAKE_SOURCE_DIR}/src/SnapshotIO.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-)
-
 add_executable(test_klaus_6502
     klaus_6502_functional_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_klaus_6502 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -144,7 +239,6 @@ endif()
 
 add_executable(test_klaus_65c02
     klaus_65c02_extended_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_klaus_65c02 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -226,7 +320,6 @@ endif()
 
 add_executable(test_tomharte_cpu
     tomharte_cpu_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_tomharte_cpu PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -251,26 +344,9 @@ set_tests_properties(tomharte_6502 tomharte_65c02 PROPERTIES TIMEOUT 120)
 # IIe → IIc → IIc+ → II → II+) and verifies Memory+CPU state stays
 # consistent. Doesn't exercise the GUI applyProfile path (needs
 # ImGui+GLFW) but locks the core invariants.
-add_executable(test_system_profile
-    system_profile_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_system_profile PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_system_profile PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_system_profile PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_system_profile PRIVATE winmm)
-endif()
-
-add_test(NAME system_profile_smoke COMMAND test_system_profile)
-set_tests_properties(system_profile_smoke PROPERTIES TIMEOUT 5)
+pom2_add_headless_test(test_system_profile
+    NAME system_profile_smoke TIMEOUT 5 PORTABLE
+    SOURCES system_profile_smoke_test.cpp)
 
 
 # ─── Joystick square-gate (Apple II corner reachability) ──────────────────
@@ -278,6 +354,7 @@ set_tests_properties(system_profile_smoke PROPERTIES TIMEOUT 5)
 # expand to the true corner (255/255) so games like Wings of Fury can take
 # off. Compiling JoystickInput.cpp pulls its GLFW poll() path, so link GLFW
 # (the pure math under test never calls into it).
+if(POM2_BUILD_FRONTEND)
 add_executable(test_joystick_square_gate
     joystick_square_gate_test.cpp
     ${CMAKE_SOURCE_DIR}/src/JoystickInput.cpp
@@ -290,6 +367,7 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME joystick_square_gate COMMAND test_joystick_square_gate)
 set_tests_properties(joystick_square_gate PROPERTIES TIMEOUT 5)
+endif()
 
 
 # ─── //c+ boot trace (diagnostic, no asserts) ─────────────────────────────
@@ -299,7 +377,6 @@ set_tests_properties(joystick_square_gate PROPERTIES TIMEOUT 5)
 
 add_executable(test_iwm_device
     iwm_device_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iwm_device PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -318,7 +395,6 @@ set_tests_properties(iwm_device_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_smartport_35
     smartport_35_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_smartport_35 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -338,16 +414,6 @@ set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_iicplus_boot_trace EXCLUDE_FROM_ALL
     iicplus_boot_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iicplus_boot_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -364,16 +430,6 @@ endif()
 
 add_executable(test_iic_boot_trace
     iic_boot_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iic_boot_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -392,16 +448,6 @@ set_tests_properties(iic_boot_trace_smoke PROPERTIES TIMEOUT 30)
 
 add_executable(test_iic_nodisk_boot_trace
     iic_nodisk_boot_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iic_nodisk_boot_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -420,16 +466,6 @@ set_tests_properties(iic_nodisk_boot_trace_smoke PROPERTIES TIMEOUT 30)
 
 add_executable(test_choplifter_iie_trace EXCLUDE_FROM_ALL
     choplifter_iie_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_choplifter_iie_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -452,7 +488,6 @@ endif()
 
 add_executable(test_snapshot_io
     snapshot_io_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SnapshotIO.cpp
 )
 target_include_directories(test_snapshot_io PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -466,7 +501,6 @@ set_tests_properties(snapshot_io_smoke PROPERTIES TIMEOUT 5)
 # the storage primitive the rewind ring buffer is built on.
 add_executable(test_snapshot_memory
     snapshot_memory_roundtrip_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SnapshotIO.cpp
 )
 target_include_directories(test_snapshot_memory PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME snapshot_memory_roundtrip COMMAND test_snapshot_memory)
@@ -476,13 +510,10 @@ set_tests_properties(snapshot_memory_roundtrip PROPERTIES TIMEOUT 5)
 # ─── Rewind ring buffer round-trip (rewind Phase 1) ───────────────────────
 # Drives Memory + M6502 directly: capture→restore bit-for-bit, oldest-first
 # eviction, and restoreToCycle() seek. Gate for RewindBuffer and the shared
-# MachineSnapshot capture/restore sequence it rides on. (SnapshotIO.cpp,
-# M6502.cpp, Memory.cpp come in via POM2_TEST_CORE_SOURCES — don't re-add.)
+# MachineSnapshot capture/restore sequence it rides on. SnapshotIO.cpp,
+# M6502.cpp and Memory.cpp are provided by pom2_core_test.
 add_executable(test_rewind
     rewind_roundtrip_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_rewind PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -506,9 +537,6 @@ set_tests_properties(rewind_roundtrip PROPERTIES TIMEOUT 5)
 # all-keyframes, eviction-with-rebase, and truncateAfter().
 add_executable(test_rewind_delta
     rewind_delta_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_rewind_delta PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -532,11 +560,6 @@ set_tests_properties(rewind_delta PROPERTIES TIMEOUT 5)
 # state, seekToCycle lands right, resume truncates the future and runs on.
 add_executable(test_rewind_transport
     rewind_transport_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
-    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_rewind_transport PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -554,6 +577,7 @@ if(WIN32)
 endif()
 add_test(NAME rewind_transport COMMAND test_rewind_transport)
 set_tests_properties(rewind_transport PROPERTIES TIMEOUT 20)
+set_property(TEST rewind_transport APPEND PROPERTY LABELS frontend-tsan)
 
 
 # ─── Rewind slot-card state (rewind Phase 4) ──────────────────────────────
@@ -562,10 +586,6 @@ set_tests_properties(rewind_transport PROPERTIES TIMEOUT 20)
 # snapshot bit-exact, and foreign/short blobs are ignored.
 add_executable(test_rewind_slot_state
     rewind_slot_state_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_rewind_slot_state PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -592,11 +612,6 @@ set_tests_properties(rewind_slot_state PROPERTIES TIMEOUT 10)
 # ignored. Via6522/Ay3_8910 serialize is shared with PhasorCard.
 add_executable(test_rewind_audio_state
     rewind_audio_state_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_rewind_audio_state PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -622,10 +637,6 @@ set_tests_properties(rewind_audio_state PROPERTIES TIMEOUT 10)
 # restoring an earlier snapshot undoes it).
 add_executable(test_rewind_disk_write
     rewind_disk_write_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_rewind_disk_write PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -661,7 +672,6 @@ set_tests_properties(voxel3d_math PROPERTIES TIMEOUT 5)
 
 add_executable(test_slot_bus
     slot_bus_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_slot_bus PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -675,7 +685,6 @@ set_tests_properties(slot_bus_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_slot_peripheral_irq
     slot_peripheral_irq_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_slot_peripheral_irq PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -686,49 +695,24 @@ set_tests_properties(slot_peripheral_irq_smoke PROPERTIES TIMEOUT 5)
 # ─── Paste pipeline smoke test ────────────────────────────────────────────
 # Pins line-ending normalisation, control-byte filtering, 7-bit strip,
 # the strobe-driven queue drain, and the kPasteMaxChars cap.
-add_executable(test_paste
-    paste_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_paste PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_paste PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_paste PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_paste PRIVATE winmm)
-endif()
+pom2_add_headless_test(test_paste
+    NAME paste_smoke TIMEOUT 5 PORTABLE
+    SOURCES paste_smoke_test.cpp)
 
-add_test(NAME paste_smoke COMMAND test_paste)
-set_tests_properties(paste_smoke PROPERTIES TIMEOUT 5)
+# ─── Built-in keyboard / game-port $C0xx contract ───────────────────────
+# Baseline for extracting input state from Memory: mirror decode, exact paddle
+# timer boundaries, strobe acknowledgement and IIe modifier wiring.
+pom2_add_headless_test(test_input_c0xx_contract
+    NAME input_c0xx_contract TIMEOUT 5 PORTABLE
+    SOURCES input_c0xx_contract_test.cpp)
 
 
 # ─── Language Card bank-switching smoke test ──────────────────────────────
 # Pins the 16 KB Apple II/II+ Language Card overlay at $D000-$FFFF. This is
 # required by ProDOS and hard-disk titles such as Total Replay.
-add_executable(test_language_card
-    language_card_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_language_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_language_card PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_language_card PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_language_card PRIVATE winmm)
-endif()
-
-add_test(NAME language_card_smoke COMMAND test_language_card)
-set_tests_properties(language_card_smoke PROPERTIES TIMEOUT 5)
+pom2_add_headless_test(test_language_card
+    NAME language_card_smoke TIMEOUT 5 PORTABLE
+    SOURCES language_card_smoke_test.cpp)
 
 
 # ─── ATA/IDE taskfile core (AtaBlockDevice) unit test ─────────────────────
@@ -736,9 +720,6 @@ set_tests_properties(language_card_smoke PROPERTIES TIMEOUT 5)
 # sector-count==0 ⇒ 256, DRQ flow. Foundation for the MAME-faithful CffaCard.
 add_executable(test_ata_block_device
     ata_block_device_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_ata_block_device PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -755,11 +736,6 @@ set_tests_properties(ata_block_device PROPERTIES TIMEOUT 5)
 # firmware dump). Full boot parity = MAME oracle `apple2ee -sl7 cffa2`.
 add_executable(test_cffa_card
     cffa_card_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_cffa_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -782,10 +758,6 @@ set_tests_properties(cffa_card_smoke PROPERTIES TIMEOUT 5)
 # protocol used by the embedded ProDOS driver.
 add_executable(test_hdv_card
     hdv_card_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_hdv_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -811,10 +783,6 @@ set_tests_properties(hdv_card_smoke PROPERTIES TIMEOUT 5)
 # lives in test_hdv_writeback.)
 add_executable(test_hdv_mass_storage
     hdv_mass_storage_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_hdv_mass_storage PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -840,10 +808,6 @@ set_tests_properties(hdv_mass_storage_smoke PROPERTIES TIMEOUT 10)
 # untouched on eject).
 add_executable(test_hdv_writeback
     hdv_writeback_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_hdv_writeback PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -869,10 +833,6 @@ set_tests_properties(hdv_writeback_smoke PROPERTIES TIMEOUT 5)
 # still honoured (status bit6 set, writes dropped).
 add_executable(test_hdv_ram_writable
     hdv_ram_writable_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_hdv_ram_writable PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -895,25 +855,9 @@ set_tests_properties(hdv_ram_writable_smoke PROPERTIES TIMEOUT 5)
 # Pins POM2's //e MMU bank selection (RAMRD/RAMWRT/80STORE/PAGE2/HIRES/ALTZP
 # across all address ranges + write-only paging switches) against documented
 # Apple //e behaviour. Motivated by the Nox Archaist city-entry freeze.
-add_executable(test_iie_aux_paging
-    iie_aux_paging_conformance_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_iie_aux_paging PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_iie_aux_paging PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_iie_aux_paging PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_iie_aux_paging PRIVATE winmm)
-endif()
-
-add_test(NAME iie_aux_paging_conformance COMMAND test_iie_aux_paging)
-set_tests_properties(iie_aux_paging_conformance PROPERTIES TIMEOUT 5)
+pom2_add_headless_test(test_iie_aux_paging
+    NAME iie_aux_paging_conformance TIMEOUT 5 PORTABLE
+    SOURCES iie_aux_paging_conformance_test.cpp)
 
 
 # ─── //e Language-Card write-enable conformance (MAME lc_update parity) ────
@@ -922,7 +866,6 @@ set_tests_properties(iie_aux_paging_conformance PROPERTIES TIMEOUT 5)
 # writes from a non-sticky write-enable).
 add_executable(test_iie_langcard_we
     iie_langcard_writeenable_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iie_langcard_we PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -949,7 +892,6 @@ set_tests_properties(iie_langcard_writeenable PROPERTIES TIMEOUT 5)
 # file matches the first 512 bytes of the host file).
 add_executable(test_prodos_volume
     prodos_volume_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_prodos_volume PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -968,7 +910,6 @@ set_tests_properties(settings_roundtrip PROPERTIES TIMEOUT 5)
 # ─── ProDOS synth write-back path-traversal guard ─────────────────────────
 add_executable(test_prodos_decode_safety
     prodos_decode_safety_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_prodos_decode_safety PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME prodos_decode_safety COMMAND test_prodos_decode_safety)
@@ -977,7 +918,6 @@ set_tests_properties(prodos_decode_safety PROPERTIES TIMEOUT 5)
 # ─── SpeakerDevice overflow parity (drop toggles in pairs) ────────────────
 add_executable(test_speaker_overflow
     speaker_overflow_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
 )
 target_include_directories(test_speaker_overflow PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1000,7 +940,6 @@ set_tests_properties(speaker_overflow PROPERTIES TIMEOUT 5)
 # IRQ mask plumbing via $C05A/$C05B + clear-on-$C019-read.
 add_executable(test_vbl
     vbl_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_vbl PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1026,7 +965,6 @@ set_tests_properties(vbl_smoke PROPERTIES TIMEOUT 5)
 # on its own back-compat source bit and coexists.
 add_executable(test_irq_aggregator
     irq_aggregator_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_irq_aggregator PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1050,7 +988,6 @@ set_tests_properties(irq_aggregator_smoke PROPERTIES TIMEOUT 5)
 # reconstruction at 1 kHz toggle rate, reset, and mute behaviour.
 add_executable(test_speaker
     speaker_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
 )
 target_include_directories(test_speaker PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1065,8 +1002,6 @@ set_tests_properties(speaker_smoke PROPERTIES TIMEOUT 5)
 # probed sample dir (roms/floppy_samples) resolves to ../roms/...
 add_executable(test_floppy_sound
     floppy_sound_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
 )
 target_include_directories(test_floppy_sound PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -1096,8 +1031,6 @@ set_tests_properties(floppy_sound_smoke PROPERTIES TIMEOUT 10)
 # master volume / master mute applying post-mix.
 add_executable(test_audio_mixer
     audio_mixer_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
 )
 target_include_directories(test_audio_mixer PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -1126,10 +1059,6 @@ set_tests_properties(audio_mixer_smoke PROPERTIES TIMEOUT 10)
 # pass-through invariant.
 add_executable(test_hgr_render
     hgr_render_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_hgr_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1151,7 +1080,6 @@ set_tests_properties(hgr_render_smoke PROPERTIES TIMEOUT 5)
 # the test feeds synthetic bitstreams straight into AppleWinNtsc.
 add_executable(test_applewin_ntsc
     applewin_ntsc_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
 )
 target_include_directories(test_applewin_ntsc PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME applewin_ntsc_smoke COMMAND test_applewin_ntsc)
@@ -1168,10 +1096,6 @@ set_tests_properties(applewin_ntsc_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_le_chat_mauve
     le_chat_mauve_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_le_chat_mauve PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1199,7 +1123,6 @@ set_tests_properties(le_chat_mauve_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_disk_image
     disk_image_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_image PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1209,7 +1132,6 @@ set_tests_properties(disk_image_smoke PROPERTIES TIMEOUT 5)
 # ─── Disk II physical write-protect (WP medium never mutated) ──────────────
 add_executable(test_disk_wp
     disk_wp_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_wp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME disk_wp COMMAND test_disk_wp)
@@ -1222,13 +1144,6 @@ set_tests_properties(disk_wp PROPERTIES TIMEOUT 5)
 # permissions, and reset silencing the motor without telling the sound sink.
 add_executable(test_disk_media_state
     disk_media_state_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
 )
 target_include_directories(test_disk_media_state PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1245,7 +1160,6 @@ set_tests_properties(disk_media_state PROPERTIES TIMEOUT 10)
 # 116480-byte format detection. Synthesized image, no network/PROM.
 add_executable(test_d13_roundtrip
     d13_roundtrip_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_d13_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME d13_roundtrip_smoke COMMAND test_d13_roundtrip)
@@ -1257,7 +1171,6 @@ set_tests_properties(d13_roundtrip_smoke PROPERTIES TIMEOUT 5)
 # the strengthened name-char validation kills random $Fx false positives.
 add_executable(test_disk_skew_sniff
     disk_skew_sniff_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_skew_sniff PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1270,7 +1183,6 @@ set_tests_properties(disk_skew_sniff_smoke PROPERTIES TIMEOUT 5)
 # would offset every nibble lookup and silently corrupt the boot.
 add_executable(test_disk_macbinary
     disk_macbinary_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_macbinary PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1283,7 +1195,6 @@ set_tests_properties(disk_macbinary_smoke PROPERTIES TIMEOUT 5)
 # back. Synthetic pattern verifies both the source bytes and the pad.
 add_executable(test_disk_cnib2
     disk_cnib2_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_cnib2 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1297,7 +1208,6 @@ set_tests_properties(disk_cnib2_smoke PROPERTIES TIMEOUT 5)
 # write-protect flag. Also pins refusal of an unsupported format byte.
 add_executable(test_disk_2mg
     disk_2mg_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_2mg PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1312,7 +1222,6 @@ set_tests_properties(disk_2mg_smoke PROPERTIES TIMEOUT 5)
 # moved.
 add_executable(test_disk_2mg_writeback
     disk_2mg_writeback_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_2mg_writeback PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1327,7 +1236,6 @@ set_tests_properties(disk_2mg_writeback_smoke PROPERTIES TIMEOUT 5)
 # UI now has a single string to surface to the user via getLastError().
 add_executable(test_disk_refuse
     disk_refuse_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_refuse PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1343,23 +1251,6 @@ set_tests_properties(disk_refuse_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_diskii_lss
     diskii_lss_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_diskii_lss PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1388,14 +1279,6 @@ set_tests_properties(diskii_lss_smoke PROPERTIES TIMEOUT 10)
 # bundled roms/diskii_p6.rom is missing.
 add_executable(test_mame_lss_parity
     mame_lss_parity_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_mame_lss_parity PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1420,7 +1303,6 @@ set_tests_properties(mame_lss_parity_smoke PROPERTIES TIMEOUT 10)
 # inverse GCR decoder, and the opt-in write-protect semantics.
 add_executable(test_disk_writeback
     disk_writeback_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_writeback PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1437,14 +1319,6 @@ set_tests_properties(disk_writeback_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_disk_write_controller
     disk_write_controller_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_disk_write_controller PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -1460,14 +1334,6 @@ set_tests_properties(disk_write_controller_smoke PROPERTIES TIMEOUT 5)
 # PROM file (the embedded default in DiskIICard's constructor suffices).
 add_executable(test_woz_load
     woz_load_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_woz_load PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1493,7 +1359,6 @@ set_tests_properties(woz_load_smoke PROPERTIES TIMEOUT 10)
 # linkage needed because we only inspect trackPeriod() / fluxEvents().
 add_executable(test_woz_bit_timing
     woz_bit_timing_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_woz_bit_timing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1512,15 +1377,6 @@ set_tests_properties(woz_bit_timing_smoke PROPERTIES TIMEOUT 10)
 # dependency since this card path bypasses the bit-level IWM.
 add_executable(test_smartport_card
     smartport_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_smartport_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1539,13 +1395,6 @@ set_tests_properties(smartport_card_smoke PROPERTIES TIMEOUT 10)
 # (never-masked) $C0D0-$C0DF device-select. See project_iic_smartport_boot.
 add_executable(test_iic_onboard_smartport
     iic_onboard_smartport_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iic_onboard_smartport PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1566,14 +1415,6 @@ set_tests_properties(iic_onboard_smartport_smoke PROPERTIES TIMEOUT 15)
 # Diagnostic only (not a CTest): //c autostart with Disk II + on-board SmartPort.
 add_executable(test_iic_dual_boot_trace EXCLUDE_FROM_ALL
     iic_dual_boot_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iic_dual_boot_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1587,15 +1428,6 @@ endif()
 # ProDOS HDV, drive-select routes each to its own backing store.
 add_executable(test_smartport_mixed_units
     smartport_mixed_units_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_smartport_mixed_units PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1612,16 +1444,6 @@ set_tests_properties(smartport_mixed_units_smoke PROPERTIES TIMEOUT 10)
 # the MountableMediaCard capability (same dynamic_cast walk MainWindow uses).
 add_executable(test_slot_multi_card
     slot_multi_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_slot_multi_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1638,7 +1460,6 @@ set_tests_properties(slot_multi_card_smoke PROPERTIES TIMEOUT 10)
 # format filtering, SD-card navigation bounded to root, favdisks.txt parse.
 add_executable(test_floppy_emu
     floppy_emu_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppyEmuDevice.cpp
 )
 target_include_directories(test_floppy_emu PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1655,16 +1476,6 @@ set_tests_properties(floppy_emu_smoke PROPERTIES TIMEOUT 10)
 # actually reaches ProDOS code after a hard reset.
 add_executable(test_total_replay_boot_trace EXCLUDE_FROM_ALL
     total_replay_boot_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_total_replay_boot_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1676,21 +1487,6 @@ endif()
 # EXCLUDE_FROM_ALL — one-off tool, build with `make render_total_replay_modes`.
 add_executable(render_total_replay_modes EXCLUDE_FROM_ALL
     render_total_replay_modes.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(render_total_replay_modes PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1705,14 +1501,6 @@ endif()
 # Self-contained: synthetic .nib images, no Apple II ROM dependency.
 add_executable(test_disk_drive2
     disk_drive2_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_disk_drive2 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1741,14 +1529,6 @@ set_tests_properties(disk_drive2_smoke PROPERTIES TIMEOUT 10)
 
 add_executable(test_disk_boot
     disk_boot_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_disk_boot PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1774,14 +1554,6 @@ set_tests_properties(disk_boot_smoke PROPERTIES TIMEOUT 30)
 # diskii_p6_13.rom + DOS32STD.d13, all bundled).
 add_executable(test_dos32_boot_trace
     dos32_boot_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dos32_boot_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1807,14 +1579,6 @@ set_tests_properties(dos32_boot_trace PROPERTIES TIMEOUT 60)
 
 add_executable(test_dos33_save
     dos33_save_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dos33_save PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1840,14 +1604,6 @@ set_tests_properties(dos33_save_smoke PROPERTIES TIMEOUT 60)
 
 add_executable(test_prodos_save
     prodos_save_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_prodos_save PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1869,15 +1625,6 @@ set_tests_properties(prodos_save_smoke PROPERTIES TIMEOUT 90)
 # ─── Copy II Plus boot probe (diagnostic, not a CTest target) ────────────
 add_executable(c2plus_boot_probe EXCLUDE_FROM_ALL
     c2plus_boot_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(c2plus_boot_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1896,19 +1643,6 @@ endif()
 # ─── Copy II Plus boot dump (diagnostic, not a CTest target) ─────────────
 add_executable(copy2plus_boot_dump EXCLUDE_FROM_ALL
     copy2plus_boot_dump.cpp
-    ${CMAKE_SOURCE_DIR}/src/ClockCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(copy2plus_boot_dump PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1927,7 +1661,6 @@ endif()
 # ─── //e $C800-$CFFF auto-INTCXROM smoke test ─────────────────────────
 add_executable(test_iie_c8xx
     iie_c8xx_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iie_c8xx PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1947,21 +1680,6 @@ add_test(NAME iie_c8xx_smoke COMMAND test_iie_c8xx)
 # ─── HDV boot dump (diagnostic, not a CTest target) ─────────────────────
 add_executable(hdv_boot_dump EXCLUDE_FROM_ALL
     hdv_boot_dump.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(hdv_boot_dump PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -1972,14 +1690,6 @@ endif()
 # CFFA boot dump — same idea via the MAME-faithful CffaCard (debug aid).
 add_executable(cffa_boot_dump EXCLUDE_FROM_ALL
     cffa_boot_dump.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(cffa_boot_dump PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2004,7 +1714,6 @@ endif()
 # setIIEMode(true)).
 add_executable(test_iie_memory
     iie_memory_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iie_memory PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2031,7 +1740,6 @@ set_tests_properties(iie_memory_smoke PROPERTIES TIMEOUT 5)
 # and the cold-reset bank-0 snap.
 add_executable(test_ramworks
     ramworks_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_ramworks PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2058,7 +1766,6 @@ set_tests_properties(ramworks_smoke PROPERTIES TIMEOUT 5)
 
 add_executable(test_iie_lc_paging
     iie_lc_paging_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iie_lc_paging PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2084,10 +1791,6 @@ set_tests_properties(iie_lc_paging_smoke PROPERTIES TIMEOUT 5)
 # is disabled. Also exercises the mono phosphor tint path.
 add_executable(test_dhgr_render
     dhgr_render_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dhgr_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2108,10 +1811,6 @@ set_tests_properties(dhgr_render_smoke PROPERTIES TIMEOUT 5)
 # DHGR NTSC phase offset — OE CPU demod vs MAME LUT anchor.
 add_executable(test_dhgr_phase_signal
     dhgr_phase_signal_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dhgr_phase_signal PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2131,10 +1830,6 @@ set_tests_properties(dhgr_phase_signal PROPERTIES TIMEOUT 5)
 
 add_executable(test_beam_race_composite
     beam_race_composite_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_beam_race_composite PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2156,10 +1851,6 @@ set_tests_properties(beam_race_composite PROPERTIES TIMEOUT 5)
 # HGR, right window TEXT on the same line.
 add_executable(test_horizontal_split
     horizontal_split_smoke.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_horizontal_split PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2181,10 +1872,6 @@ set_tests_properties(horizontal_split PROPERTIES TIMEOUT 5)
 # — left window HGR waveform, right window TEXT waveform on the same line.
 add_executable(test_horizontal_split_composite
     horizontal_split_composite_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_horizontal_split_composite PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2206,10 +1893,6 @@ set_tests_properties(horizontal_split_composite PROPERTIES TIMEOUT 5)
 # text right on the same line, via renderInternalSegment's save/restore window.
 add_executable(test_horizontal_split_560
     horizontal_split_560_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_horizontal_split_560 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2232,10 +1915,6 @@ set_tests_properties(horizontal_split_560 PROPERTIES TIMEOUT 5)
 # beam-raced effect). Validates the *rendering* half of DIX validation.
 add_executable(test_dix_modpage_split
     dix_modpage_split_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dix_modpage_split PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2259,7 +1938,6 @@ set_tests_properties(dix_modpage_split PROPERTIES TIMEOUT 5)
 # validation the way dix_modpage_split pins the rendering half.
 add_executable(test_vbl_edge_phase
     vbl_edge_phase_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_vbl_edge_phase PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2288,15 +1966,6 @@ set_tests_properties(via_t1_continuous_period PROPERTIES TIMEOUT 10)
 # is built but NOT registered with ctest.
 add_executable(madef_phase_probe EXCLUDE_FROM_ALL
     madef_phase_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(madef_phase_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2315,15 +1984,6 @@ endif()
 # roms/), so it is built but NOT registered with ctest.
 add_executable(dd2_ay_trace EXCLUDE_FROM_ALL
     dd2_ay_trace.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(dd2_ay_trace PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2342,10 +2002,6 @@ endif()
 # + Memory scanline stamping under the active standard.
 add_executable(test_pal_timing
     pal_timing_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_pal_timing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2368,7 +2024,6 @@ set_tests_properties(pal_timing PROPERTIES TIMEOUT 5)
 # frames are re-consumable copies, resets purge the logs, legacy bracket kept.
 add_executable(test_video_event_publish
     video_event_publish_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_video_event_publish PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2391,10 +2046,6 @@ set_tests_properties(video_event_publish PROPERTIES TIMEOUT 5)
 # exact beam-raced replay.
 add_executable(test_drol_pageflip_render
     drol_pageflip_render_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_drol_pageflip_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2416,9 +2067,6 @@ set_tests_properties(drol_pageflip_render PROPERTIES TIMEOUT 5)
 # Drol.dsk and reports where its $C054/$C055 flips land in the video frame.
 add_executable(test_drol_probe
     drol_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_drol_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2437,7 +2085,6 @@ endif()
 # and the geometry follows the PAL/NTSC video standard (312 vs 262 lines).
 add_executable(test_vapor_lock
     vapor_lock_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_vapor_lock PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2463,10 +2110,6 @@ set_tests_properties(via_t2_timing PROPERTIES TIMEOUT 5)
 # OE demod parity — GPU shader formula must match renderCompositeOeCpu().
 add_executable(test_oe_demod_gpu_cpu_parity
     oe_demod_gpu_cpu_parity_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_oe_demod_gpu_cpu_parity PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2486,10 +2129,6 @@ set_tests_properties(oe_demod_gpu_cpu_parity PROPERTIES TIMEOUT 5)
 
 add_executable(test_text_oecpu_crisp
     text_oecpu_crisp_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_text_oecpu_crisp PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2510,10 +2149,6 @@ set_tests_properties(text_oecpu_crisp PROPERTIES TIMEOUT 5)
 # Double Lo-Res (DLGR) — 80-col lo-res, aux+main with rotl4 on the aux nibble.
 add_executable(test_dlgr_render
     dlgr_render_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dlgr_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2538,10 +2173,6 @@ set_tests_properties(dlgr_render_smoke PROPERTIES TIMEOUT 5)
 # POM2_GOLDEN_RECORD=1. See display_golden_hash_test.cpp header.
 add_executable(test_display_golden
     display_golden_hash_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_display_golden PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2565,7 +2196,6 @@ set_tests_properties(display_golden_hash PROPERTIES TIMEOUT 10)
 # 4K dumps of the same sets. Soft-skips without the user-provided ROMs.
 add_executable(test_char_rom_8k_bank
     char_rom_8k_bank_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_char_rom_8k_bank PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2592,10 +2222,6 @@ set_tests_properties(char_rom_8k_bank PROPERTIES TIMEOUT 15)
 # NTSC and PAL. See display_dirty_skip_test.cpp header.
 add_executable(test_display_dirty_skip
     display_dirty_skip_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_display_dirty_skip PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2617,10 +2243,6 @@ set_tests_properties(display_dirty_skip PROPERTIES TIMEOUT 30)
 # against a self-contained MAME apple2video.cpp dhgr_update() oracle.
 add_executable(test_video7_parity
     video7_parity_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_video7_parity PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2646,10 +2268,6 @@ set_tests_properties(video7_parity_smoke PROPERTIES TIMEOUT 5)
 # Chat Mauve mode is active (the card's whole reason to exist).
 add_executable(test_display_persistence
     display_persistence_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_display_persistence PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2676,7 +2294,6 @@ set_tests_properties(display_persistence_smoke PROPERTIES TIMEOUT 5)
 # additions. Runs in flat-RAM Memory::setTestMode().
 add_executable(test_cmos_6502
     cmos_6502_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_cmos_6502 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2701,7 +2318,6 @@ set_tests_properties(cmos_6502_smoke PROPERTIES TIMEOUT 5)
 # the 1.4 GB download that tomharte_65c02 is gated behind.
 add_executable(test_decimal_sbc_cmos
     decimal_sbc_cmos_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_decimal_sbc_cmos PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2722,24 +2338,9 @@ set_tests_properties(decimal_sbc_cmos PROPERTIES TIMEOUT 5)
 # ─── 6502 cycle-count test ────────────────────────────────────────────────
 # Pins per-instruction CYCLE counts (Klaus/cmos pin results, not timing).
 # Guards the RMW dummy-cycle accounting (INC/DEC abs were 5, must be 6).
-add_executable(test_cpu_cycle_count
-    cpu_cycle_count_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_cpu_cycle_count PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_cpu_cycle_count PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_cpu_cycle_count PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_cpu_cycle_count PRIVATE winmm)
-endif()
-add_test(NAME cpu_cycle_count COMMAND test_cpu_cycle_count)
-set_tests_properties(cpu_cycle_count PROPERTIES TIMEOUT 5)
+pom2_add_headless_test(test_cpu_cycle_count
+    NAME cpu_cycle_count TIMEOUT 5 PORTABLE
+    SOURCES cpu_cycle_count_test.cpp)
 
 # ─── WOZ2 writeFlux cell-width regression ─────────────────────────────────
 # Pins DiskImage::writeFlux to lssCyclesPerCell() (not a hard-coded 8) so
@@ -2747,7 +2348,6 @@ set_tests_properties(cpu_cycle_count PROPERTIES TIMEOUT 5)
 # the correct cells. See woz_writeflux_smoke_test.cpp.
 add_executable(test_woz_writeflux
     woz_writeflux_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_woz_writeflux PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2769,7 +2369,6 @@ set_tests_properties(woz_writeflux_smoke PROPERTIES TIMEOUT 10)
 # See floatingbus_page2_smoke_test.cpp.
 add_executable(test_floatingbus_page2
     floatingbus_page2_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_floatingbus_page2 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2789,7 +2388,6 @@ set_tests_properties(floatingbus_page2_smoke PROPERTIES TIMEOUT 5)
 # ─── Sony 3.5" head step-direction regression ─────────────────────────────
 add_executable(test_sony_seek_direction
     sony_seek_direction_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_sony_seek_direction PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2809,7 +2407,6 @@ set_tests_properties(sony_seek_direction PROPERTIES TIMEOUT 5)
 # ─── Snapshot full-state round-trip regression ────────────────────────────
 add_executable(test_snapshot_state_roundtrip
     snapshot_state_roundtrip_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_snapshot_state_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2829,13 +2426,6 @@ set_tests_properties(snapshot_state_roundtrip PROPERTIES TIMEOUT 5)
 # ─── SmartPort slot-ROM WRITE-dispatch regression (CPU-driven) ────────────
 add_executable(test_smartport_write_dispatch
     smartport_write_dispatch_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_smartport_write_dispatch PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2857,13 +2447,6 @@ set_tests_properties(smartport_write_dispatch PROPERTIES TIMEOUT 10)
 # dispatch and reads (the entry used to be $00 = BRK → DIX froze after boot).
 add_executable(test_smartport_unidisk_entry
     smartport_unidisk_entry_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_smartport_unidisk_entry PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2883,13 +2466,6 @@ set_tests_properties(smartport_unidisk_entry PROPERTIES TIMEOUT 10)
 # ─── SmartPort I/O-error reporting (out-of-range read/write → carry-set) ───
 add_executable(test_smartport_io_error
     smartport_io_error_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_smartport_io_error PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2909,14 +2485,6 @@ set_tests_properties(smartport_io_error PROPERTIES TIMEOUT 10)
 # ─── SmartPort-protocol dispatch ($Cn0D) + real-Liron identity ────────────
 add_executable(test_liron_smartport_dispatch
     liron_smartport_dispatch_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_liron_smartport_dispatch PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2936,7 +2504,6 @@ set_tests_properties(liron_smartport_dispatch PROPERTIES TIMEOUT 10)
 # ─── CassetteDevice WAV tail-flush regression ─────────────────────────────
 add_executable(test_cassette_wav_tail
     cassette_wav_tail_smoke_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_cassette_wav_tail PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2956,7 +2523,6 @@ set_tests_properties(cassette_wav_tail PROPERTIES TIMEOUT 5)
 # ─── 65C02 disassembler regression ────────────────────────────────────────
 add_executable(test_disasm_cmos
     disasm_cmos_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
 )
 target_include_directories(test_disasm_cmos PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME disasm_cmos COMMAND test_disasm_cmos)
@@ -2965,7 +2531,6 @@ set_tests_properties(disasm_cmos PROPERTIES TIMEOUT 5)
 # ─── Character-ROM loader hardening (size gate) ───────────────────────────
 add_executable(test_char_rom
     char_rom_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_char_rom PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -2990,7 +2555,6 @@ set_tests_properties(char_rom PROPERTIES TIMEOUT 5)
 # against MAME's documented invariants.
 add_executable(test_m68705_decode
     m68705_decode_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
 )
 target_include_directories(test_m68705_decode PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3016,7 +2580,6 @@ set_tests_properties(m68705_decode_smoke PROPERTIES TIMEOUT 5)
 # the read-only nature of CRA/CRB bits 6/7.
 add_executable(test_mc6821
     mc6821_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
 )
 target_include_directories(test_mc6821 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -3031,10 +2594,6 @@ set_tests_properties(mc6821_smoke PROPERTIES TIMEOUT 5)
 # card refuses to load without the two Apple-copyright ROMs.
 add_executable(test_mouse_card
     mouse_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_mouse_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3060,9 +2619,6 @@ set_tests_properties(mouse_card_smoke PROPERTIES TIMEOUT 5)
 # landing back on PRA. Independent of the 341-0269 MCU mask ROM.
 add_executable(test_mouse_card_applewin
     mouse_card_applewin_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_mouse_card_applewin PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3102,10 +2658,6 @@ set_tests_properties(mouse_grab_policy PROPERTIES TIMEOUT 5)
 # the unsigned-8-bit host coordinate input.
 add_executable(test_mouse_card_quadrature
     mouse_card_quadrature_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_mouse_card_quadrature PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3133,10 +2685,6 @@ set_tests_properties(mouse_card_quadrature_smoke PROPERTIES TIMEOUT 5)
 # regression. Skips if the user-provided ROMs are absent.
 add_executable(test_mouse_card_axis_parity
     mouse_card_axis_parity_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_mouse_card_axis_parity PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3161,10 +2709,6 @@ set_tests_properties(mouse_card_axis_parity PROPERTIES TIMEOUT 30)
 # Skips if the user-provided ROMs are absent.
 add_executable(test_mouse_card_absolute_sync
     mouse_card_absolute_sync_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_mouse_card_absolute_sync PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3190,37 +2734,9 @@ set_tests_properties(mouse_card_absolute_sync PROPERTIES TIMEOUT 60)
 # supplied slot, and DiskIICard / LeChatMauveCard expose their slot via
 # `getSlot()` for the slot-panel UI even when the ROM itself doesn't bake
 # the slot in.
-add_executable(test_slot_config
-    slot_config_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_slot_config PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_slot_config PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_slot_config PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_slot_config PRIVATE winmm ws2_32)
-endif()
-
-add_test(NAME slot_config_smoke COMMAND test_slot_config)
-set_tests_properties(slot_config_smoke PROPERTIES TIMEOUT 5)
+pom2_add_headless_test(test_slot_config
+    NAME slot_config_smoke TIMEOUT 5 PORTABLE
+    SOURCES slot_config_smoke_test.cpp)
 
 
 # ─── ProDOS clock card smoke test ────────────────────────────────────────
@@ -3230,8 +2746,6 @@ set_tests_properties(slot_config_smoke PROPERTIES TIMEOUT 5)
 # $BF90-$BF93 → RTS).
 add_executable(test_clock_card
     clock_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ClockCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_clock_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3256,7 +2770,6 @@ set_tests_properties(clock_card_smoke PROPERTIES TIMEOUT 5)
 # test stays focused on the protocol.
 add_executable(test_no_slot_clock
     no_slot_clock_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
 )
 target_include_directories(test_no_slot_clock PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3277,8 +2790,6 @@ set_tests_properties(no_slot_clock_smoke PROPERTIES TIMEOUT 5)
 # the CPU-driven PR#1 + 3× COUT-style writes flow.
 add_executable(test_printer_card
     printer_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/PrinterCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_printer_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3305,10 +2816,7 @@ set_tests_properties(printer_card_smoke PROPERTIES TIMEOUT 5)
 # ImageWriter.cpp is deliberately portable.
 add_executable(test_imagewriter
     imagewriter_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
-    ${CMAKE_SOURCE_DIR}/src/PrinterCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_imagewriter PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3334,10 +2842,7 @@ set_tests_properties(imagewriter_smoke PROPERTIES TIMEOUT 10)
 # implementation lives in Pom2HgrPaintHost.cpp, not linked here).
 add_executable(test_imagewriter_pdf
     imagewriter_pdf_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageWriterPdf.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_imagewriter_pdf PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3361,8 +2866,6 @@ set_tests_properties(imagewriter_pdf PROPERTIES TIMEOUT 10)
 # (wrong-size dumps are rejected so the stub stays in place).
 add_executable(test_grappler_card
     grappler_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/GrapplerCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp     # SlotPeripheral::assertIrq (IRQ decode)
 )
 target_include_directories(test_grappler_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3383,8 +2886,6 @@ set_tests_properties(grappler_card_smoke PROPERTIES TIMEOUT 5)
 # ignored), and Phasor-native chip-select decode (PB3/PB4 active-low).
 add_executable(test_phasor_card
     phasor_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/PhasorCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_phasor_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3431,11 +2932,6 @@ set_tests_properties(socket_compat PROPERTIES TIMEOUT 30)
 # per side) with the mono fold-down proving the level is unchanged.
 add_executable(test_audio_stereo
     audio_stereo_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/PhasorCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_audio_stereo PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3459,8 +2955,6 @@ set_tests_properties(audio_stereo PROPERTIES TIMEOUT 10)
 # Ssi263 chip standalone (independent of any host card).
 add_executable(test_ssi263
     ssi263_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
 )
 target_include_directories(test_ssi263 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME ssi263_smoke COMMAND test_ssi263)
@@ -3473,10 +2967,6 @@ set_tests_properties(ssi263_smoke PROPERTIES TIMEOUT 5)
 # IRQ release on host ack via $00..$02 write.
 add_executable(test_echoplus_card
     echoplus_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/EchoPlusCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_echoplus_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3504,7 +2994,6 @@ set_tests_properties(echoplus_card_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_cli_kiosk
     cli_kiosk_test.cpp
     ${CMAKE_SOURCE_DIR}/src/CliDispatcher.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_cli_kiosk PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3523,25 +3012,6 @@ set_tests_properties(cli_kiosk PROPERTIES TIMEOUT 5)
 # end-to-end AY tone synthesis producing a non-silent waveform.
 add_executable(test_mockingboard
     mockingboard_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3566,25 +3036,6 @@ set_tests_properties(mockingboard_smoke PROPERTIES TIMEOUT 5)
 # these assert on the rendered signal itself. Same source list.
 add_executable(test_mockingboard_audio_quality
     mockingboard_audio_quality_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_audio_quality PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3613,25 +3064,6 @@ set_tests_properties(mockingboard_audio_quality PROPERTIES TIMEOUT 30)
 # the card without a CPU back-pointer.
 add_executable(test_mockingboard_sync
     mockingboard_sync_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_sync PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3658,25 +3090,6 @@ set_tests_properties(mockingboard_sync_smoke PROPERTIES TIMEOUT 5)
 # two T1CL reads exactly 8 CPU cycles apart. Pre-fix this would be $00.
 add_executable(test_mockingboard_4am_detect
     mockingboard_4am_detect_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_4am_detect PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3704,25 +3117,6 @@ set_tests_properties(mockingboard_4am_detect_smoke PROPERTIES TIMEOUT 5)
 # music (Ultima IV, Nox Archaist, PT3 players, every modern player).
 add_executable(test_mockingboard_irq_delivery
     mockingboard_irq_delivery_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_irq_delivery PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3750,25 +3144,6 @@ set_tests_properties(mockingboard_irq_delivery_smoke PROPERTIES TIMEOUT 5)
 # offset 0x00B6F0). Skips silently if apple2e.rom is missing.
 add_executable(test_mockingboard_iie_irq
     mockingboard_iie_irq_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_iie_irq PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3798,8 +3173,6 @@ set_tests_properties(mockingboard_iie_irq_smoke PROPERTIES TIMEOUT 10)
 # Pure ACIA unit test — the TCP bridge / worker thread is not exercised.
 add_executable(test_ssc_acia
     ssc_acia_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_ssc_acia PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3817,6 +3190,15 @@ endif()
 add_test(NAME ssc_acia_smoke COMMAND test_ssc_acia)
 set_tests_properties(ssc_acia_smoke PROPERTIES TIMEOUT 5)
 
+# Device/runtime boundary: a real loopback byte in each direction through the
+# injected TCP adapter. The ACIA-only coverage above deliberately uses no host
+# transport; this pins the composition seam itself.
+add_executable(test_super_serial_tcp_transport
+    super_serial_tcp_transport_test.cpp)
+add_test(NAME super_serial_tcp_transport
+         COMMAND test_super_serial_tcp_transport)
+set_tests_properties(super_serial_tcp_transport PROPERTIES TIMEOUT 10)
+
 
 # ─── AI Control HTTP server smoke test ────────────────────────────────────
 # Pins the HTTP/1.1 contract the AiControlServer offers to external AI
@@ -3828,26 +3210,6 @@ set_tests_properties(ssc_acia_smoke PROPERTIES TIMEOUT 5)
 # so the test exercises the full path including the worker thread.
 add_executable(test_ai_control_server
     ai_control_server_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_ai_control_server PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -3878,7 +3240,6 @@ set_tests_properties(ai_control_server_smoke PROPERTIES TIMEOUT 15)
 # DiskIICard / LSS plumbing involved.
 add_executable(test_woz_writeback
     woz_writeback_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_woz_writeback PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -3893,14 +3254,6 @@ set_tests_properties(woz_writeback_smoke PROPERTIES TIMEOUT 5)
 # stall during the H.E.R.O. title screen load.
 add_executable(hero_probe EXCLUDE_FROM_ALL
     hero_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(hero_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3922,13 +3275,9 @@ endif()
 # then: POM2_BASELINE=1 ./tests/ntsc_oe_ab   (capture), refactor, ./tests/ntsc_oe_ab
 add_executable(ntsc_oe_ab EXCLUDE_FROM_ALL
     ntsc_oe_ab_tool.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/NtscPostProcessor.cpp
     ${CMAKE_SOURCE_DIR}/src/CrtEffectStack.cpp
     ${CMAKE_SOURCE_DIR}/src/OpenGLShader.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(ntsc_oe_ab PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(ntsc_oe_ab PRIVATE ${GLFW_TARGET} ${OPENGL_LIBRARIES})
@@ -3946,10 +3295,6 @@ endif()
 # ─── Artifact-colour phase probe (diagnostic, EXCLUDE_FROM_ALL, no GL) ─────
 add_executable(artifact_probe EXCLUDE_FROM_ALL
     artifact_phase_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(artifact_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -3968,7 +3313,6 @@ add_executable(oe_signal_view EXCLUDE_FROM_ALL
     oe_signal_view.cpp
     ${CMAKE_SOURCE_DIR}/src/NtscPostProcessor.cpp
     ${CMAKE_SOURCE_DIR}/src/OpenGLShader.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(oe_signal_view PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_link_libraries(oe_signal_view PRIVATE ${GLFW_TARGET} ${OPENGL_LIBRARIES})
@@ -4007,7 +3351,6 @@ endif()
 # padded cell-timeline re-pack. See disk_writeflux_anchor_test.cpp.
 add_executable(test_disk_writeflux_anchor
     disk_writeflux_anchor_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_disk_writeflux_anchor PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4034,7 +3377,6 @@ set_tests_properties(disk_writeflux_anchor PROPERTIES TIMEOUT 10)
 # See disk_writeflux_framing_test.cpp.
 add_executable(test_disk_writeflux_framing
     disk_writeflux_framing_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_disk_writeflux_framing PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME disk_writeflux_framing COMMAND test_disk_writeflux_framing)
@@ -4052,10 +3394,6 @@ set_tests_properties(disk_writeflux_framing PROPERTIES TIMEOUT 60)
 # See hdv_status_driver_test.cpp.
 add_executable(test_hdv_status_driver
     hdv_status_driver_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
 )
 target_include_directories(test_hdv_status_driver PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4077,20 +3415,6 @@ set_tests_properties(hdv_status_driver PROPERTIES TIMEOUT 10)
 # See ai_mouse_hle_probe_test.cpp.
 add_executable(test_ai_mouse_hle_probe
     ai_mouse_hle_probe_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
-    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
-    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_ai_mouse_hle_probe PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -4113,24 +3437,9 @@ set_tests_properties(ai_mouse_hle_probe PROPERTIES TIMEOUT 15)
 # ─── Keyboard strobe $C01x mirror decode + IIe status sentinel ────────────
 # II/II+ $C010 .mirror(0xf) per MAME apple2.cpp; IIe write-clears + the
 # out-of-band iieReadStatus flag. See kbd_strobe_mirror_test.cpp.
-add_executable(test_kbd_strobe_mirror
-    kbd_strobe_mirror_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
-)
-target_include_directories(test_kbd_strobe_mirror PRIVATE ${CMAKE_SOURCE_DIR}/src)
-if(UNIX AND NOT APPLE)
-    target_link_libraries(test_kbd_strobe_mirror PRIVATE
-        ${CMAKE_DL_LIBS} Threads::Threads m)
-endif()
-if(APPLE)
-    target_link_libraries(test_kbd_strobe_mirror PRIVATE
-        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
-endif()
-if(WIN32)
-    target_link_libraries(test_kbd_strobe_mirror PRIVATE winmm)
-endif()
-add_test(NAME kbd_strobe_mirror COMMAND test_kbd_strobe_mirror)
-set_tests_properties(kbd_strobe_mirror PROPERTIES TIMEOUT 10)
+pom2_add_headless_test(test_kbd_strobe_mirror
+    NAME kbd_strobe_mirror TIMEOUT 10 PORTABLE
+    SOURCES kbd_strobe_mirror_test.cpp)
 
 # ─── HGR Paint DHGR block model vs real renderDhgr ────────────────────────
 # Pins the hgrpaint/ DHGR plane interleave, plot/colorAt round-trip, and the
@@ -4140,11 +3449,7 @@ set_tests_properties(kbd_strobe_mirror PROPERTIES TIMEOUT 10)
 # Pom2HgrPaintHost offscreen staging assumptions.
 add_executable(test_dhgr_paint_model
     dhgr_paint_model_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrPaintModel.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dhgr_paint_model PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4168,9 +3473,6 @@ set_tests_properties(dhgr_paint_model PROPERTIES TIMEOUT 15)
 # tables would make a bad table invisible.
 add_executable(test_woz35_load
     woz35_load_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_woz35_load PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME woz35_load COMMAND test_woz35_load)
@@ -4205,14 +3507,10 @@ set_tests_properties(hgr_sprite_blit PROPERTIES TIMEOUT 10)
 # Apple2VideoDecode LUT change.
 add_executable(test_dhgr_convert
     dhgr_convert_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/Cam16.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/DhgrNtsc8Palette.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrConvert.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrPaintModel.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_dhgr_convert PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4239,7 +3537,6 @@ set_tests_properties(dhgr_convert PROPERTIES TIMEOUT 60)
 # Fast always-on gate for src/Z80.cpp.
 add_executable(test_z80_core
     z80_core_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
 )
 target_include_directories(test_z80_core PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME z80_core COMMAND test_z80_core)
@@ -4251,7 +3548,6 @@ set_tests_properties(z80_core PROPERTIES TIMEOUT 15)
 # Vectors from Tom Harte z80/v1, embedded inline — no download needed.
 add_executable(test_z80_block_io_flags
     z80_block_io_flags_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
 )
 target_include_directories(test_z80_block_io_flags PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME z80_block_io_flags COMMAND test_z80_block_io_flags)
@@ -4288,7 +3584,6 @@ endforeach()
 
 add_executable(test_z80_zex
     z80_zex_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
 )
 target_include_directories(test_z80_zex PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
@@ -4311,13 +3606,6 @@ endif()
 # hook.
 add_executable(test_softcard_toggle
     softcard_toggle_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SoftCardZ80.cpp
-    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
-    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
-    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
-    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_softcard_toggle PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -4343,11 +3631,6 @@ set_tests_properties(softcard_toggle PROPERTIES TIMEOUT 15)
 # (media is user-provided, ROM-test pattern).
 add_executable(test_softcard_cpm_boot
     softcard_cpm_boot_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SoftCardZ80.cpp
-    ${CMAKE_SOURCE_DIR}/src/Z80.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_softcard_cpm_boot PRIVATE
     ${CMAKE_SOURCE_DIR}/src
@@ -4389,10 +3672,6 @@ set_tests_properties(softcard_cpm_boot_iie PROPERTIES TIMEOUT 120)
 foreach(_diag cpu_smoke disasm_smoke iic_dump rom_basic rom_boot)
     add_executable(${_diag} EXCLUDE_FROM_ALL
         ${_diag}.cpp
-        ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
-        ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-        ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-        ${POM2_TEST_CORE_SOURCES}
     )
     target_include_directories(${_diag} PRIVATE ${CMAKE_SOURCE_DIR}/src)
     if(UNIX AND NOT APPLE)
@@ -4415,7 +3694,6 @@ endforeach()
 # snapshot, freezing the IWM after a rewind on //c-class profiles.
 add_executable(test_iwm_mig_snapshot
     iwm_mig_snapshot_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iwm_mig_snapshot PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4444,9 +3722,6 @@ set_tests_properties(iwm_mig_snapshot PROPERTIES TIMEOUT 10)
 # Host side is a LoopbackNetworkBackend — no real network is touched.
 add_executable(test_uthernet_cs8900
     uthernet_cs8900_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/UthernetCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Cs8900aDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_uthernet_cs8900 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4474,9 +3749,6 @@ set_tests_properties(uthernet_cs8900_smoke PROPERTIES TIMEOUT 10)
 # CLOSED rather than pretending to still be connected.
 add_executable(test_uthernet2_w5100
     uthernet2_w5100_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/UthernetIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_uthernet2_w5100 PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4504,13 +3776,6 @@ set_tests_properties(uthernet2_w5100_smoke PROPERTIES TIMEOUT 20)
 # path itself was byte-exact. Gated on isPlus_; this pins both directions.
 add_executable(test_iic_diskii_no_iwm_conflict
     iic_diskii_no_iwm_conflict_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
 )
 target_include_directories(test_iic_diskii_no_iwm_conflict PRIVATE
     ${CMAKE_SOURCE_DIR}/src ${POM2_GENERATED_DIR})
@@ -4536,9 +3801,6 @@ set_tests_properties(iic_diskii_no_iwm_conflict PROPERTIES TIMEOUT 10)
 # DOS 3.3 boot + PR#1 + PRINT reaching the spool (ROM/disk gated → SKIPs).
 add_executable(test_iic_printer_port
     iic_printer_port_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iic_printer_port PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4566,14 +3828,6 @@ set_tests_properties(iic_printer_port PROPERTIES TIMEOUT 240)
 # See iicplus_boot_probe.cpp header for the SENSE bug it was written for.
 add_executable(iicplus_boot_probe EXCLUDE_FROM_ALL
     iicplus_boot_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(iicplus_boot_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4591,14 +3845,6 @@ endif()
 # ── //c+ boot + 5.25" write round-trip (pins the 2026-07 SENSE + routing fixes)
 add_executable(test_iic_plus_boot_write
     iic_plus_boot_write_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_iic_plus_boot_write PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4620,22 +3866,6 @@ set_tests_properties(iic_plus_boot_write PROPERTIES LABELS "slow" TIMEOUT 300)
 # ─── Per-card snapshot/rewind serialization (2026-07-29 hunt) ────────────
 add_executable(test_card_snapshot_state
     card_snapshot_state_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/ClockCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/EchoPlusTMS5220Card.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_card_snapshot_state PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4658,14 +3888,6 @@ set_tests_properties(card_snapshot_state PROPERTIES TIMEOUT 20)
 # ${CMAKE_BINARY_DIR}/dd1_ab/ (e.g. `git show HEAD:src/Mockingboard.cpp`).
 set(POM2_DD1_AB_COMMON
     dd1_audio_ab.cpp
-    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
-    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
-    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 function(pom2_add_dd1_probe name mbsrc)
     add_executable(${name} EXCLUDE_FROM_ALL ${POM2_DD1_AB_COMMON} ${mbsrc})
@@ -4699,7 +3921,6 @@ endforeach()
 # vbl_edge_phase tests only ever switch on a fresh Memory (cycleCounter 0).
 add_executable(test_vbl_standard_switch
     vbl_standard_switch_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_vbl_standard_switch PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4726,7 +3947,6 @@ set_tests_properties(vbl_standard_switch PROPERTIES TIMEOUT 20)
 # relies on is unchanged.
 add_executable(test_vbl_ioudis_annunciator
     vbl_ioudis_annunciator_test.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_vbl_ioudis_annunciator PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4748,8 +3968,6 @@ set_tests_properties(vbl_ioudis_annunciator PROPERTIES TIMEOUT 10)
 # ─── Disk35Image write-back atomicity guard ──────────────────────────────
 add_executable(test_disk35_atomic_save
     disk35_atomic_save_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
 )
 target_include_directories(test_disk35_atomic_save PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME disk35_atomic_save COMMAND test_disk35_atomic_save)
@@ -4764,7 +3982,6 @@ set_tests_properties(disk35_atomic_save PROPERTIES TIMEOUT 20)
 # registers like the low copy ($8426 pulls a packet, $8403 is SN_SR).
 add_executable(test_w5100_udp_recv
     w5100_udp_recv_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
 )
 target_include_directories(test_w5100_udp_recv PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4782,11 +3999,10 @@ set_tests_properties(w5100_udp_recv PROPERTIES TIMEOUT 20)
 # flushPendingWrites() — the write sink re-takes that same non-recursive
 # std::mutex. Drives a real headless Dear ImGui frame (no backend, no GL)
 # through a double-click edit. NOTE: the first test here that links ImGui.
+if(POM2_BUILD_FRONTEND)
 add_executable(test_memory_viewer_write_lock
     memory_viewer_write_lock_test.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryViewer_ImGui.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disassembler6502.cpp
-    ${POM2_TEST_CORE_SOURCES}
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
@@ -4810,20 +4026,20 @@ endif()
 
 add_test(NAME memory_viewer_write_lock COMMAND test_memory_viewer_write_lock)
 set_tests_properties(memory_viewer_write_lock PROPERTIES TIMEOUT 10)
+set_property(TEST memory_viewer_write_lock APPEND PROPERTY LABELS frontend-tsan)
+endif()
 
 
 # ─── Audio-source teardown inventory ─────────────────────────────────────
 # Pins the two-Mockingboard use-after-free: "mockingboard" (A/C) and
 # "mockingboard_c" (Sound II) are distinct catalog keys so both plug, and the
-# single `mockingboardCard` alias could only unregister ONE AudioSource before
+# former single-card alias could only unregister ONE AudioSource before
 # slotBus().clear() destroyed both. Registration oracle = mixSources writing
 # AudioSource::lastBufferPeak.
 add_executable(test_audio_source_teardown
     audio_source_teardown_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${POM2_TEST_CORE_SOURCES}
+    ../src/AudioCoordinator.cpp
+    ../src/Settings.cpp
 )
 target_include_directories(test_audio_source_teardown PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4840,6 +4056,41 @@ endif()
 
 add_test(NAME audio_source_teardown COMMAND test_audio_source_teardown)
 set_tests_properties(audio_source_teardown PROPERTIES TIMEOUT 10)
+set_property(TEST audio_source_teardown APPEND PROPERTY LABELS frontend-tsan)
+
+
+# ─── Effective slot-configuration policy ────────────────────────────────
+# Profile fixtures, no-bus //c handling and the single-/multi-instance rules
+# are owned outside MainWindow and remain testable without ImGui or GLFW.
+pom2_add_headless_test(test_slot_configuration_coordinator
+    NAME slot_configuration_coordinator TIMEOUT 10 PORTABLE
+    SOURCES
+        slot_configuration_coordinator_test.cpp
+        ../src/SlotConfigurationCoordinator.cpp
+        ../src/Settings.cpp)
+
+pom2_add_headless_test(test_slot_card_factory
+    NAME slot_card_factory TIMEOUT 20 PORTABLE
+    SOURCES
+        slot_card_factory_test.cpp
+        ../src/SlotCardFactory.cpp)
+
+pom2_add_headless_test(test_slot_provisioning_coordinator
+    NAME slot_provisioning_coordinator TIMEOUT 20 PORTABLE
+    SOURCES
+        slot_provisioning_coordinator_test.cpp
+        ../src/SlotProvisioningCoordinator.cpp
+        ../src/SlotCardFactory.cpp
+        ../src/StorageCoordinator.cpp
+        ../src/Settings.cpp)
+set_property(TEST slot_provisioning_coordinator APPEND PROPERTY
+             LABELS frontend-tsan)
+
+pom2_add_headless_test(test_slot_rebuild_coordinator
+    NAME slot_rebuild_coordinator TIMEOUT 20 PORTABLE
+    SOURCES
+        slot_rebuild_coordinator_test.cpp
+        ../src/SlotRebuildCoordinator.cpp)
 
 
 # ─── Disk-path snapshot locking ──────────────────────────────────────────
@@ -4848,9 +4099,6 @@ set_tests_properties(audio_source_teardown PROPERTIES TIMEOUT 10)
 # under stateMutex, not hold a reference the AI server's HTTP thread rewrites).
 add_executable(test_disk_path_snapshot
     disk_path_snapshot_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
-    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_disk_path_snapshot PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4867,6 +4115,7 @@ endif()
 
 add_test(NAME disk_path_snapshot COMMAND test_disk_path_snapshot)
 set_tests_properties(disk_path_snapshot PROPERTIES TIMEOUT 15)
+set_property(TEST disk_path_snapshot APPEND PROPERTY LABELS frontend-tsan)
 
 # ─── Mockingboard emuCycles timeline test ──────────────────────────────
 # The two ways the cycle-stamped stream stops describing the machine: a
@@ -4879,25 +4128,6 @@ set_tests_properties(disk_path_snapshot PROPERTIES TIMEOUT 15)
 # list as `mockingboard_audio_quality`.
 add_executable(test_mockingboard_timeline
     mockingboard_timeline_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
-    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
-    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
-    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
-    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
-    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
-    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
-    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
-    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_timeline PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4920,17 +4150,6 @@ set_tests_properties(mockingboard_timeline PROPERTIES TIMEOUT 30)
 # slot-5 SmartPort and injects a RETURN at a chosen emulated time.
 add_executable(dix_return_crash_probe EXCLUDE_FROM_ALL
     dix_return_crash_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
-    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
-    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
-    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
-    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(dix_return_crash_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4962,7 +4181,6 @@ set_tests_properties(slip_framer PROPERTIES TIMEOUT 10)
 # Windows, where there is no pseudo-terminal to stand in for a USB device.
 add_executable(test_serial_port
     serial_port_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SerialPort.cpp
 )
 target_include_directories(test_serial_port PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4975,10 +4193,6 @@ set_tests_properties(serial_port PROPERTIES TIMEOUT 20)
 # 3. The SP-over-SLIP session layer against an in-process fake FujiNet.
 add_executable(test_sp_over_slip_link
     sp_over_slip_link_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpOverSlipLink.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpTcpTransport.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpSerialTransport.cpp
-    ${CMAKE_SOURCE_DIR}/src/SerialPort.cpp
 )
 target_include_directories(test_sp_over_slip_link PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -4996,13 +4210,6 @@ set_tests_properties(sp_over_slip_link PROPERTIES TIMEOUT 60)
 # boot path with and WITHOUT a peer, and the I/O-page buffer refusal.
 add_executable(test_fujinet_card
     fujinet_card_smoke_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/FujiNetCard.cpp
-    ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpOverSlipLink.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpTcpTransport.cpp
-    ${CMAKE_SOURCE_DIR}/src/SpSerialTransport.cpp
-    ${CMAKE_SOURCE_DIR}/src/SerialPort.cpp
-    ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_fujinet_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -5025,7 +4232,6 @@ set_tests_properties(fujinet_card PROPERTIES TIMEOUT 60)
 # POSIX-only harness — it uses /bin/sh as a stand-in helper.
 add_executable(test_child_process
     child_process_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
 )
 target_include_directories(test_child_process PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -5042,7 +4248,6 @@ set_tests_properties(child_process PROPERTIES TIMEOUT 30)
 # real substitutions rather than the old nearest-CP437 approximation.
 add_executable(test_printer_glyph
     printer_glyph_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
 )
 target_include_directories(test_printer_glyph PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -5060,8 +4265,6 @@ set_tests_properties(printer_glyph PROPERTIES TIMEOUT 30)
 # against each other (band bit order, band feed, auto-invert).
 add_executable(test_printer_screen_dump
     printer_screen_dump_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/PrinterScreenDump.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
 )
 target_include_directories(test_printer_screen_dump PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -5079,7 +4282,6 @@ set_tests_properties(printer_screen_dump PROPERTIES TIMEOUT 30)
 # queueing minutes of buzz.
 add_executable(test_printer_sound
     printer_sound_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/PrinterSoundDevice.cpp
 )
 target_include_directories(test_printer_sound PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -5097,8 +4299,6 @@ set_tests_properties(printer_sound PROPERTIES TIMEOUT 30)
 # the filename counter resumes so a reload cannot clobber an old page.
 add_executable(test_printer_history
     printer_history_test.cpp
-    ${CMAKE_SOURCE_DIR}/src/PrinterHistory.cpp
-    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
     ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
 )
 target_include_directories(test_printer_history PRIVATE ${CMAKE_SOURCE_DIR}/src)

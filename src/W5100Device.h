@@ -19,9 +19,9 @@
 // does not build IP headers or run a retransmit timer; it writes a
 // destination address and a port into registers, issues CONNECT, and then
 // pushes payload bytes at a ring buffer. All the protocol work happens
-// inside the chip. That maps one-for-one onto host BSD sockets, which is
-// exactly what this class does and what AppleWin does: each of the four
-// W5100 sockets in TCP or UDP mode owns a real non-blocking host socket.
+// inside the chip. That maps one-for-one onto a host socket adapter: each
+// of the four W5100 sockets in TCP or UDP mode owns a protocol-neutral
+// endpoint injected by runtime. BSD/Winsock policy stays outside this class.
 //
 // The consequence is the headline feature: **Uthernet II works with no
 // Ethernet backend at all.** A period IRC, telnet or FTP client talks
@@ -54,23 +54,21 @@
 // `irc.libera.chat` without carrying its own resolver — but resolves off
 // the CPU thread; see `resolveDns`.
 //
-// Threading: every entry point runs on the CPU thread under
-// EmulationController's stateMutex. All host sockets are non-blocking and
-// nothing here waits on the network. The one exception is the bounded DNS
-// wait documented on `kDnsWaitMs`.
+// Threading: every entry point runs on the CPU thread. The injected adapter
+// must be non-blocking except for the bounded virtual-DNS budget documented
+// on `kDnsWaitMs`; this device itself owns no worker or host-network API.
 
 #ifndef POM2_W5100_DEVICE_H
 #define POM2_W5100_DEVICE_H
 
 #include "NetworkBackend.h"
-#include "SocketCompat.h"   // socket_t / kInvalidSocket for Socket::fd
+#include "W5100Socket.h"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -173,12 +171,10 @@ class W5100Device
 public:
     static constexpr size_t kSocketCount = 4;
 
-    /// How long `openSocket` will wait for an in-flight virtual-DNS
-    /// lookup before giving up and leaving DIPR at 0.0.0.0. The lookup
-    /// itself runs on a detached thread and its answer is cached, so a
-    /// guest that retries after the (expected) failed connect gets the
-    /// address instantly. Bounded because this runs on the CPU thread:
-    /// a plain blocking getaddrinfo() could stall emulation for seconds.
+    /// Maximum synchronous budget offered to the injected virtual-DNS
+    /// resolver. A runtime adapter may complete a timed-out lookup into its
+    /// cache so a later guest retry succeeds. Bounded because OPEN runs on
+    /// the CPU thread.
     static constexpr int kDnsWaitMs = 120;
 
     W5100Device();
@@ -218,6 +214,12 @@ public:
     /// cycle hook.
     void poll();
 
+    /// Runtime TCP/UDP/DNS adapter. The device owns the injected factory;
+    /// without one those socket modes remain CLOSED while MACRAW/IPRAW keep
+    /// working through NetworkBackend.
+    void setSocketFactory(std::unique_ptr<W5100SocketFactory> factory);
+    W5100SocketFactory* socketFactory() const { return socketFactory_.get(); }
+
     /// Host transport for MACRAW / IPRAW. Not owned; may be null.
     void setBackend(NetworkBackend* backend) { backend_ = backend; }
     NetworkBackend* backend() const { return backend_; }
@@ -252,14 +254,8 @@ public:
     void loadSnapshotState(const uint8_t* data, std::size_t len);
 
 private:
-    /// One of the chip's four sockets. `fd` is a host socket in TCP/UDP
-    /// mode and `kInvalidSocket` otherwise; the raw modes need no host
-    /// socket because they go out through the NetworkBackend.
-    ///
-    /// `pom2::socket_t`, not `int`: Winsock's SOCKET is an unsigned handle
-    /// whose failure value is INVALID_SOCKET, not -1, so the `fd >= 0`
-    /// test this struct used to carry was always true on Windows. See
-    /// SocketCompat.h.
+    /// One of the chip's four sockets. TCP/UDP hold an injected runtime
+    /// endpoint; the raw modes need none because they use NetworkBackend.
     struct Socket {
         uint16_t transmitBase    = 0;
         uint16_t transmitSize    = 0;
@@ -273,7 +269,7 @@ private:
         /// Bytes currently staged in the RX ring (SN_RX_RSR).
         uint16_t rxSize  = 0;
 
-        socket_t fd        = kInvalidSocket;
+        std::unique_ptr<W5100HostSocket> host;
         uint8_t status     = kW5100SnSrClosed;
         /// Per-protocol header the chip prepends to received data in the
         /// RX ring (`Uthernet2.cpp:212-234`): none for TCP, IP+port+len
@@ -282,14 +278,14 @@ private:
 
         /// TCP bytes accepted from the guest (SEND already completed and
         /// freed the TX ring) but not yet taken by the host socket — a
-        /// slow peer makes sendto() return short or EAGAIN, and dropping
-        /// the tail silently corrupted the stream. Host-side only, never
+        /// slow peer may accept only a prefix, and dropping the tail silently
+        /// corrupted the stream. Host-side only, never
         /// snapshotted (a restored connection is demoted to CLOSED anyway).
         std::vector<uint8_t> pendingTx;
 
         bool isOpen() const
         {
-            return isValidSocket(fd) &&
+            return host &&
                    (status == kW5100SnSrEstablished ||
                     status == kW5100SnSrCloseWait ||
                     status == kW5100SnSrUdp);
@@ -305,7 +301,7 @@ private:
     // Socket lifecycle (`Uthernet2.cpp:910-1102`).
     void setSocketStatus(size_t i, uint8_t status);
     void clearSocket(size_t i);
-    void openSystemSocket(size_t i, int type, int protocol, uint8_t status);
+    void openSystemSocket(size_t i, W5100SocketKind kind, uint8_t status);
     void openSocket(size_t i);
     void closeSocket(size_t i);
     void connectSocket(size_t i);
@@ -361,42 +357,17 @@ private:
     void resolveDns(size_t i);
     void macForAddress(uint32_t ipv4, MacAddress& out);
 
-    /// A name lookup that outlived its bounded wait. The resolver thread
-    /// parks the answer here; `poll()` (CPU thread) folds it into
-    /// `dnsCache_`. Keeps the cache single-threaded despite the async
-    /// lookup — the mutex guards only this hand-off queue.
-    struct PendingDns {
-        std::string name;
-        uint32_t    address = 0;
-    };
-    void drainPendingDns();
-
     std::vector<uint8_t>              memory_;
     std::array<Socket, kSocketCount>  sockets_{};
     uint8_t                           modeRegister_ = 0;
     uint16_t                          dataAddress_  = 0;
     bool                              virtualDns_   = true;
     NetworkBackend*                   backend_      = nullptr;
+    std::unique_ptr<W5100SocketFactory> socketFactory_;
 
     /// The real card has no ARP cache — this one exists purely so an
     /// IPRAW send does not re-resolve on every packet.
     std::map<uint32_t, MacAddress> arpCache_;
-    std::map<std::string, uint32_t> dnsCache_;
-
-    /// Written by detached resolver threads, drained by poll(). Shared
-    /// through a shared_ptr so a lookup that outlives the card (the user
-    /// pulled it out of the slot mid-resolve) has nowhere unsafe to write.
-    struct DnsMailbox {
-        std::mutex              mutex;
-        std::vector<PendingDns> pending;
-        /// Detached lookups still running. Checked before std::async is
-        /// even called (its future's destructor would block), so a guest
-        /// looping OPEN over random hostnames cannot pile up resolver
-        /// threads without bound.
-        int                     inFlight = 0;
-    };
-    std::shared_ptr<DnsMailbox> dnsMailbox_ = std::make_shared<DnsMailbox>();
-
     uint64_t bytesSent_     = 0;
     uint64_t bytesReceived_ = 0;
 };

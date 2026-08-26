@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-Status as of 2026-08-19. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
+Status as of 2026-08-26. Resolved items → `CHANGELOG.md`. MAME refs → `DEV.md`.
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
 effort in *italics*. File/line in `backticks`. Quick read:
@@ -25,7 +25,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 1  | M6502 / 65C02 / Rockwell / WDC | Verbatim         | `om6502.lst`, `ow65c02.lst`; Tom Harte `65x02`                          | 🟢 NMOS 100% Tom Harte on all 178 documented opcodes; 🟢 WDC decimal SBC now silicon-exact (interdigit carry, 2026-07-30); 🟢 $5C 8-cyc = deliberate (matches MAME, not Harte) |
 | 1bis | Z80 core (standalone)          | POM2-original (L0) | z80.info/decoding.htm field decomposition (same structure MAME's `z80.cpp` flattens) | — (zexdoc + zexall clean; MEMPTR + X/Y flags modelled, not approximated; pinned `z80_core`, `z80_zexdoc`, `z80_zexall`, `z80_block_io_flags`) |
 | 1ter | SoftCard Z80 (key `softcard`)  | Verbatim         | MAME `bus/a2bus/a2softcard.cpp` (R. Belmont, 176 lines; line-cited)      | — (real DMA bus arbitration, 6502 halted per instruction slice; CP/M 2.2 boots MAME-oracle-identical; pinned `softcard_toggle`, `softcard_cpm_boot`, `softcard_cpm_boot_iie`) |
-| 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟠 god-object (Keyboard/PaddleInputs to extract)                                         |
+| 2  | Memory + IIe + RamWorks        | Partial-verbatim | `apple2e.cpp:1275-1299`, `a2eramworks3.cpp:108-115`                      | 🟢 Keyboard/PaddleInputs extracted; paging remains intentionally in Memory                |
 | 3  | Display HGR/DHGR/80-col        | Partial-verbatim | `apple2video.cpp:124-201`, `460-471`, `:751-758`; AppleWin `RGBMonitor.cpp` | 🟢 mono DHGR 1-px (mid-scanline, PAL 50 Hz, floating bus `$C05x`, page-flip DROL, Chat Mauve RGB: done) |
 | 3bis | Le Chat Mauve RGB (key `chatmauve`) | POM2 + AppleWin | AppleWin `RGBMonitor.cpp` pixel rules + the Eve/Chat Mauve brevet (MAME has no model) | 🟢 AN3 pulse FIFO decode, Eve Color text `$C0B8/9` + HGR Duochrome `$C0BA/B`, snapshot v2; pinned `le_chat_mauve_smoke` |
 | 4  | SpeakerDevice                  | Verbatim         | `spkrdev.cpp:74-327`                                                     | —                                                                                        |
@@ -88,14 +88,130 @@ gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
 
 | Pri | Item | Status | Detail |
 | --- | ---- | ------ | ------ |
-| **P0** | Stop growing the god-objects; extract 3–4 window groups (storage, audio, network, debug) into TUs. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. Without this, `MainWindow.cpp` hits ~14 kLOC in six months and nobody reviews it. | 🟠 open (`MainWindow.cpp` **10 669** lines, still growing since the 2026-05-31 ~6700 audit) | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object |
-| **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟠 open (controller TSan clean 2026-08-17; GUI / `demodMutex` / slot re-plug under load remain). OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
+| **P0** | Stop growing the god-objects; extract 3–4 window groups (storage, audio, network, debug) into TUs. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. Without this, `MainWindow.cpp` hits ~14 kLOC in six months and nobody reviews it. | ✅ DONE 2026-08-26 (coordinator ownership + nine bounded `MainWindow*.cpp` TUs; 3,000-line guard; effective/draft/live slot maps separated) | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | ✅ automated frontend TSan gate 2026-08-26 (full frontend instrumented; ImGui-headless panel, UI/AI/CPU, slot re-plug, rewind, audio teardown and disk snapshots run in CI). 🟡 contention measurement / long-term lock partition remains. | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod ✅ |
 | **P1** | Transactional disk insert (load-into-scratch-then-commit). Perceived quality + media integrity. | ✅ DONE 2026-08-13 (`9ae1784`) | [Storage](#storage-disks--images) |
-| **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | 🟠 open | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
+| **P2** | Split `Memory` (`Keyboard` + `PaddleInputs`) **after** an I/O-path test net, not before. The 256-entry `memRead` dispatch is a **perf** job; the split is **compileability**. Do not merge them. | ✅ DONE 2026-08-26 (`input_c0xx_contract` added first) | [Memory](#memory-paging--ram-expansion) god-object vs `memRead` hot path — two items |
 | **P2** | Debugger runtime glue (BP / watch / step). 80 % of the bricks exist (`Disassembler6502` + MemView). An emulator at this fidelity with no BP/step is a simulator you *watch*, not one you *interrogate* — and it blocks contribs. | 🟠 open | [Arch](#arch-refactor--tooling); Quick wins #4 |
 | **P3** | Kill or officialise the scaffolds. `POM2_IWM_LEGACY_DATA_PATH`: either IWM is the truth and the Disk II shadow goes, or it is a documented debug mode. Echo+ TMS5220 (`echoplus_tms`): hide from the catalog until the chip exists, or ship it. Phasor: cycle-stamped event queue matching Mockingboard — otherwise « verbatim » is an audio lie. | 🟡 open | `Memory.h` IWM authoritative flag; dashboard #21bis; [Audio](#audio) Phasor queue |
 | **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open | [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you have it |
 | **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `AtomicFileReplace.h` |
+
+### Ce que je ferais ensuite
+
+Geler temporairement les nouvelles fonctionnalités et attaquer quatre points :
+
+1. Extraire un agrégat `Machine` commun à `pom2::Core` et
+   `EmulationController`.
+2. Transformer les coordinateurs en véritables propriétaires de sous-domaines,
+   jusqu’à supprimer les accès directs aux cartes et au mutex depuis
+   `MainWindow`.
+3. Remplacer progressivement les `dynamic_cast` par des capacités typées ou un
+   inventaire de périphériques.
+4. Découper les manifestes CMake/tests par sous-système et rendre les tests ROM
+   explicitement « skipped » pour que le bilan soit honnête.
+
+#### Étapes de correction mesurables
+
+Baseline du 2026-08-26 : `StorageCoordinator` = 1 654 lignes (`.h` + `.cpp`),
+92 `dynamic_cast` sous `src/` dont 29 dans `StorageCoordinator.cpp`, 17 appels
+directs à `stateMutex()` hors `EmulationController`, `CMakeLists.txt` = 1 259
+lignes, `tests/CMakeLists.txt` = 4 361 lignes et 192 tests CTest. Ces nombres
+servent à mesurer la migration, pas à définir seuls la qualité de
+l’architecture.
+
+1. **Déconcentrer `StorageCoordinator`.**
+   - [ ] Figer l’ajout de nouvelle politique dans le coordinateur et inventorier
+     ses invariants : topologie, commandes média, restauration, persistance et
+     provisioning.
+   - [ ] Verrouiller chaque invariant par un test de caractérisation avant son
+     déplacement.
+   - [ ] Extraire une vue de topologie/identité en lecture seule, puis un service
+     de commandes média (`mount`/`eject`/write-back/conversion), puis le pont de
+     persistance vers `Settings`.
+   - [ ] Garder `StorageCoordinator` comme façade d’orchestration : aucune
+     logique de format disque, aucun pointeur de carte conservé entre deux
+     commandes et aucun `Settings::save()` sous le verrou machine.
+   - [ ] Sortie : chaque responsabilité a ses propres tests et peut évoluer sans
+     modifier le coordinateur ni `MainWindow`.
+
+2. **Remplacer les casts de cartes par des capacités typées.**
+   - [ ] Classer les 92 casts par capacité recherchée (média, audio, réseau,
+     impression, inspection, snapshot) et distinguer les casts légitimes de
+     factory/test des casts de navigation dans le graphe vivant.
+   - [ ] Définir des contrats étroits et stables pour ces capacités, puis faire
+     publier par `SlotBus` un inventaire typé reconstruit à chaque
+     `plug`/`unplug`/`clear`.
+   - [ ] Migrer d’abord les 29 casts de `StorageCoordinator`, puis les autres
+     coordinateurs, puis les accès résiduels de `MainWindow`.
+   - [ ] Ajouter un garde d’architecture qui interdit tout nouveau
+     `dynamic_cast` de carte concrète dans le frontend, avec une courte
+     whitelist de migration revue à la baisse.
+   - [ ] Sortie : aucun coordinateur ni panneau ne connaît une classe de carte
+     concrète seulement pour découvrir une capacité ; les casts restants sont
+     confinés aux factories, à la sérialisation justifiée ou aux tests.
+
+3. **Réduire puis mesurer le verrou global CPU/UI.**
+   - [ ] Convertir les 17 appels directs hors contrôleur vers `StateAccess` ou
+     vers une commande/snapshot de coordinateur ; documenter séparément les
+     rares opérations qui ont besoin du verrou sans accès à `Memory`/`M6502`.
+   - [ ] Interdire les nouveaux appels directs à `stateMutex()` hors
+     `EmulationController` par le garde d’architecture, avec whitelist
+     temporaire explicite.
+   - [ ] Instrumenter en mode profilage le temps d’attente et de rétention du
+     verrou (médiane, p95, p99), notamment avec disk-turbo, audio et AI actifs.
+   - [ ] Sortir des sections critiques le rendu ImGui, les E/S hôte, les
+     conversions, les allocations longues et les sauvegardes de réglages.
+   - [ ] Ne partitionner le verrou qu’à partir de ces mesures : état machine
+     déterministe d’un côté, publications/snapshots et files audio de l’autre.
+   - [ ] Sortie : zéro accès direct non justifié, campagne `frontend-tsan`
+     propre et absence de régression mesurable de pacing/jitter.
+
+4. **Unifier les deux chemins de composition autour de `Machine`.**
+   - [ ] Écrire des contrats de parité entre `pom2::Core` et
+     `EmulationController` pour l’initialisation, le timing, les resets, les
+     entrées et le rendu déterministe.
+   - [ ] Introduire un agrégat `Machine` qui possède `Memory`, `M6502`,
+     `SlotBus` et les périphériques intégrés déterministes ; exclure threads,
+     pacing, fenêtre, sockets et périphériques audio de l’OS.
+   - [ ] Faire déléguer `pom2::Core` à cet agrégat sans modifier d’abord son API
+     publique, puis faire posséder le même agrégat par `EmulationController`.
+   - [ ] Centraliser dans `Machine` le câblage CPU/mémoire, le standard vidéo,
+     les horloges et les séquences de reset aujourd’hui dupliqués.
+   - [ ] Sortie : une seule implémentation de composition/reset déterministe ;
+     `Core` reste la façade SDK et `EmulationController` n’ajoute que le runtime
+     threadé et les services hôte.
+
+5. **Découper l’infrastructure CMake et les déclarations de tests.**
+   - [ ] Déplacer les manifestes explicites de sources dans des modules par
+     couche/sous-système sous `cmake/`, sans revenir à des `GLOB` silencieux.
+   - [ ] Répartir les tests par domaine sous `tests/cmake/` et conserver dans
+     `tests/CMakeLists.txt` uniquement les helpers communs et les inclusions.
+   - [ ] Étendre `pom2_add_headless_test` avec des métadonnées homogènes :
+     labels, timeout, portabilité, ressources ROM et sources auxiliaires.
+   - [ ] Garder un contrôle global prouvant que chaque source de production
+     appartient exactement à une couche et que chaque test possède un label.
+   - [ ] Sortie : les deux CMake racines orchestrent sans cataloguer des
+     centaines de fichiers, tandis que les contrats architecture/SDK et toutes
+     les configurations existantes restent verts.
+
+6. **Rendre les tests ROM honnêtes et qualifiables.**
+   - [ ] Réserver un code de sortie de skip (par exemple 77), le déclarer avec
+     la propriété CTest `SKIP_RETURN_CODE` et remplacer les sorties succès des
+     probes privés de ROM par ce code.
+   - [ ] Labelliser ces tests `rom`, décrire leurs ROM/médias requis dans un
+     manifeste et effectuer un préflight qui affiche ce qui sera exécuté ou
+     sauté.
+   - [ ] Ajouter un mode strict `POM2_REQUIRE_ROM_TESTS=ON` : une ressource
+     attendue absente fait échouer la qualification au lieu de transformer le
+     test en succès vert.
+   - [ ] Conserver la CI publique légale en mode skip explicite et exécuter
+     `ctest -L rom` en mode strict dans une qualification privée/release
+     disposant du corpus externe.
+   - [ ] Publier dans le résumé CI les nombres `passed`/`failed`/`skipped` pour
+     ne plus présenter « 192/192 » comme une couverture LLE intégrale.
+   - [ ] Sortie : un skip est visible comme tel dans CTest ; la qualification
+     ROM exécute tout son manifeste ou échoue avant les tests.
 
 **Explicitly not architecture** — do not pick these ahead of P0–P4. They stay
 in the backlog as features:
@@ -890,26 +1006,22 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   offset LUT; drop the per-instruction `mem_` null tests in the dmaRun hot
   loop (guard once at entry). Boot test could also pump a public
   controller slice hook instead of re-implementing arbitration.
-- ✅ **CI GitHub Actions** — DONE (`.github/workflows/ci.yml`). Two jobs on
+- ✅ **CI GitHub Actions** — DONE (`.github/workflows/ci.yml`). Four jobs on
   push-to-`main` / PR / manual dispatch, with in-flight cancellation: **linux**
-  builds the full tree (GUI + `pom2_headless` + tests, `POM2_ENABLE_TESTS=ON`)
-  and runs the 182-test ctest gate (Klaus 6502+65C02, Tom Harte curated,
-  `cpu_cycle_count`, golden-hash display, boot traces); **wasm** is an Emscripten
-  verification build (`build_wasm.sh`) asserting `wasm/POM2.{js,wasm}` +
-  `index.html` are produced. Both jobs shallow-clone Dear ImGui (gitignored); no
-  test depends on the user-supplied ROMs.
-- 🟠 **ThreadSanitizer pass over `EmulationController` / `stateMutex` / the
-  audio thread** *(2026-08-02 bug-hunt follow-up)* — architect **P1**
+  builds the full tree and runs the 196-test gate; **portable-core** builds the
+  renderer-free SDK/contracts on macOS and Windows; **frontend-tsan** runs the
+  instrumented concurrency campaign; **wasm** verifies the Emscripten bundle.
+  Jobs needing ImGui shallow-clone the pinned revision; no test depends on the
+  user-supplied ROMs.
+- ✅ **ThreadSanitizer pass over `EmulationController` / `stateMutex` / the
+  audio thread** *(completed 2026-08-26)* — architect **P1**
   ([Architect attack order](#architect-attack-order)). The highest-yield gap we
   know of. That sweep's ASan+UBSan build (156 test binaries, ~24 000
   hostile-input cases, ~6 M random instructions) returned **zero**
   diagnostics, yet code reading found a UI deadlock, two use-after-frees and
   three unlocked cross-thread reads in the same tree. ASan cannot see data
-  races and the headless tests cannot reach the GUI, which is exactly where
-  the defects were. Needs a TSan build driving the GUI with the AI server
-  polling `/screen.ppm`, slot reconfiguration, and rewind under load. Would
-  also retire the two findings that could not be pinned (`saveScreenshot`'s
-  `demodMutex` ordering, and the threaded half of `disk_path_snapshot`).
+  races and the original headless tests could not reach the GUI, which is
+  exactly where the defects were.
   - **The controller half is done and clean** (2026-08-17, bug hunt 8): a TSan
     harness drove the real thread shape without a GUI — CPU worker, a UI thread
     running the transport verbs (rewind scrub/seek/resume, cassette, 3.5"
@@ -920,8 +1032,21 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     CPU↔audio producer/consumer) is exercised. Zero races. **Caveat worth
     keeping**: TSan instruments every load/store in the interpreter's hot loop,
     so the CPU manages only ~400-1 400 emulated cycles/s — the *lock protocol*
-    is covered thoroughly, *emulated execution* thinly. What remains is the GUI
-    half: ImGui panels, `demodMutex`, slot re-plug under load.
+    is covered thoroughly, *emulated execution* thinly. At that date the
+    remaining gap was the frontend half described below.
+  - **The frontend gate is now done and runs on every PR** (2026-08-26): CI
+    compiles the complete Linux frontend with `-fsanitize=thread`, then runs a
+    nine-test `frontend-tsan` campaign. A real headless ImGui frame drives the
+    Memory Viewer; the new panel-host test runs a CPU worker plus an AI-like
+    concurrent state reader while repeatedly destroying/recreating Uthernet,
+    Chat Mauve, Super Serial, SmartPort, FujiNet, Disk II, HDV, CFFA,
+    Mouse/Clock and audio cards,
+    capturing immutable panel snapshots and
+    dispatching commands. Rewind, audio-source teardown and the threaded disk
+    path snapshot contracts complete the cross-thread surface. The same gate
+    is clean locally (AppleClang TSan, 9/9). This is deliberately renderer-
+    backend-free at runtime—GLFW/OpenGL are built/instrumented, while ImGui is
+    driven headlessly—so display-server flakiness is not confused with a race.
 - 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
   divergent copies still: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
   namespace), `Disk35Image.cpp:264-310` (added 2026-08-02) and
@@ -977,15 +1102,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   - Not committed, matching the precedent from hunt 5: the harnesses link
     against source files rather than a build-system target, which is a CI
     decision rather than a bug fix.
-- 🟠 **`MainWindow.cpp` god-object (10 669 lines)** *(audit 2026-05-31, count
-  re-measured 2026-08-19 — it was ~6700 then, so the file is still growing)* —
-  architect **P0** ([Architect attack order](#architect-attack-order)). Biggest
-  single file in the repo, monolithic UI despite the `_Slots`/`_MemoryMaps`/
-  `_ImGui` splits. Slows recompiles + hurts readability. Extract device-window
-  groups (storage / audio / network / debug) into dedicated TUs (aim for
-  &lt; 3000 lines/file, like POM1's `MainWindow_*` discipline). Standing rule:
-  new cards ship their panel in `*_ImGui.cpp` with zero business logic in
-  `MainWindow.cpp`. *3-5 d.*
 - 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
   to centralize into a `Config` (env → CLI → Settings → defaults),
   list env vars in `--help`. *1 d.* Architect **P4**.
@@ -1011,9 +1127,19 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `tests/` does not use it. Mechanical migration. Architect **P4**.
 - 🟢 **Legacy M6502 style** — FR/EN comments, C-style casts,
   `void(void)`. Targeted `clang-format` + `clang-tidy modernize-*`.
-- 🟢 **`*Card` raw pointers in MainWindow** (`MainWindow.h:320-358`) —
-  no notification when SlotBus replugs. Observer pattern or
-  `controller.slotBus().peripheral(N)`.
+- 🟡 **Remaining `*Card` raw pointers in MainWindow** — the highest-risk panel
+  aliases are being retired incrementally. Chat Mauve and Uthernet I/II no
+  longer exist as MainWindow members; `DevicePanelCoordinator` re-resolves
+  them under `lockState()` for immutable snapshots and commands. The Super
+  Serial panel and menu inventory follow the same rule for every SSC. SmartPort and
+  FujiNet panels now do the same through `StorageCoordinator` and
+  `NetworkCoordinator` (one lock per command frame, no unit/runtime-link
+  pointer retained outside it). `PrinterCoordinator` has also removed the
+  Printer/Grappler/FujiNet/SSC aliases from the entire ImageWriter path.
+  `StorageCoordinator` now also replaces the five Disk II/HDV/CFFA/SmartPort
+  members with ephemeral topology views and immutable inventory snapshots;
+  `AiControlServer` resolves its Disk II target per request. The remaining
+  SlotBus-owned aliases are the clock, mouse and legacy audio-panel paths.
 
 ## Edge-case test corpus
 

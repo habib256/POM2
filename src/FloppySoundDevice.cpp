@@ -130,7 +130,7 @@ bool FloppySoundDevice::loadOneWav(const std::string& path, Sample& out)
 
 void FloppySoundDevice::setSampleRate(uint32_t hz)
 {
-    if (hz == 0) hz = AudioDevice::kSampleRate;
+    if (hz == 0) hz = AudioSource::kDefaultSampleRate;
     outputSampleRate_ = hz;
 }
 

@@ -1,12 +1,16 @@
 # POM2 continuous integration.
 #
-# Two jobs:
+# Four jobs:
 #   linux  — build the full tree (GUI + pom2_headless + unit tests) and run the
 #            ~130-test ctest suite (Klaus 6502/65C02, Tom Harte curated,
 #            cpu_cycle_count, golden-hash display, boot traces). This is the
 #            non-regression gate: it must stay green on every push / PR.
 #   wasm   — Emscripten verification build (build_wasm.sh) so the browser
 #            target can never silently rot. Build-only; no test run in-browser.
+#   portable-core — native macOS + Windows builds of pom2_core/headless and a
+#            deterministic renderer-free test contract on every PR/push.
+#   frontend-tsan — instrument the complete Linux frontend and run the worker /
+#            UI / AI / audio / rewind concurrency contracts under ThreadSanitizer.
 #
 # No test depends on machine ROM dumps — the suite drives the emulator core
 # directly. Dear ImGui is gitignored; both jobs clone it shallowly (same as
@@ -27,6 +31,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  portable-core:
+    name: ${{ matrix.name }} core + headless contracts
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            name: macOS
+          - os: windows-latest
+            name: Windows
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure core/headless only
+        run: >-
+          cmake -S . -B build-portable
+          -DCMAKE_BUILD_TYPE=Release
+          -DPOM2_BUILD_FRONTEND=OFF
+          -DPOM2_ENABLE_TESTS=ON
+          -DPOM2_INSTALL_CORE_SDK=ON
+          -DPOM2_ENABLE_SLIRP=OFF
+          -DPOM2_WIN_STATIC_RUNTIME=OFF
+
+      - name: Build core and portable test executables
+        run: >-
+          cmake --build build-portable --config Release --parallel 2 --target
+          pom2_core pom2_headless
+          test_pom2_core_api test_system_profile test_paste
+          test_input_c0xx_contract test_language_card test_iie_aux_paging
+          test_cpu_cycle_count test_slot_config test_kbd_strobe_mirror
+          test_slot_configuration_coordinator
+          test_slot_card_factory
+          test_slot_rebuild_coordinator
+          test_deterministic_adapter_injection
+
+      - name: Run deterministic headless contract
+        run: >-
+          ctest --test-dir build-portable --build-config Release
+          --output-on-failure --parallel 2 -L portable-headless
+
   linux:
     name: Linux build + ctest
     runs-on: ubuntu-latest
@@ -95,6 +141,59 @@ jobs:
             echo "ERROR: GLES build links desktop libGL"; exit 1
           fi
           echo "OK: GLES tier builds and links GLESv2 only"
+
+  frontend-tsan:
+    name: Linux frontend ThreadSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake g++ pkg-config libglfw3-dev libgl1-mesa-dev
+
+      - name: Fetch Dear ImGui (pinned)
+        run: |
+          set -euo pipefail
+          source ./imgui_pin.env
+          git init -q imgui
+          git -C imgui remote add origin "$IMGUI_REPO"
+          git -C imgui fetch --depth 1 origin "$IMGUI_COMMIT"
+          git -C imgui checkout -q FETCH_HEAD
+          test "$(git -C imgui rev-parse HEAD)" = "$IMGUI_COMMIT"
+
+      - name: Configure frontend with ThreadSanitizer
+        run: >-
+          cmake -S . -B build-tsan
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DPOM2_ENABLE_TESTS=ON
+          -DPOM2_BUILD_FRONTEND=ON
+          -DPOM2_ENABLE_SLIRP=OFF
+          -DPOM2_SANITIZE=thread
+
+      - name: Build instrumented frontend and concurrency contracts
+        run: >-
+          cmake --build build-tsan --parallel 2 --target
+          pom2_imgui
+          test_frontend_device_panel_concurrency
+          test_printer_coordinator
+          test_storage_coordinator
+          test_audio_coordinator
+          test_mouse_coordinator
+          test_memory_viewer_write_lock
+          test_audio_source_teardown
+          test_disk_path_snapshot
+          test_rewind_transport
+
+      - name: Run frontend concurrency campaign
+        env:
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1 history_size=7
+        run: >-
+          ctest --test-dir build-tsan --output-on-failure
+          --timeout 180 -L frontend-tsan
 
   wasm:
     name: WASM verification build

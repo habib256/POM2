@@ -52,6 +52,7 @@
 #include <cstdint>
 #include <memory>
 #include <string_view>
+#include <utility>
 
 namespace pom2 {
 
@@ -94,6 +95,12 @@ public:
     /// Adopt a host transport for the raw modes. TCP/UDP do not use it.
     void setBackend(std::unique_ptr<NetworkBackend> backend);
     NetworkBackend* backend() const { return backend_.get(); }
+
+    /// Adopt the runtime TCP/UDP/DNS adapter used by the W5100 offload
+    /// sockets. Without one the deterministic register model still works,
+    /// but TCP/UDP OPEN leaves the socket closed.
+    void setSocketFactory(std::unique_ptr<W5100SocketFactory> factory)
+    { chip_.setSocketFactory(std::move(factory)); }
 
     W5100Device&       chip()       { return chip_; }
     const W5100Device& chip() const { return chip_; }

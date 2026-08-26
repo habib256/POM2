@@ -47,10 +47,10 @@
 
 /// 1 when the platform gives us host sockets, 0 when it does not.
 ///
-/// POM2's three networking translation units — AiControlServer (the HTTP
-/// control API), SuperSerialCard (the telnet bridge) and W5100Device (the
-/// Uthernet II's hardware TCP/IP stack mapped onto host sockets) — were written
-/// against POSIX sockets. Exactly one target has no usable host sockets at all:
+/// POM2's runtime networking translation units — AiControlServer,
+/// SuperSerialTcpTransport, W5100HostSockets and SpTcpTransport — share one
+/// BSD/Winsock compatibility layer. Exactly one target has no usable host
+/// sockets at all:
 ///
 ///   * Emscripten: the browser exposes no BSD-socket API, and nothing can be
 ///     abstracted over that absence.
@@ -58,7 +58,7 @@
 /// WINDOWS IS NOT ON THAT LIST ANY MORE (2026-08-01). It has sockets, via
 /// Winsock2 — the same stack behind a different API (SOCKET vs int,
 /// closesocket, ioctlsocket, WSAStartup, WSAGetLastError). That difference now
-/// lives in ONE header, `SocketCompat.h`, and the three TUs above are written
+/// lives in ONE header, `SocketCompat.h`, and the runtime TUs above are written
 /// against it, so the Uthernet II, the telnet bridge and the AI control API
 /// work on Windows like anywhere else.
 ///

@@ -5,6 +5,194 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-26 — Enforced core boundaries and smaller host-policy ownership
+
+POM2 still ships one `pom2_core` static archive, but its source structure is no
+longer aspirational: CMake now builds media, machine, devices and runtime as
+one-way internal object layers and rejects upward includes at configure time.
+The desktop frontend is independently switchable, so macOS and Windows PR jobs
+can build the core/headless product and deterministic contracts without ImGui,
+GLFW or OpenGL.
+
+`MainWindow` no longer owns every host-side invariant. Dedicated coordinators
+now own the complete audio registration inventory, storage discovery/flush and
+auto-provisioning state, network/helper lifecycle, effective slot plan, and
+debug-view lock handover. This is an ownership change, not only a source-file
+move: teardown and cross-card policy have one authoritative state holder.
+The remaining panel code is now physically divided between command-shell,
+screen/kiosk, device, media, input and auxiliary-panel translation units;
+`MainWindow.cpp` fell from 11,065 to roughly 2,100 lines. A configure + CTest
+guard caps every `MainWindow*.cpp` at 3,000 lines so the monolith cannot simply
+grow back under a different filename.
+
+The state boundary now follows the physical split. `MainWindowUiState` hides
+all 38 panel visibility flags plus panel-local textures, HGR buffers, print
+cursors, transient messages and input drafts; `MainWindow.h` drops from 1,217
+to 939 lines after kiosk navigation, saved window geometry, host mouse
+capture/routing and printer aliases moved behind dedicated owners. Chat Mauve and Uthernet
+I/II raw aliases have been removed from
+MainWindow entirely. `DevicePanelCoordinator` resolves them from the live
+SlotBus under `lockState()`, copies immutable snapshots for ImGui and applies
+the returned command after re-resolution. The five Chat Mauve toggles/reset
+paths now share one critical section instead of locking independently.
+
+SmartPort's configuration panel follows the same contract through
+`StorageCoordinator`. This closes a subtler lifetime hole: the old host fetched
+a `SmartPortUnit*` before taking the state lock, then reused it across several
+independent lock acquisitions. Snapshot capture and all actions now re-resolve
+the card under the lock, use one critical section per command frame, and defer
+settings persistence until after releasing the machine lock.
+
+FujiNet's panel moved into `NetworkCoordinator` as well. Snapshot capture now
+copies card, concrete transport, helper and printer-tap state without exposing
+the owned runtime link; a frame's transport/timeout/start/stop/drop-peer
+requests are applied after re-resolution in one state-lock acquisition rather
+than up to six. Host-only serial discovery and helper-process commands stay
+outside the machine lock.
+
+The Super Serial panel now uses the same value boundary for every plugged SSC:
+the coordinator snapshots all tab data under one lock and resolves the selected
+slot again to apply listener, raw-mode and printer-tap commands. Menu
+availability and slot labels also come from the locked inventory rather than
+cached card pointers. The concurrency test repeatedly replugs an SSC while
+exercising those commands.
+
+`PrinterCoordinator` now owns the complete virtual cable. It resolves and
+drains PrinterCard, Grappler+, FujiNet and SSC sources under `lockState()`, then
+hands an owned byte batch to ImageWriter after releasing the machine lock. It
+also owns source-change cursor semantics, Grappler BUSY/DIP commands and the
+parallel text-spool snapshot. MainWindow no longer retains any of those four
+card aliases; FujiNet-only printing is now also named correctly in the paper
+tray instead of appearing as an unconnected printer.
+
+The storage aliases have now gone too. `StorageCoordinator` discovers the
+slot-sorted Disk II, HDV, CFFA and SmartPort topology on demand, owns the
+preferred block-device policy and publishes immutable inventory values for
+menus and diagnostics. `MainWindow` no longer retains `diskCards`, `diskCard`,
+`hdvCard`, `cffaCard` or `smartPortCard`; local card views are consumed within
+the operation that obtained them. The AI HTTP server likewise resolves Disk II
+from SlotBus under the state lock instead of carrying card pointers across
+profile and slot rebuilds.
+
+The four retained audio-card aliases are gone as well. `AudioCoordinator`
+discovers every Mockingboard, Phasor and Echo variant from the live SlotBus,
+copies inspector and mixer state under the machine lock, then applies edits by
+`(type, slot)`. The mixer now shows coexisting Mockingboard variants instead of
+silently keeping only the last one, and their volume/mute settings persist per
+slot while the old type-wide keys remain compatible fallbacks.
+
+The final retained Mouse/Clock aliases have also been removed. The new
+renderer-free `MouseCoordinator` resolves both Mouse Card implementations for
+each immutable inspector snapshot and host-input dispatch while holding the
+machine lock; `DevicePanelCoordinator` now publishes ClockCard slot/ROM status
+from the same live inventory. Slot replacement can therefore destroy either
+card without leaving `MainWindow` with a dangling pointer.
+
+The old `slotCards[]` map no longer alternates between configuration draft,
+resolved policy and live hardware. `SlotConfigurationCoordinator` now exposes
+an immutable effective plan, an explicitly staged draft and an immutable live
+snapshot copied from `SlotBus`. A missing CFFA/Mouse ROM therefore leaves the
+user's requested assignment intact, while session-only HDV/SmartPort/FujiNet
+cards no longer masquerade as persistent configuration. The Slot Configuration
+panel reports plan/live divergence without treating it as an unapplied edit.
+
+The first slot-composition slice has left `MainWindow` as well.
+`SlotCardFactory` now owns resource lookup, ROM validation and Mouse
+implementation fallback for the configured Disk II, HDV, CFFA, Grappler,
+SmartPort and Mouse cards. The factory takes an injected resource locator, so
+its missing-ROM, successful-load and AppleWin-to-MC68705 fallback contracts are
+covered without host files; `MainWindow` retains only runtime wiring and
+`SlotBus` ownership. An architecture guard prevents those constructors from
+drifting back into the composition method.
+
+Session-only boot provisioning has now left `MainWindow` too. The additive
+`SlotProvisioningCoordinator` owns the HDV/SmartPort preference order,
+//c-class visibility rule, free-slot choice, factory construction, SmartPort
+sound wiring and non-persistent tracking. CLI, drag-and-drop and Floppy Emu
+therefore share one tested policy instead of two `ensure*CardForBoot` methods
+embedded in a presentation translation unit. HDV construction, including the
+configured path, also goes through `SlotCardFactory`; media commands on an
+auto-provisioned SmartPort no longer leave orphaned per-unit settings behind.
+
+Profile switches and Slot Configuration Apply no longer carry independent
+copies of the topology teardown protocol. `SlotRebuildCoordinator` now owns an
+explicit `stable → prepared → rebuilding → stable` transaction: only a
+successful media flush may prepare it; AI/audio/UI consumers detach before the
+`SlotBus` is cleared under `StateAccess`; rewind and auto-provision state are
+invalidated once; and AI endpoints publish last. A deterministic destructor
+probe pins the exact order, while the architecture gate forbids direct
+`slotBus().clear()` calls from returning to any `MainWindow` translation unit.
+
+The media half of that transaction is centralized too. `StorageCoordinator`
+now captures a typed, value-only Disk II/HDV/CFFA rebuild snapshot under the
+machine lock, synchronizes the settings consumed by Slot Configuration Apply,
+and restores media against the replacement `SlotBus`. Profile switching and
+slot reconfiguration no longer maintain separate path/write-back arrays or
+retain references returned by live cards; a headless destruction/rebuild test
+pins per-slot restoration, a moved primary HDV, CFFA policy, empty Disk II
+state and the session-only HDV persistence guard.
+
+Shutdown storage persistence now consumes that same snapshot instead of
+walking concrete cards in `MainWindow::~MainWindow`. The coordinator owns the
+legacy primary aliases, per-slot Disk II/CFFA keys and HDV auto-provision/
+host-folder exclusions. Disk II snapshots and settings now model both drives:
+drive 1 retains `disk_path_slotN`, while drive 2 uses the additive
+`disk_path_slotN_drive2` key. Both drives survive profile switches, Slot
+Configuration Apply and process restarts; immediate drive-2 eject no longer
+accidentally clears drive 1's persisted path.
+
+Slot construction no longer interprets storage settings. The Disk II, HDV and
+CFFA construction lambdas now create and wire empty hardware only; once the
+full topology exists, `StorageCoordinator::restoreMediaFromSettings()` applies
+all paths and write-back policies under the machine lock and aggregates
+non-fatal card diagnostics. Startup, profile changes and Slot Configuration
+Apply share that explicit second phase. The obsolete write-only `hdvPath` and
+`hdvStatus` caches were removed from `MainWindow`. The subsequent live-session
+overlay is authoritative for empty drives too, so an image ejected after the
+last settings save cannot be resurrected during a profile change.
+
+Immediate media mutation is now behind the same storage boundary. Disk II and
+mountable-media commands are addressed by slot/drive or slot/bay;
+`StorageCoordinator` resolves the live card under the machine lock, performs
+mount/eject/write-back/type changes, then persists copied settings state after
+unlocking. The Disk II/HDV panels, menus, unified library, kiosk, file dialogs,
+Floppy Emu and immediate media panel no longer call Disk II, HDV or CFFA
+mutation methods directly. Eject-all now covers drive 2 and aggregates failed
+write-backs while leaving those dirty media mounted. Architecture checks pin
+this direction and deterministic tests cover per-card key routing,
+session-only HDV exclusions, synthetic block images and the bulk operation.
+
+The remaining 3.5-inch/SmartPort routing has moved out of `MainWindow` too.
+`StorageCoordinator` now supplies the authoritative two-drive snapshot and
+routes mount, eject, write-back, WOZ→PO conversion and HDV SmartPort fallback.
+A SmartPort card and the on-board pair can no longer disagree about which
+media the panel is showing. Unit-type replacement explicitly flushes the
+outgoing unit before destruction, settings are saved after unlocking, and
+eject-all includes hidden on-board 3.5-inch media. SmartPort cards are now
+constructed empty and their unit types/images join the post-topology restore
+phase. Tests cover both routing targets, persistence, successful conversion on
+a private WOZ copy and SmartPort settings restoration.
+
+Frontend concurrency is a PR gate rather than a manual promise. The new Linux
+`frontend-tsan` job instruments the complete frontend and runs nine targeted
+contracts: CPU + AI-like reader + panel snapshots/commands while cards are
+replugged, a real headless ImGui Memory Viewer frame, rewind transport,
+audio-source teardown and disk-path publication. The same campaign passes
+locally under AppleClang ThreadSanitizer (9/9, no diagnostics).
+
+`Memory` now routes `$C0xx` accesses to `Keyboard` and `PaddleInputs` instead of
+owning their latches, paste queue, modifiers and RC timing itself. A new
+contract suite first froze the II/IIe mirrors, strobe semantics, low-seven-bit
+status behaviour, buttons and exact paddle thresholds.
+
+The optional C++17 SDK remains deliberately one archive and one public header.
+Its CTest contract installs it to an isolated prefix, configures the standalone
+example through `find_package(pom2_core)` and the `POM2::core` target, then builds and runs that
+consumer. Reusable deterministic fakes for the SSC, FujiNet and W5100 seams
+exercise device behaviour without opening host sockets, serial listeners or
+processes. The first slice of the formerly monolithic test CMake file now uses a
+shared headless-test constructor, including the portable PR contract.
+
 ## 2026-08-19 (later, 8) — A 3.5" WOZ can be converted to a writable .po
 
 **Reported as "why can't I save to a WOZ?", from a real case: The New Print
@@ -54,8 +242,9 @@ by a card pointer: the status bar builds its rows as a value snapshot taken
 under `stateMutex` and released before drawing, so a pointer captured then
 could belong to a card a Slot-Config Apply has since destroyed. It re-resolves
 through the SlotBus, clears whichever settings key would otherwise remount the
-image on the next launch (`disk_path_slotN`, `smartport_slotN_unitK_path`,
-`hdv_path`, `cffa_slotN_path` — the SmartPort one is written eagerly at mount,
+image on the next launch (`disk_path_slotN`, `disk_path_slotN_drive2`,
+`smartport_slotN_unitK_path`, `hdv_path`, `cffa_slotN_path` — the SmartPort
+one is written eagerly at mount,
 so an eject that skipped it would silently resurrect the image), and leaves the
 medium **mounted** when its write-back save fails, rather than losing the
 writes.

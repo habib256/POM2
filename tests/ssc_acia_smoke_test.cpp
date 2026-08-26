@@ -32,11 +32,13 @@
 //     cmdReg — MAME `mos6551.cpp:264-270`.
 
 #include "SuperSerialCard.h"
+#include "fakes/FakeSuperSerialTransport.h"
 
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <memory>
 #include <vector>
 
 namespace {
@@ -56,6 +58,46 @@ constexpr uint8_t SR_TDRE          = 0x10;
 constexpr uint8_t SR_DCD           = 0x20;
 constexpr uint8_t SR_DSR           = 0x40;
 constexpr uint8_t SR_IRQ           = 0x80;
+
+void testInjectedTransportSeam()
+{
+    SuperSerialCard ssc(2);
+    assert(!ssc.hasTransport());
+    assert(!ssc.startListening(7000));
+    assert(ssc.getPort() == 7000);
+
+    auto transport = std::make_unique<pom2::test::FakeSuperSerialTransport>(
+        [&ssc](bool connected) { ssc.setTransportConnected(connected); });
+    pom2::test::FakeSuperSerialTransport* rawTransport = transport.get();
+    ssc.setTransport(std::move(transport));
+    assert(ssc.hasTransport());
+    assert(ssc.startListening(7001));
+    assert(ssc.isListening());
+    assert(ssc.clientConnected());
+    assert(ssc.getPort() == 7001);
+
+    std::vector<uint8_t> keyboard;
+    ssc.setKeyboardSink([&keyboard](uint8_t b) { keyboard.push_back(b); });
+    const uint8_t incoming[] = {'O', 'K'};
+    ssc.deliverTransportBytes(incoming, sizeof(incoming), true);
+    assert(keyboard.size() == 2 && keyboard[0] == 'O' && keyboard[1] == 'K');
+
+    ssc.deviceSelectWrite(kCommandAddr, 0x01); // DTR asserted
+    ssc.deviceSelectWrite(kRdrAddr, 'T');
+    uint8_t outgoing[2]{};
+    assert(ssc.drainTransportTx(outgoing, sizeof(outgoing)) == 1);
+    assert(outgoing[0] == 'T');
+
+    const int resetsBefore = rawTransport->pacingResetCount;
+    ssc.deviceSelectWrite(kControlAddr, 0x0E);
+    assert(rawTransport->pacingResetCount == resetsBefore + 1);
+
+    ssc.stopListening();
+    assert(!ssc.isListening());
+    assert(!ssc.clientConnected());
+    assert(rawTransport->stopCount >= 1);
+    std::printf("  ok: injected host transport seam\n");
+}
 
 void testDtrAndCommandDecode()
 {
@@ -503,6 +545,7 @@ void testRomPrInEntriesInitAcia()
 
 int main()
 {
+    testInjectedTransportSeam();
     testDtrAndCommandDecode();
     testTdrWhileDtrDeasserted();
     testEchoLoopback();

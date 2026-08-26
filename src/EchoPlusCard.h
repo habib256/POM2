@@ -51,7 +51,7 @@
 #ifndef POM2_ECHO_PLUS_CARD_H
 #define POM2_ECHO_PLUS_CARD_H
 
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "SlotPeripheral.h"
 #include "Ssi263.h"
 

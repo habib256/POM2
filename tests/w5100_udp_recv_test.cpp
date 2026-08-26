@@ -38,6 +38,7 @@
 
 #include "SocketCompat.h"
 #include "W5100Device.h"
+#include "W5100HostSockets.h"
 
 #include <cassert>
 #include <cstdint>
@@ -151,6 +152,7 @@ private:
 void openUdpSocket(W5100Device& dev, LocalPeer& peer, uint8_t rmsr)
 {
     dev.reset(true);
+    dev.setSocketFactory(makeW5100HostSocketFactory());
     dev.writeValueAt(kW5100Rmsr, rmsr);
 
     dev.writeValueAt(static_cast<uint16_t>(kS0 + kW5100SnMr), kW5100SnMrUdp);

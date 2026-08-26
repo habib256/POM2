@@ -35,6 +35,7 @@
 #include "NetworkBackend.h"
 #include "UthernetIICard.h"
 #include "W5100Device.h"
+#include "W5100HostSockets.h"
 
 #include <arpa/inet.h>
 #include <cassert>
@@ -203,6 +204,16 @@ void testPowerOnDefaults()
         assert(info.txCapacity == 2048);
     }
 
+    // The device layer has no implicit host dependency: without an injected
+    // runtime factory, TCP OPEN fails closed and creates no native socket.
+    const uint16_t base = socketBase(0);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr),
+            pom2::kW5100SnMrTcp);
+    writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnCr),
+            pom2::kW5100SnCrOpen);
+    assert(card.chip().socketInfo(0).status == pom2::kW5100SnSrClosed);
+    assert(!card.chip().socketInfo(0).hasHostSocket);
+
     std::printf("  power-on defaults OK\n");
 }
 
@@ -286,6 +297,7 @@ void testTcpSession()
 {
     LocalListener listener;
     UthernetIICard card(3);
+    card.setSocketFactory(pom2::makeW5100HostSocketFactory());
     // Deliberately no NetworkBackend: TCP must work without one.
     assert(card.backend() == nullptr);
 
@@ -438,6 +450,7 @@ void testSnapshotRoundTrip()
 {
     LocalListener listener;
     UthernetIICard card(3);
+    card.setSocketFactory(pom2::makeW5100HostSocketFactory());
 
     constexpr size_t kSock = 1;
     const uint16_t base = socketBase(kSock);
@@ -493,6 +506,7 @@ void testSnapshotRoundTrip()
 /// register base. Shared plumbing for the hardening tests below.
 uint16_t connectSocket0(UthernetIICard& card, LocalListener& listener)
 {
+    card.setSocketFactory(pom2::makeW5100HostSocketFactory());
     const uint16_t base = socketBase(0);
     writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr), pom2::kW5100SnMrTcp);
     writeWordAt(card, static_cast<uint16_t>(base + pom2::kW5100SnPort0), 1234);
@@ -580,6 +594,7 @@ void testRmsrShrinkUnderStagedData()
 void testConnectGating()
 {
     UthernetIICard card(3);
+    card.setSocketFactory(pom2::makeW5100HostSocketFactory());
     const uint16_t base = socketBase(0);
 
     writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr), pom2::kW5100SnMrUdp);

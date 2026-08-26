@@ -48,7 +48,7 @@
 #ifndef POM2_FLOPPY_SOUND_DEVICE_H
 #define POM2_FLOPPY_SOUND_DEVICE_H
 
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "FloppySoundSink.h"
 
 #include <array>

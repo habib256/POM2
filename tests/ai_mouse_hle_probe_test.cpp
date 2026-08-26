@@ -133,7 +133,7 @@ int main()
     ctrl.setMode(EmulationController::Mode::Stopped);
 
     pom2::AiControlServer srv;
-    srv.attach(&ctrl, nullptr, nullptr, nullptr);
+    srv.attach(&ctrl, nullptr);
     const bool started = srv.start(kTestPort);
     assert(started && "AiControlServer failed to bind test port 36503");
 

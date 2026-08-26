@@ -22,13 +22,11 @@
 #include "Mat4.h"           // pom2::OrbitCamera member (3D voxel view)
 #include "MouseGrab.h"      // pom2::mousegrab::Context (mouseGrabContext)
 #include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
-#include "PrinterScreenDump.h" // pom2::ScreenDumpOptions member
 
 #include "imgui.h"  // ImU32 / ImVec2 used in struct MemRegion + member types
 
 #include <array>
 #include <cstdint>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -37,7 +35,6 @@ struct GLFWwindow;
 
 class Apple2Display;
 class AudioSource;
-class ClockCard;
 class DiskIICard;
 class EmulationController;
 // The state-lock handle (EmulationController.h). Forward-declared rather
@@ -46,19 +43,22 @@ class EmulationController;
 namespace pom2 { class StateAccess; }
 class JoystickInput;
 class LeChatMauveCard;
-class EchoPlusCard;
-class EchoPlusTMS5220Card;
-class GrapplerCard;
-class MockingboardCard;
-class MouseCard;
-class MouseCardAppleWin;
-class PhasorCard;
-class PrinterCard;
 class ProDOSHardDiskCard;
 class SlotPeripheral;
-class SuperSerialCard;
 
 namespace pom2 {
+    class AudioCoordinator;
+    class DebugCoordinator;
+    class DevicePanelCoordinator;
+    class MouseCoordinator;
+    struct MainWindowUiState;
+    class NetworkCoordinator;
+    class PrinterCoordinator;
+    class SlotCardFactory;
+    class SlotConfigurationCoordinator;
+    class SlotProvisioningCoordinator;
+    class SlotRebuildCoordinator;
+    class StorageCoordinator;
     class AiControlServer;
     class CassetteDeck_ImGui;
     class Rewind_ImGui;
@@ -69,7 +69,6 @@ namespace pom2 {
     struct NtscParams;
     class DiskController_ImGui;
     class DiskLibrary_ImGui;
-    class CffaCard;
     class ProDOSBlockCard;
     class HdvController_ImGui;
     class JoystickPanel_ImGui;
@@ -86,7 +85,7 @@ namespace pom2 {
     class ImageWriter_ImGui;
     class UthernetCard;
     class UthernetIICard;
-    class FujiNetCard;
+    class FujiNetHost;
     class Uthernet_ImGui;
     class Toolbar_ImGui;
     class CommandPalette_ImGui;
@@ -146,7 +145,7 @@ public:
 
     /// Host caps-lock LOCK state, latched from the GLFW modifier bits (see
     /// glfw_key_callback). Surfaced as a status-bar badge.
-    void setHostCapsLock(bool on) { hostCapsLock_ = on; }
+    void setHostCapsLock(bool on);
 
     void render();
 
@@ -170,7 +169,7 @@ public:
     /// Release: Ctrl+Alt+G, middle click, focus loss, or card unplug.
     void setMouseGrab(bool on);
     void toggleMouseGrab();
-    bool mouseGrabbed() const { return mouseGrabbed_; }
+    bool mouseGrabbed() const;
 
     /// GLFW file-drop callback (installed by main.cpp). Routes the first
     /// recognised disk image among `paths` through `insertAndBootImage`
@@ -232,12 +231,12 @@ public:
     /// UI save sites, not just the few that remember to check).
     /// Out-of-line: Settings is only forward-declared here.
     void setKioskMode(bool k);
-    bool kioskMode() const { return kiosk_; }
+    bool kioskMode() const;
     /// Whether settings writes are suppressed. True while in kiosk, and
     /// for the WHOLE session when launched with `--kiosk` (see
     /// `launchedInKiosk_`) — toggling to the GUI to look around must not
     /// silently start rewriting the user's state.cfg.
-    bool settingsReadOnly() const { return kiosk_ || launchedInKiosk_; }
+    bool settingsReadOnly() const;
 
     /// Runtime GUI ↔ kiosk transition: flips the flag AND moves the GLFW
     /// window between exclusive full-screen and its previous windowed
@@ -267,15 +266,27 @@ private:
     // ↔ Color 4-bit) rather than snapping to a single default each way.
     Apple2Display::HiResMode lastColorHiResMode_ = Apple2Display::HiResMode::ColorNTSC;
     Apple2Display::HiResMode lastMonoHiResMode_  = Apple2Display::HiResMode::MonoWhite;
-    std::unique_ptr<MemoryViewer_ImGui>           memViewer;
     std::unique_ptr<pom2::Settings>               settings;
+    std::unique_ptr<pom2::DevicePanelCoordinator> devicePanelCoordinator_;
+    std::unique_ptr<pom2::MouseCoordinator>       mouseCoordinator_;
+    std::unique_ptr<pom2::MainWindowUiState>      uiState_;
+    std::unique_ptr<pom2::AudioCoordinator>       audioCoordinator_;
+    std::unique_ptr<pom2::DebugCoordinator>       debugCoordinator_;
+    std::unique_ptr<pom2::NetworkCoordinator>     networkCoordinator_;
+    std::unique_ptr<pom2::PrinterCoordinator>     printerCoordinator_;
+    std::unique_ptr<pom2::SlotCardFactory>        slotCardFactory_;
+    std::unique_ptr<pom2::SlotConfigurationCoordinator> slotCoordinator_;
+    std::unique_ptr<pom2::StorageCoordinator>     storageCoordinator_;
+    std::unique_ptr<pom2::SlotProvisioningCoordinator>
+                                                slotProvisioningCoordinator_;
     std::unique_ptr<pom2::CassetteDeck_ImGui>     cassetteDeck;
     std::unique_ptr<pom2::Rewind_ImGui>           rewindPanel_;
     // One Disk II controller-panel per plugged DiskIICard (option C
     // 2026-05-15: DiskII can now appear in multiple slots, so the user
     // can wire DiskII slot 6 + DiskII slot 4 = 4 drives 5.25"). The
     // vector is rebuilt by `plugSlotsFromSettings`; index N corresponds
-    // to `diskCards[N]`. `diskPanel` keeps a reference to the *primary*
+    // to StorageCoordinator's slot-sorted Disk II inventory. `diskPanel`
+    // keeps a reference to the *primary*
     // (lowest-slot) panel so legacy menu wiring stays unchanged.
     std::vector<std::unique_ptr<pom2::DiskController_ImGui>> diskPanels;
     pom2::DiskController_ImGui*                              diskPanel = nullptr;
@@ -313,62 +324,11 @@ private:
     std::unique_ptr<hgrpaint::HgrPaintEditor>     hgrPaintEditor;
     // Sprite editor (src/hgrsprite/) — reuses the same host seam.
     std::unique_ptr<hgrsprite::HgrSpriteEditor>   hgrSpriteEditor;
-    // All plugged Disk II cards, sorted by slot ascending. `diskCard`
-    // (below) is the primary alias = `diskCards.empty() ? nullptr :
-    // diskCards.front()`. Most legacy code paths use `diskCard` directly
-    // (auto-turbo, AI control attach, menu Eject); the panel render loop
-    // iterates `diskCards`.
-    std::vector<DiskIICard*>     diskCards;
-    DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
-    ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
-    pom2::CffaCard*              cffaCard = nullptr;       // non-owning, owned by SlotBus
-    LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
-    // Plural alias: the //c built-in lineup ships TWO SSC-compatible
-    // serial ports (printer + modem). `sscCard` is the primary alias =
-    // `sscCards.empty() ? nullptr : sscCards.front()` (kept for legacy
-    // callers like SnapshotIO + AI control). Multi-instance code paths
-    // (menu, panel tabs, settings persistence) iterate `sscCards`.
-    std::vector<SuperSerialCard*> sscCards;
-    SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
-    ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
-    MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
-    // AppleWin-style HLE mouse — alternative to MouseCard (only one of
-    // the two is plugged at a time). Both implement the same setHostMouse
-    // API so the UI input layer is variant-agnostic.
-    MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
-    // These three are "last one plugged wins" aliases used by the mixer /
-    // panels. They are NOT a complete inventory: several of these card
-    // types are distinct catalog keys that can coexist (e.g. "mockingboard"
-    // = Variant::AC in one slot AND "mockingboard_c" = Variant::SoundII in
-    // another, which the single-instance uniqueness rule does not merge).
-    // Never drive AudioDevice teardown off them — see registeredAudioSources_.
-    MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
-    PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
-    EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
-    EchoPlusTMS5220Card*         echoPlusTmsCard  = nullptr; // non-owning, owned by SlotBus
-    pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
-    PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
-    GrapplerCard*                grapplerCard     = nullptr; // non-owning, owned by SlotBus
-    // Ethernet. Both are multi-pluggable in principle but the panel and
-    // settings track one of each — two NICs on one virtual network is a
-    // configuration nobody asks for, and each would need its own MAC.
-    pom2::UthernetCard*          uthernetCard     = nullptr; // non-owning, owned by SlotBus
-    pom2::UthernetIICard*        uthernetIICard   = nullptr; // non-owning, owned by SlotBus
-    /// FujiNet relay. Single-instance on purpose: the card holds a listening
-    /// socket (or an open serial device), and a second one would just fail to
-    /// bind / open the same endpoint.
-    pom2::FujiNetCard*           fujiNetCard      = nullptr; // non-owning, owned by SlotBus
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
     /// failure message.
     std::string                  mouseRomStatus;
-
-    /// Canonical per-slot card-type strings, as resolved by
-    /// `plugSlotsFromSettings()` (and persisted on shutdown). Index 0 is
-    /// the language-card slot and is always empty here.
-    /// Values: "", "diskii", "hdv", "ssc", "clock", "chatmauve", "mouse".
-    std::array<std::string, 8> slotCards{};
 
     std::unique_ptr<JoystickInput> joystick;
     GLFWwindow*                    window = nullptr;
@@ -394,9 +354,6 @@ private:
     // any HiResMode. Lazily initialised; off (persisted under `show_3d_voxel`).
     std::unique_ptr<pom2::Voxel3DRenderer> voxel3d_;
     pom2::OrbitCamera voxelCam_;
-    bool         show3dVoxel_ = false;
-    bool         showVoxelSettings_ = false;
-    bool         showNtscSettings = false;
     // Master ON/OFF for the whole CRT effect stack (the button at the top of
     // the CRT Settings window). When off, every pipeline presents its raw
     // framebuffer — the colour demod still runs, only the CRT glass is
@@ -471,148 +428,12 @@ private:
     float          dpiScale_ = 1.0f;
     void applyUiTheme();
 
-    // Host caps-lock lock state (status-bar badge). Latched from GLFW
-    // modifier bits, so it is only known once the user has pressed a key —
-    // a session that never touches the keyboard shows no badge even if
-    // caps-lock happens to be on. Acceptable: the badge exists to explain
-    // unexpected uppercase, which requires typing in the first place.
-    bool hostCapsLock_ = false;
-
-    bool         showMemViewer = false;
-    bool         showMemoryBar      = false;   // tall vertical map
-    bool         showMemoryBarH     = false;   // wide-short horizontal variant
-    bool         showMemoryGrid     = false;   // 16×16 page grid
-    // Default UI layout: Apple II Screen on the left, HDV top-right,
-    // Disk II bottom-right. Every other panel (Emulation controls,
-    // Cassette deck, Memory viewers, Joystick, Le Chat Mauve) starts
-    // hidden — toggle from the Debug / Hardware menus.
-    bool         showCassetteDeck = false;
-    bool         showHgrPaintEditor = false;
-    bool         showHgrSpriteEditor = false;
-    // Per-frame 64 KB main-RAM (+ aux) snapshots handed to the HGR Paint
-    // editor as its canvas/shadow read source (see renderHgrPaintWindow).
-    std::vector<uint8_t> hgrPaintMem_;
-    std::vector<uint8_t> hgrPaintAux_;
-    bool         showRewindBar    = false;
-    bool         rewindHeldPrev_  = false;   // hold-to-rewind edge tracker (F6 + toolbar)
-    // Per-card disk panels (Disk II / Disk 3.5" / HDV) are off by
-    // default since 2026-05-15 — the unified `Disk Library` panel
-    // covers the 1-click insert+boot path for all three formats with
-    // a single window. Users open the per-card panels on demand from
-    // Devices menu when they need the deep state (track number, motor
-    // LED, write-back checkbox, etc.).
-    bool         showDiskPanel   = false;
-    bool         showDisk35Panel = false;
-    bool         showHdvPanel    = false;
-    bool         showSmartPortPanel = false;
-    bool         showFujiNetPanel   = false;
-    bool         showJoystickPanel = false;
-    bool         showChatMauvePanel = false;
-    bool         showSscPanel       = false;
-    // Ethernet panel — Uthernet I / II status, host transport, W5100
-    // socket table. One window, tabbed between whichever cards are in.
-    bool         showEthernetPanel  = false;
+    // Panels which are created lazily or do not already live beside the
+    // main composition objects above. Their mutable working data is held by
+    // the opaque MainWindowUiState rather than expanding this public header.
     std::unique_ptr<pom2::Uthernet_ImGui> ethernetPanel;
-    // Dallas DS1216E "No-Slot Clock" diagnostics panel — pattern-matcher
-    // counter + clock-readout bit counter so the user can verify ProDOS
-    // walked the magic key successfully.
-    bool         showNoSlotClockPanel = false;
-    // Printer panel — view spool buffer, save as .txt, clear.
-    bool         showPrinterPanel   = false;
-    // ImageWriter II paper-tray window (rendered printout). Visible by
-    // default: it is one of the three tabs the default dock layout seeds to
-    // the right of the screen (see `applyDockLayout`, DockLayout::Reset).
-    bool         showImageWriterPanel = true;
-    // How many spool bytes have already been fed to `imageWriter`, so a
-    // poll only picks up what arrived since the previous frame. Re-seated
-    // whenever the source card changes or its spool is cleared — see
-    // `printerFeedCursor` (PrinterFeedCursor.h) for the two rules.
-    size_t       imageWriterConsumed = 0;
-    // Identity of the card the cursor above counts against. The three
-    // spools grow independently, so a cursor carried across a source
-    // switch (e.g. PrinterCard unplugged, SSC tap takes over) would skip
-    // or replay part of the new source's stream.
-    const void*  imageWriterSource = nullptr;
-    /// Whether the printer's full input buffer holds the ACK line and so
-    /// blocks the guest — the real handshake. OFF by default: it is
-    /// faithful (a real Apple II *did* sit there for minutes printing a
-    /// Print Shop card) but an emulator that stops responding for two
-    /// minutes reads as a crash, and the printout builds up at the same
-    /// speed either way. Opt in from the ImageWriter panel.
-    bool         printerBackPressure = false;
-    // Pending path the user has typed into the "Save spool as…" text box.
-    // Auto-suggested with a timestamped filename under the per-user printouts
-    // first open; reused across save clicks within the same session.
-    std::string  printerSavePath;
-    // Last save outcome — shown under the Save button, persists until the
-    // user saves again or closes the panel. Empty = nothing saved yet.
-    std::string  printerLastSaveStatus;
-    // Mockingboard live state panel — shows VIA T1 / IFR / IER and the
-    // two AY-3-8910 register banks. Primary use: diagnose silent
-    // IRQ-driven music drivers (Ultima IV, Nox Archaist) by seeing
-    // whether the music handler is actually writing AY registers.
-    bool         showMockingboardPanel = false;
-    // Phasor live state panel — same layout as Mockingboard but
-    // widened to 4 AY-3-8913 banks, with a mode banner (MB / Phasor /
-    // EchoPlus) and clockScale at the top.
-    bool         showPhasorPanel       = false;
-    // Echo+ panel — single SSI263 register dump + current phoneme +
-    // A/!R + duration countdown.
-    bool         showEchoPlusPanel     = false;
-    // Audio mixer — master + per-channel sliders/mute (Speaker, Cassette,
-    // Mockingboard, Disk 5.25", Disk 3.5"). Replaces the volume sliders
-    // that used to live in the Status panel. Persisted as `show_mixer`.
-    bool         showAudioMixer     = false;
-    // Mouse Inspector — live readout of host cursor position, Apple II
-    // Screen widget rect, MouseCard 8-bit counter + sub-pixel accumulator,
-    // AppleWin HLE firmware state (iX/iY/clamps/mode), and the firmware
-    // screen holes. Off by default; toggled from Panels menu; persisted as
-    // `show_mouse_inspector`. Helper for future cursor-alignment tuning.
-    bool         showMouseInspector = false;
-    // Optional CSV log path for the Mouse Inspector. Empty = not logging.
-    // `mouseInspectorLogStream` is opened when logging starts and closed
-    // when it stops; flushed after every row so a crash mid-tune still
-    // leaves a usable trace on disk.
-    std::string  mouseInspectorLogPath;
-    std::unique_ptr<std::ofstream> mouseInspectorLogStream;
-    double       mouseInspectorLastLogTime = 0.0;
-    // Slot Configuration: per-slot card assignment (built-ins greyed out).
-    // Staged — edits take effect on Apply, which restarts the machine.
-    // Persisted as `show_slot_config`. Visible by default: one of the three
-    // tabs the default dock layout seeds right of the screen.
-    bool         showSlotConfigPanel = true;
-    // Internal disks + mountable ports of the plugged storage cards. Split
-    // out of Slot Configuration 2026-07-28: the two ran opposite interaction
-    // models in one window (staged vs immediate), which is exactly the
-    // confusion the 2026-07-27 pass papered over with banners. Persisted as
-    // `show_media_panel`; Devices → Internal Disks & Media.
-    bool         showMediaPanel = false;
-    // ROM Status: every dump POM2 probes, present/missing, with what breaks
-    // without it. POM2 ships no ROMs, so this is the first place to look
-    // when a profile boots the wrong firmware or a card won't plug.
-    // Persisted as `show_rom_status`; Help → ROM Status.
-    bool         showRomStatusPanel = false;
     std::unique_ptr<pom2::RomStatus_ImGui> romStatusPanel;
-    // Abstraction Levels: which subsystems POM2 emulates as silicon (LLE) and
-    // which as a service (HLE), which level is running RIGHT NOW (a missing
-    // dump degrades several of them silently), and the four boundaries the
-    // user can move. Companion to docs/lle_vs_hle.md.
-    // Persisted as `show_abstraction`; Help → Abstraction Levels.
-    bool         showAbstractionPanel = false;
     std::unique_ptr<pom2::AbstractionLevels_ImGui> abstractionPanel;
-    // BMOW Floppy Emu panel. Off by default; Devices → Floppy Emu.
-    // Persisted as `show_floppy_emu`. `floppyEmuFavActive_` tracks the
-    // Favorites-vs-File-Explorer toggle; `floppyEmuStatus` is the last
-    // mount/eject/mode message shown under the OLED.
-    bool         showFloppyEmu       = false;
-    bool         floppyEmuFavActive_ = false;
-    std::string  floppyEmuStatus;
-    bool         showAiControlPanel  = false;
-    // Unified disk browser (3-tab panel: 5.25/3.5/HDV). On by default
-    // since 2026-05-15 — replaces the per-card library lists as the
-    // primary way to browse + mount images. Toggled from File menu.
-    // Persisted as `show_disk_library`.
-    bool         showDiskLibrary     = true;
     // Initialised in the constructor body from SuperSerialCard::kDefaultPort
     // so we don't have to drag SuperSerialCard.h into this header.
     int          sscPortInput       = 0;
@@ -622,6 +443,10 @@ private:
     // start()'d if the persisted setting was on at last shutdown. Exposed
     // via the Hardware menu's AI Control panel.
     std::unique_ptr<pom2::AiControlServer> aiServer;
+    // Owns the ordered topology transaction shared by profile switches and
+    // Slot Configuration Apply. Declared after every callback dependency so
+    // it is destroyed first and never retains a callable into a dead owner.
+    std::unique_ptr<pom2::SlotRebuildCoordinator> slotRebuildCoordinator_;
     // Initialised in the constructor body from AiControlServer::kDefaultPort
     // for the same reason as sscPortInput above.
     int          aiPortInput   = 0;
@@ -642,46 +467,6 @@ private:
     // (20313 PAL, 68180 //c+) so the restore never underclocks.
     int         diskSavedCyclesPerFrame = 17045;
     bool        diskTurboActive = false;
-
-    // ProDOS hard disk / HDV state. The default mounted image is whatever
-    // the constructor finds first under hdv/ (alphabetical) — no auto-boot.
-    // Mount-dialog state lives in `hdvPanel`.
-    std::string hdvPath;
-    std::string hdvStatus;
-    /// FujiNet: last link error / info line, and the cached serial-device
-    /// list (scanning /dev or the registry every frame would be silly, and
-    /// the list only changes when hardware is plugged in).
-    std::string fujiNetStatus_;
-    std::vector<std::pair<std::string, std::string>> fujiNetSerialDevices_;
-    /// Helper program the user configured (empty = auto-detect), and what
-    /// auto-detection last resolved it to.
-    std::string fujiNetHelperPath_;
-    std::string fujiNetHelperResolved_;
-    /// Threshold / inversion for Machine ▸ Print screen. Auto-invert by
-    /// default, so a text screen prints black-on-white instead of flooding
-    /// the sheet.
-    pom2::ScreenDumpOptions printerDumpOptions_;
-    /// How many sheets the printer had ejected when the archiver last ran.
-    /// Compared against ImageWriter's MONOTONIC eject counter — the page
-    /// stack itself is capped at 32 and reused, so counting entries there
-    /// would miss pages pushed out of it between two frames.
-    uint64_t printerArchivedSheets_ = 0;
-
-    // Cassette load/save dialog state moved to CassetteDeck_ImGui.
-    std::string tapeStatusMessage;
-    double      tapeStatusUntil = 0.0;
-    double      lastFrameTime   = 0.0;
-
-    // Paste-from-file dialog state.
-    bool        showPasteFileDialog = false;
-    std::string pasteDialogPath;
-    bool        pasteAutoUppercase  = false;
-
-    // Slot number of the DiskII the Insert-disk popup currently routes to.
-    // Latched when any panel sets `insertDialogOpen` true; cleared when
-    // the popup closes. Lets the popup survive panel pointer churn (rare
-    // profile-switch races).
-    int         diskDialogTargetSlot = -1;
 
     // Boot-time ROM probing.
     std::string romPath = "roms/apple2.rom";
@@ -704,53 +489,16 @@ private:
     // through `applyProfile()` which keeps this in sync.
     pom2::SystemProfile activeProfile;
 
-    // Slot Config panel working-copy sync flag. Reset to false by
-    // applyProfile()/restartEmulationFromSettings() so the next render
-    // re-seeds the draft from the freshly-rebuilt slotCards[]; otherwise the
-    // panel shows — and Apply persists — the previous profile's stale slots.
-    bool slotDraftInited_ = false;
-
-    bool showAbout = false;
     // Welcome / Quick Start panel. Opened from Help → Welcome, and
     // auto-opened on first launch when no main ROM was found so a
     // newcomer sees where to drop firmware/disks instead of a bare
     // "NO ROM" screen. `romLoaded_` mirrors the last ROM-load result so
     // the panel can show the no-ROM guidance prominently.
-    bool showWelcomePanel = false;
     bool romLoaded_       = false;
-    // Apple ][+ photo shown in the About dialog. Loaded lazily on first
-    // open via stb_image; texture freed in ~MainWindow. `tried_` blocks
-    // repeated reload attempts if the file is missing.
-    unsigned aboutImageTex_ = 0;
-    int      aboutImageW_   = 0;
-    int      aboutImageH_   = 0;
-    bool     aboutImageTried_ = false;
-
-    // Clickable Apple //e keyboard (pic/Keyboard_AppleIIe.jpeg + the measured
-    // hotspot table). Same lazy-load-once contract as the About photo, and
-    // the texture is freed in the same place. Persisted as `show_keyboard`;
-    // Devices → Apple //e Keyboard.
-    bool         showKeyboardPanel = false;
+    // Lazy panel object; its texture/cache working state lives in uiState_.
     std::unique_ptr<pom2::Keyboard_ImGui> keyboardPanel;
-    unsigned     kbImageTex_   = 0;
-    int          kbImageW_     = 0;
-    int          kbImageH_     = 0;
-    bool         kbImageTried_ = false;
-    std::string  kbImageError_;
 
-    // Kiosk mode (set by `--kiosk`): render() draws only the Apple II
-    // screen, full-viewport, with no menu bar / toolbar / panels.
-    bool kiosk_ = false;
-    /// True when the SESSION was launched with `--kiosk`. Such a session
-    /// stays settings-read-only for its whole life even if the user
-    /// toggles to the windowed GUI to look around: the README promises a
-    /// kiosk run "can't disturb your desktop setup", and that promise is
-    /// about the session, not the current window state.
-    bool launchedInKiosk_ = false;
-    // Windowed geometry saved when entering kiosk, restored on exit.
-    // -1 width = "nothing saved yet" (started in kiosk from the CLI).
-    int  savedWinX_ = 0, savedWinY_ = 0, savedWinW_ = -1, savedWinH_ = 0;
-    bool savedWinMaximized_ = false;
+    // Kiosk flags and saved window geometry live in uiState_.
     /// Persist the current windowed geometry into Settings (`window_x/y/w/h`,
     /// `window_maximized`) and restore it back into the members. Without
     /// this the geometry lived only in memory, so there was nothing to
@@ -787,53 +535,10 @@ private:
     enum class KioskZone { Games, Actions };
     static constexpr int kKioskActionCount = 5;   // Restart/Keyboard/ROMs/ExitKiosk/Quit
 
-    bool        kioskMenuOpen_  = false;
     KioskPage   kioskPage_      = KioskPage::List;
     KioskZone   kioskZone_      = KioskZone::Games;
-    int         kioskActSel_    = 0;                // 0..kKioskActionCount-1
-    int         kioskKeySel_    = 0;                // key-grid cell
-    int         kioskRomDirSel_ = 0;                // ROM-folders page cursor
-    int         kioskBrowseSel_ = 0;                // directory-browser cursor
-
-    std::vector<std::string> kioskDiskPaths_;   // absolute image paths (games)
-    std::vector<std::string> kioskDiskLabels_;  // display file names
-    int                      kioskDiskSel_ = 0;
-    std::string              kioskStatus_;      // last mount / info line
-    std::string              kioskMountedPath_; // disk in the boot drive (● mark)
-
-    std::vector<std::string> kioskRomDirs_;     // extra scan folders (persisted)
-    bool                     kioskRomDirsLoaded_ = false;  // lazy-load guard
-
-    // Directory browser scratch (populated while KioskPage::Browse is up).
-    std::string              kioskBrowseDir_;
-    std::vector<std::string> kioskBrowseSubdirs_;
-    std::vector<std::string> kioskBrowseShortcutPaths_;
-    std::vector<std::string> kioskBrowseShortcutLabels_;
-
-    // Temporal auto-repeat for held navigation (see JoystickInput::UiNav).
-    bool   kioskNavHeld_ = false;
-    double kioskNavNextT_ = 0.0;   // ImGui::GetTime() of next allowed step
-    // Whether we actively parked the worker (Mode::Stopped) for the menu, so
-    // we only resume (Mode::Running) a machine we paused ourselves.
-    bool   kioskPausedByMenu_ = false;
-    /// Was the machine already stopped when the menu "paused" it? If so,
-    /// closing the menu must NOT resume — that pause belongs to the user.
-    bool   kioskPauseWasAlreadyStopped_ = false;
-    // Menu → game input isolation across the close (see
-    // pollJoystickAndPushToMemory): the poll samples kioskMenuOpen_ a frame
-    // behind updateKioskMenu, and Circle/Cross double as menu B/A and Apple
-    // PB0/PB1 — swallow the shared buttons until the pad is fully released.
-    bool   kioskMenuWasOpen_ = false;
-    bool   kioskSwallowPad_  = false;
-
-    // One-shot dedup for the "pad bound / gamepad-mapped" diagnostic log.
-    int  loggedJoyHost_    = -2;   // -2 = never logged
-    bool loggedJoyGamepad_ = false;
-
-    // In-game D-pad → Apple II arrow-key auto-repeat (IIe-style: fire on press,
-    // then repeat while held). Index 0..3 = up/down/left/right.
-    bool   padArrowHeld_[4]  = { false, false, false, false };
-    double padArrowNextT_[4] = { 0.0, 0.0, 0.0, 0.0 };
+    // Mutable menu contents, cursors, repeat timers, pause bookkeeping and
+    // joystick diagnostics are frontend-only working state in uiState_.
 
     /// Poll gamepad/keyboard and drive the whole kiosk menu state machine
     /// (open/close, page/zone navigation, activation). Once per frame in
@@ -871,27 +576,18 @@ private:
     void kioskSaveRomDirs();                            // write persisted list
     bool kioskPruneRomDirs();                          // drop vanished folders
 
-    // Slot of the HDV card auto-plugged by ensureHdvCardForBoot for a CLI
-    // `POM2 <image.hdv>` boot (-1 = none). Session-local: NOT persisted, so
-    // ~MainWindow must skip writing slot_N_card / hdv_path for this slot.
-    int autoProvisionedHdvSlot_ = -1;
-
-    // Same contract for the SmartPort card auto-plugged by the Floppy Emu
-    // panel's ensureSmartPort (-1 = none): session-local, never persisted.
-    int autoProvisionedSmartPortSlot_ = -1;
-
 #ifdef __EMSCRIPTEN__
     std::string browserResetBootImage_;
 #endif
 
     // ── Mouse Card host-input plumbing (Phase 5) ─────────────────────
+    // All mutable geometry/capture/input fields described below are held by
+    // the opaque uiState_; MainWindow retains only the routing operations.
     // Apple II Screen widget rect, window-relative. Updated every
     // frame by `renderScreenWindow()` so the GLFW cursor-pos callback
     // (which fires async to the render loop) can map a host position
     // onto Apple pixels. Geometry only — see `screenHovered_` for who
     // *owns* the pointer.
-    ImVec2 screenRectMin{ 0, 0 };
-    ImVec2 screenRectMax{ 0, 0 };
     // ImGui's z-order aware verdict on the screen widget, captured next
     // to the Image in `renderScreenWindow()` and cleared at the top of
     // every `render()` so a collapsed / hidden / never-drawn screen
@@ -902,32 +598,22 @@ private:
     // see an open dropdown, popup or docked panel drawn over the screen:
     // they all sit inside the rect, so clicks aimed at them were reaching
     // the guest *and* arming the click-to-grab capture underneath.
-    bool screenHovered_ = false;
     // Running 8-bit Apple II "mouse units" counter — mirrors MAME's
     // IPT_MOUSE_X/Y (0..0xFF wrapping). The MCU firmware computes
     // deltas with 8-bit subtraction.
-    uint8_t mouseAppleX = 0;
-    uint8_t mouseAppleY = 0;
     // Last GLFW cursor position; used to compute per-frame deltas.
-    double  lastMouseHostX = 0;
-    double  lastMouseHostY = 0;
-    bool    mouseInited    = false;
-    bool    mouseButtonHeld = false;
     // Title-bar-only drag state for the Apple II Screen window. The
     // window is opened with `ImGuiWindowFlags_NoMove` so ImGui never
     // starts a window-move from the content area (clicks pass through
     // to the Mouse Card). When the user mouses-down on the title bar
     // we latch this flag and apply `io.MouseDelta` to the window pos
     // ourselves until the button is released.
-    bool    screenDraggingByTitleBar = false;
     // Sub-tick accumulator: dx host pixels × (display.width()/widget_w)
     // = Apple-coord delta. We'd lose fractional motion if we truncated
     // each event, so carry the remainder across calls. Per-event delta
     // is clamped to ±127 (MCU's 8-bit signed wrap range) BEFORE we
     // subtract from the accumulator, so >127-tick events keep their
     // residual for the next event.
-    double  mouseSubAppleX = 0.0;
-    double  mouseSubAppleY = 0.0;
 
     // ── Absolute closed-loop cursor sync (host ⇄ guest) ────────────────
     // The Mouse Card is a purely *relative* quadrature device, so a host
@@ -942,9 +628,6 @@ private:
     // edge-trigger: a correction is injected only once the holes have
     // moved, i.e. once the app has consumed the previous batch. Sentinel
     // -1 forces the first correction.
-    int  lastSyncHoleX  = -1;
-    int  lastSyncHoleY  = -1;
-    bool mouseSyncActive = false;   // true while in absolute mode (mouse on)
 
     // ── Host-pointer capture ("mouse grab") ───────────────────────────
     // Policy in `MouseGrab.h`; this is the runtime state it reads. Like
@@ -954,11 +637,9 @@ private:
     // gate (`mouse_click_to_grab`) could no longer change anything, and a
     // preference that does nothing is worse than no preference. Stale keys
     // left in an existing state.cfg are simply never read.
-    bool mouseGrabbed_ = false;
     /// `lastFrameTime` deadline for the status bar's spelled-out "how to
     /// get out" hint beside the GRAB chip. Nothing is drawn over the
     /// emulated screen any more.
-    double mouseGrabHintUntil_ = 0.0;
 
     /// Screen-overlay captions for the capture contract ("click to capture"
     /// / "Ctrl+Alt+G to release"). Called from `drawScreenImage`, so both
@@ -975,7 +656,8 @@ private:
     /// defaults (DiskII=6, HDV=5, SSC=2, Clock=4, ChatMauve=7) when a
     /// slot key is absent. Validates uniqueness — duplicate card-type
     /// requests log a warning and skip the second instance. Populates the
-    /// raw `*Card` pointer fields and the `slotCards[]` index.
+    /// The resolved configuration plan stays separate from the live SlotBus
+    /// topology; construction failures never rewrite the user's plan.
     ///
     /// **The caller owns the state lock and proves it by passing its handle.**
     /// This must not lock for itself: `stateMutex` is a plain `std::mutex`, so
@@ -990,6 +672,11 @@ private:
     /// would have deadlocked the profile switch on the spot. It is a
     /// parameter now: the only way to call this is to already hold the lock.
     void plugSlotsFromSettings(const pom2::StateAccess& st);
+
+    /// Restore storage media only after the replacement cards exist. All key
+    /// and mount policy lives in StorageCoordinator; this wrapper reports its
+    /// non-fatal per-card diagnostics. Caller holds the state lock.
+    void restoreSlotMediaFromSettings(const pom2::StateAccess& st);
 
     /// The body of `plugFujiNetFromCli`, on the same caller-owns-the-lock
     /// contract, so it can also run from inside `plugSlotsFromSettings()`.
@@ -1007,36 +694,24 @@ private:
     std::string cliFujiNetSerialPath_;
     int         cliFujiNetPort_ = 1985;
 
-    // ── Audio-source ownership ───────────────────────────────────────────
-    // AudioDevice keeps raw AudioSource pointers and dereferences them from
-    // the miniaudio callback thread every ~5 ms, while the sources are owned
-    // by the slot cards the SlotBus destroys on every profile switch / Slot
-    // Config "Apply". Teardown therefore has to unregister EVERY source that
-    // was ever registered, and driving that off the named `*Card` aliases is
-    // wrong: two Mockingboard variants (catalog keys "mockingboard" and
-    // "mockingboard_c") are distinct types to the uniqueness rule, so both
-    // can be plugged and the single alias only remembers the last one — the
-    // first card's source survived teardown and the audio thread called
-    // through freed memory. This vector is the inventory instead.
-    /// Add `src` to the audio device and remember it for teardown. No-op on
-    /// a null source or when the audio device is unavailable.
+    // AudioCoordinator owns the authoritative source inventory, live slot-card
+    // snapshots/commands and mixer persistence. These wrappers keep source
+    // registration at slot-construction call sites compact.
     void registerAudioSource(AudioSource* src);
-    /// Remove every source added via registerAudioSource(). MUST run before
-    /// `slotBus().clear()` destroys the owning cards.
     void unregisterAllAudioSources();
-    std::vector<AudioSource*> registeredAudioSources_;
 
     // ── Disk insert+boot routing (shared by Disk Library UI + CLI) ───────
     // Promoted from file-local lambdas in renderDiskLibraryWindow so
     // insertAndBootImage() can reuse the exact same routing. Each takes
     // the state lock internally.
-    /// Route a 3.5" image to the //c+ on-board hub or a SmartPort card
-    /// unit `driveIdx`, auto-creating a SmartPort35Unit if needed.
-    bool routeMount35 (int driveIdx, const std::string& path, std::string& errOut);
-    /// Route an HDV image to the ProDOSHardDiskCard or a SmartPort card's
-    /// unit 0, auto-creating a SmartPortHdvUnit if needed. `bootSlotOut`
-    /// receives the slot to boot from.
-    bool routeMountHdv(const std::string& path, int& bootSlotOut, std::string& errOut);
+    /// Ephemeral slot inventories. Each call walks SlotBus; returned pointers
+    /// are never retained as MainWindow state and are consumed within the
+    /// current UI operation (under the machine lock for mutable card state).
+    std::vector<DiskIICard*> diskIICards() const;
+    DiskIICard* primaryDiskIICard() const;
+    ProDOSHardDiskCard* primaryHdvCard() const;
+    pom2::SmartPortCard* primarySmartPortCard() const;
+
     /// The active HDV-class block device for the HDV Library / turbo / eject —
     /// prefers the MAME-faithful CffaCard when plugged, else the synthetic
     /// ProDOSHardDiskCard. nullptr when neither is present.
@@ -1056,22 +731,6 @@ private:
     /// Flush every slot-owned medium before a profile/slot rebuild. Returns
     /// false without destroying cards so dirty RAM remains retryable.
     bool flushSlotMedia(std::string& err);
-    /// Ensure the config can host an HDV image: returns the slot of an
-    /// existing HDV or SmartPort card, or plugs a fresh ProDOSHardDiskCard
-    /// into a free slot (preferring slot 7) and returns that. Used by the
-    /// CLI/kiosk launcher so `POM2 game.hdv` boots even when the saved slot
-    /// config has only Disk II cards. Returns -1 if no free slot exists.
-    /// NOT persisted — the saved slot configuration is left untouched.
-    int  ensureHdvCardForBoot();
-    /// Same contract for 3.5" media: returns the slot of an existing
-    /// SmartPort card, or plugs a fresh Liron-class SmartPortCard into a
-    /// free slot (preferring the conventional slot 5) and returns that.
-    /// Returns -1 when no free slot exists, or on a `noPhysicalSlots`
-    /// profile that has no built-in SmartPort to speak of. Shared by the
-    /// Floppy Emu panel and the drag-drop / CLI insert+boot path.
-    /// NOT persisted — the saved slot configuration is left untouched.
-    int  ensureSmartPortCardForBoot();
-
     void renderMenuBar();
     void renderStatusBar();
     void renderScreenWindow();
@@ -1129,10 +788,6 @@ private:
     /// Stream new bytes from the plugged printer interface card into the
     /// host-side ImageWriter. Called once per frame from the render loop.
     void pumpImageWriter();
-    /// The SSC feeding the ImageWriter, if any: lowest-slot plugged SSC
-    /// with its printer tap on (//c printer port = slot 1 by default).
-    /// Parallel cards outrank it in pumpImageWriter().
-    SuperSerialCard* printerTapSsc() const;
     void renderNoSlotClockPanelWindow();
     /// Apple //e keyboard window: lazy-loads the photo, draws it, and turns
     /// a clicked cap into a keystroke on the emulated machine.
@@ -1176,10 +831,6 @@ private:
     /// 2026-07-28; one window running two interaction models is what made
     /// "mount on the right, Revert on the left" read as undoable.
     void renderMediaPanel();
-    /// Persist a media bay's state with the right key scheme for its card
-    /// type (SmartPort per-unit / CFFA per-slot / synthetic HDV global key).
-    /// Called under stateMutex right after a mount/eject/type/write-back.
-    void persistMediaBay(int slot, int bay, SlotPeripheral* p);
     /// BMOW Floppy Emu panel — OLED-style SD browser + emulation-mode select.
     /// Routes the selected image into the matching controller card
     /// (DiskIICard / SmartPortCard units) per the device's current mode.
@@ -1225,11 +876,6 @@ private:
     /// would otherwise remount the image next launch, and leaves the medium
     /// mounted if its write-back save failed. Drives the status-bar chips.
     bool ejectMediaBay(int slot, int index, bool diskII);
-    /// Write a read-only 3.5" WOZ out as a writable `.po` beside it, then
-    /// mount the copy in the same drive with write-back on. The WOZ is left
-    /// untouched. `useSmartPort35` picks the source the 3.5" panel is
-    /// showing (SmartPort card units vs the //c+ on-board pair).
-    bool convertWoz35ToPo(int drive, bool useSmartPort35);
 
     void uploadScreenTexture();
 

@@ -102,7 +102,7 @@ PrinterSoundDevice::PrinterSoundDevice() = default;
 void PrinterSoundDevice::setSampleRate(uint32_t hz)
 {
     std::lock_guard<std::mutex> lk(mtx_);
-    sampleRate_ = (hz > 0) ? hz : AudioDevice::kSampleRate;
+    sampleRate_ = (hz > 0) ? hz : AudioSource::kDefaultSampleRate;
     // Grains in flight were built for the old rate; drop them rather than
     // letting them play at the wrong pitch and length.
     for (auto& g : grains_) g.active = false;

@@ -9,32 +9,11 @@
 // in comments are AppleWin line numbers.
 
 #include "W5100Device.h"
-#include "Pom2Build.h"
 
 #include "Logger.h"
 
 #include <algorithm>
 #include <cstring>
-
-// SocketCompat.h carries the host socket stack for BOTH families — POSIX
-// and Winsock — plus `pom2::hostToNet16` / `netToHost16` and the
-// `pom2::kSockStream` family, which exist in the socketless build too.
-// MACRAW/IPRAW framing and the SnMR mode switch are compiled even on
-// Emscripten (they go through NetworkBackend, not through a socket), so
-// naming <arpa/inet.h>'s htons / SOCK_STREAM directly here broke the WASM
-// build for code that opens no socket at all.
-#include "SocketCompat.h"
-
-#if POM2_HAS_SOCKETS
-// Under Emscripten there is no usable BSD-socket API, so the TCP/UDP paths
-// compile out and those socket modes stay CLOSED — the register model, the
-// RX/TX rings and MACRAW/IPRAW (which go through the NetworkBackend, not
-// through sockets) are unaffected. Same treatment SuperSerialCard gives its
-// telnet listener.
-#include <chrono>
-#include <future>
-#include <thread>
-#endif
 
 namespace pom2 {
 namespace {
@@ -57,6 +36,24 @@ constexpr size_t kMaxDatagram = kW5100MemSize - kW5100RxBase;   // 8 KB
 uint8_t indexByte(uint16_t value, unsigned shift)
 {
     return static_cast<uint8_t>((value >> shift) & 0xFF);
+}
+
+uint16_t hostToNetwork16Portable(uint16_t value)
+{
+    const uint8_t bytes[2] = {
+        static_cast<uint8_t>(value >> 8), static_cast<uint8_t>(value)
+    };
+    uint16_t encoded = 0;
+    std::memcpy(&encoded, bytes, sizeof(encoded));
+    return encoded;
+}
+
+uint16_t networkToHost16Portable(uint16_t value)
+{
+    uint8_t bytes[2]{};
+    std::memcpy(bytes, &value, sizeof(value));
+    return static_cast<uint16_t>((static_cast<uint16_t>(bytes[0]) << 8) |
+                                 bytes[1]);
 }
 
 // ── IPv4 / Ethernet framing for IPRAW ─────────────────────────────────
@@ -118,13 +115,13 @@ std::vector<uint8_t> createEth2Frame(const std::vector<uint8_t>& data,
     Eth2Frame eth{};
     std::memcpy(eth.destinationMac, destinationMac.b, 6);
     std::memcpy(eth.sourceMac,      sourceMac.b,      6);
-    eth.type = pom2::hostToNet16(0x0800);
+    eth.type = hostToNetwork16Portable(0x0800);
     std::memcpy(frame.data(), &eth, sizeof(eth));
 
     Ip4Header ip{};
     ip.ihlVersion = 0x45;   // version 4, IHL 5 (20 bytes, no options)
     ip.tos        = tos;
-    ip.len = pom2::hostToNet16(
+    ip.len = hostToNetwork16Portable(
         static_cast<uint16_t>(sizeof(Ip4Header) + data.size()));
     ip.id            = 0;
     ip.flagsFragment = 0;
@@ -163,11 +160,11 @@ void getIpPayload(const uint8_t* frame, int lengthOfFrame,
     std::memcpy(&eth, frame, sizeof(eth));
     std::memcpy(&ip, frame + sizeof(Eth2Frame), sizeof(ip));
 
-    if (eth.type != pom2::hostToNet16(0x0800)) return;
+    if (eth.type != hostToNetwork16Portable(0x0800)) return;
     if ((ip.ihlVersion >> 4) != 4) return;
 
     const uint16_t ipv4HeaderSize = static_cast<uint16_t>((ip.ihlVersion & 0x0F) * 4);
-    const uint16_t ipPacketSize   = pom2::netToHost16(ip.len);
+    const uint16_t ipPacketSize   = networkToHost16Portable(ip.len);
     const int      expectedSize   = static_cast<int>(sizeof(Eth2Frame)) + ipPacketSize;
 
     if (ipPacketSize <= ipv4HeaderSize) return;
@@ -179,32 +176,6 @@ void getIpPayload(const uint8_t* frame, int lengthOfFrame,
     lengthOfPayload = static_cast<size_t>(ipPacketSize - ipv4HeaderSize);
     source          = ip.sourceAddress;
 }
-
-#if POM2_HAS_SOCKETS
-/// Blocking name lookup, run on a detached thread by resolveDns().
-/// Returns an IPv4 address in network byte order, or 0 on failure.
-uint32_t hostByName(const std::string& name)
-{
-    addrinfo hints{};
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-
-    addrinfo* result = nullptr;
-    if (getaddrinfo(name.c_str(), nullptr, &hints, &result) != 0 || !result)
-        return 0;
-
-    uint32_t address = 0;
-    for (addrinfo* p = result; p; p = p->ai_next) {
-        if (p->ai_family != AF_INET || !p->ai_addr) continue;
-        sockaddr_in sa{};
-        std::memcpy(&sa, p->ai_addr, std::min(sizeof(sa), static_cast<size_t>(p->ai_addrlen)));
-        address = sa.sin_addr.s_addr;
-        break;
-    }
-    freeaddrinfo(result);
-    return address;
-}
-#endif
 
 void putU16(std::vector<uint8_t>& out, uint16_t v)
 {
@@ -257,7 +228,7 @@ void W5100Device::reset(bool powerCycle)
         // reset — Uthernet II manual p.10.
         dataAddress_ = 0;
         arpCache_.clear();
-        dnsCache_.clear();
+        if (socketFactory_) socketFactory_->clearResolverCache();
     }
 
     for (size_t i = 0; i < kSocketCount; ++i) clearSocket(i);
@@ -289,6 +260,13 @@ void W5100Device::reset(bool powerCycle)
     setMem(kW5100Ptimer, virtualDns_ ? 0x00 : 0x28);
 }
 
+void W5100Device::setSocketFactory(
+    std::unique_ptr<W5100SocketFactory> factory)
+{
+    for (size_t i = 0; i < kSocketCount; ++i) clearSocket(i);
+    socketFactory_ = std::move(factory);
+}
+
 void W5100Device::setVirtualDnsEnabled(bool enabled)
 {
     virtualDns_ = enabled;
@@ -304,7 +282,7 @@ uint16_t W5100Device::readNetworkWord(uint16_t a) const
 
 uint32_t W5100Device::readAddress(uint16_t a) const
 {
-    // Kept in network byte order, ready to drop into a sockaddr_in.
+    // Kept in network byte order for the injected host adapter.
     uint32_t v;
     const uint8_t bytes[4] = { mem(a),
                                mem(static_cast<uint16_t>(a + 1)),
@@ -334,50 +312,23 @@ void W5100Device::setSocketStatus(size_t i, uint8_t status)
 void W5100Device::clearSocket(size_t i)
 {
     Socket& s = sockets_[i];
-#if POM2_HAS_SOCKETS
-    closeHostSocket(s.fd);          // closesocket() on Windows, close() elsewhere
-#endif
-    s.fd = kInvalidSocket;
+    s.host.reset();
     s.pendingTx.clear();
     setSocketStatus(i, kW5100SnSrClosed);
 }
 
 // `Uthernet2.cpp:910-945`
-void W5100Device::openSystemSocket(size_t i, int type, int protocol, uint8_t status)
+void W5100Device::openSystemSocket(size_t i, W5100SocketKind kind,
+                                   uint8_t status)
 {
-#if !POM2_HAS_SOCKETS
-    (void)type; (void)protocol; (void)status;
     clearSocket(i);
-    log().warn("W5100", "TCP/UDP sockets are unavailable in the WASM build");
-#else
-    clearSocket(i);
-
-    // Winsock needs the stack started before the first call; no-op elsewhere.
-    ensureSocketStack();
-
-    socket_t fd = ::socket(AF_INET, type, protocol);
-    if (!isValidSocket(fd)) {
-        log().warn("W5100", "socket() failed: " + lastSocketErrorText());
+    if (!socketFactory_) {
+        log().warn("W5100", "TCP/UDP OPEN ignored: no host socket adapter");
         return;
     }
-    // Non-blocking is mandatory — every call below runs on the CPU thread
-    // under stateMutex and must not wait on the network.
-    if (!setNonBlocking(fd)) {
-        log().warn("W5100", "non-blocking mode failed: " + lastSocketErrorText());
-        closeHostSocket(fd);
-        return;
-    }
-    // Windows turns an ICMP port-unreachable provoked by an earlier
-    // sendto() into a WSAECONNRESET failure on the next recvfrom of an
-    // UNCONNECTED datagram socket, which is every UDP socket this class
-    // opens. Off, so one datagram to a closed port stays one lost datagram
-    // (SocketCompat.h, trap 7). No-op on POSIX, and the receive path still
-    // classifies the code in case a layered provider refuses the ioctl.
-    if (type == SOCK_DGRAM) disableUdpConnReset(fd);
-
-    sockets_[i].fd = fd;
+    sockets_[i].host = socketFactory_->open(kind);
+    if (!sockets_[i].host) return;
     setSocketStatus(i, status);
-#endif
 }
 
 // `Uthernet2.cpp:947-1001`
@@ -407,11 +358,11 @@ void W5100Device::openSocket(size_t i)
         break;
     case kW5100SnMrTcp:
     case kW5100SnMrTcp | kW5100SnVirtualDns:
-        openSystemSocket(i, pom2::kSockStream, pom2::kIpProtoTcp, kW5100SnSrInit);
+        openSystemSocket(i, W5100SocketKind::Tcp, kW5100SnSrInit);
         break;
     case kW5100SnMrUdp:
     case kW5100SnMrUdp | kW5100SnVirtualDns:
-        openSystemSocket(i, pom2::kSockDgram, pom2::kIpProtoUdp, kW5100SnSrUdp);
+        openSystemSocket(i, W5100SocketKind::Udp, kW5100SnSrUdp);
         break;
     default:
         break;
@@ -430,27 +381,22 @@ void W5100Device::closeSocket(size_t i)
 // `Uthernet2.cpp:1039-1075`
 void W5100Device::connectSocket(size_t i)
 {
-#if !POM2_HAS_SOCKETS
-    (void)i;
-#else
     Socket& s = sockets_[i];
-    if (!isValidSocket(s.fd)) return;
+    if (!s.host) return;
     // CONNECT is only legal from SOCK_INIT (TCP, freshly opened) — the
     // real chip ignores it elsewhere. Accepting it on a UDP socket used
     // to connect() the datagram fd, flip the status to ESTABLISHED and
     // drop the 8-byte UDP RX header the driver still expects.
     if (s.status != kW5100SnSrInit) return;
 
-    sockaddr_in destination{};
-    destination.sin_family = AF_INET;
     // Both are already in network byte order in the registers.
-    destination.sin_addr.s_addr =
+    const uint32_t destination =
         readAddress(static_cast<uint16_t>(s.registerAddress + kW5100SnDipr0));
     // DIPR 0.0.0.0 is this card's "DNS resolution failed" marker (and no
     // valid destination either way): a real chip's ARP would time out and
     // close, whereas connect(INADDR_ANY) on Linux reaches 127.0.0.1 — the
     // guest would silently talk to a random host-local service.
-    if (destination.sin_addr.s_addr == 0) {
+    if (destination == 0) {
         log().warn("W5100", "CONNECT with destination 0.0.0.0 "
                             "(DNS failed or DIPR unset) — closing socket");
         clearSocket(i);
@@ -462,25 +408,20 @@ void W5100Device::connectSocket(size_t i)
         mem(static_cast<uint16_t>(s.registerAddress + kW5100SnDport1))
     };
     std::memcpy(&port, portBytes, 2);
-    destination.sin_port = port;
-
-    const int res = ::connect(s.fd, reinterpret_cast<sockaddr*>(&destination),
-                              sizeof(destination));
-    if (res == 0) {
+    const W5100ConnectResult result = s.host->connect(destination, port);
+    if (result == W5100ConnectResult::Connected) {
         setSocketStatus(i, kW5100SnSrEstablished);
         return;
     }
     // A non-blocking connect almost always lands here; SYNSENT is exactly
     // what the real chip reports while the handshake is in flight, and
     // poll() promotes it to ESTABLISHED (or drops it) later.
-    const int cerr = lastSocketError();
-    if (errInProgress(cerr)) {
+    if (result == W5100ConnectResult::InProgress) {
         setSocketStatus(i, kW5100SnSrSynSent);
     } else {
-        log().warn("W5100", "connect() failed: " + socketErrorText(cerr));
+        log().warn("W5100", "connect() failed");
         clearSocket(i);
     }
-#endif
 }
 
 // LISTEN is in the W5100 command set but POM2 does not open a host
@@ -697,9 +638,6 @@ void W5100Device::receiveOnePacket(size_t i)
 // `Uthernet2.cpp:704-745`
 void W5100Device::receiveOnePacketFromSocket(size_t i)
 {
-#if !POM2_HAS_SOCKETS
-    (void)i;
-#else
     Socket& s = sockets_[i];
     if (!s.isOpen()) return;
 
@@ -731,22 +669,14 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
         ? sizeof(buffer)
         : std::min<size_t>(static_cast<size_t>(freeRoom) - 1, sizeof(buffer));
 
-    sockaddr_in source{};
-    socklen_c sourceLen = sizeof(source);
-
-    // Winsock's recvfrom takes `char*` and an `int` length; the cast keeps
-    // one call site for both families (SocketCompat.h, trap 2/3).
-    const iolen_t got = ::recvfrom(s.fd,
-                                   reinterpret_cast<char*>(buffer),
-                                   static_cast<int>(want), 0,
-                                   reinterpret_cast<sockaddr*>(&source), &sourceLen);
-    if (got >= 0 && isUdp) {
+    const W5100ReceiveResult received = s.host->receive(buffer, want);
+    if (received.status == W5100IoStatus::Ok && isUdp) {
         // got == 0 is a legitimate ZERO-LENGTH datagram — the empty
         // keepalive/probe several period stacks send — and never a peer
         // close, which is a concept datagram sockets do not have. The
         // real chip stages the 8-byte header with a length of 0 for it.
         // Treating it as a close destroyed the guest's socket.
-        const size_t length = static_cast<size_t>(got);
+        const size_t length = received.bytes;
         // Whole datagram or none: a message-oriented socket has no way to
         // hand the guest half of one, and the in-band length that follows
         // must describe what actually lands in the ring. The datagram is
@@ -755,40 +685,30 @@ void W5100Device::receiveOnePacketFromSocket(size_t i)
         if (!ringHasRoomFor(i, length)) return;
 
         // UDP prepends source IP + source port + length.
-        const uint8_t* ip = reinterpret_cast<const uint8_t*>(&source.sin_addr.s_addr);
+        const uint8_t* ip = reinterpret_cast<const uint8_t*>(
+            &received.sourceAddress);
         ringWriteData(i, ip, 4);
-        const uint8_t* port = reinterpret_cast<const uint8_t*>(&source.sin_port);
+        const uint8_t* port = reinterpret_cast<const uint8_t*>(
+            &received.sourcePort);
         ringWriteData(i, port, 2);
         ringWrite16(i, static_cast<uint16_t>(length));
         ringWriteData(i, buffer, length);
         bytesReceived_ += static_cast<uint64_t>(length);
-    } else if (got > 0) {
+    } else if (received.status == W5100IoStatus::Ok && received.bytes > 0) {
         // TCP is a raw stream with no header at all, and `want` above
         // already fitted it to the ring.
-        ringWriteData(i, buffer, static_cast<size_t>(got));
-        bytesReceived_ += static_cast<uint64_t>(got);
-    } else if (got == 0) {
+        ringWriteData(i, buffer, received.bytes);
+        bytesReceived_ += static_cast<uint64_t>(received.bytes);
+    } else if (received.status == W5100IoStatus::Closed) {
         // Orderly shutdown by the peer — half-close, not a dead socket.
         // The real chip parks in SOCK_CLOSE_WAIT: the guest may still
         // SEND its remaining data (the fd stays open for writing) and
         // ends the session with DISCON/CLOSE. Jumping straight to CLOSED
         // broke every driver that drains-then-disconnects on SR=$1C.
         setSocketStatus(i, kW5100SnSrCloseWait);
-    } else {
-        const int e = lastSocketError();
-        if (errWouldBlock(e) || errInterrupted(e)) return;   // nothing yet
-        // On a datagram socket a failure can describe the packet rather
-        // than the socket — Winsock reports an oversized datagram
-        // (WSAEMSGSIZE) and somebody else's ICMP port-unreachable
-        // (WSAECONNRESET, raised on the NEXT recvfrom of an unconnected
-        // UDP socket) through the same channel as a genuine fault. Those
-        // must cost one datagram, not the guest's socket. On TCP the very
-        // same ECONNRESET IS the connection dying, so the tolerance is
-        // strictly UDP-only. SocketCompat.h, trap 7.
-        if (isUdp && errDatagramDiscard(e)) return;
+    } else if (received.status == W5100IoStatus::Failed) {
         clearSocket(i);
     }
-#endif
 }
 
 // `Uthernet2.cpp:595-659` — one shared raw-frame path: whichever socket
@@ -931,16 +851,10 @@ void W5100Device::sendData(size_t i)
 // `Uthernet2.cpp:812-842`
 void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
 {
-#if !POM2_HAS_SOCKETS
-    (void)i; (void)data;
-#else
     Socket& s = sockets_[i];
     if (!s.isOpen() || data.empty()) return;
 
-    sockaddr_in destination{};
-    destination.sin_family = AF_INET;
-    // Ignored for a connected TCP socket, so the same code serves both.
-    destination.sin_addr.s_addr =
+    const uint32_t destination =
         readAddress(static_cast<uint16_t>(s.registerAddress + kW5100SnDipr0));
     uint16_t port;
     const uint8_t portBytes[2] = {
@@ -948,8 +862,6 @@ void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
         mem(static_cast<uint16_t>(s.registerAddress + kW5100SnDport1))
     };
     std::memcpy(&port, portBytes, 2);
-    destination.sin_port = port;
-
     // TCP is a stream: whatever the non-blocking send does not take NOW
     // must be kept and retried (poll() flushes pendingTx), or the bytes
     // silently vanish mid-stream while the guest believes they were sent —
@@ -963,44 +875,35 @@ void W5100Device::sendDataToSocket(size_t i, const std::vector<uint8_t>& data)
         return;
     }
 
-    const iolen_t res = ::sendto(s.fd,
-                                 reinterpret_cast<const char*>(data.data()),
-                                 static_cast<int>(data.size()), 0,
-                                 reinterpret_cast<const sockaddr*>(&destination),
-                                 sizeof(destination));
-    if (res >= 0) {
-        bytesSent_ += static_cast<uint64_t>(res);
-        if (isTcp && static_cast<size_t>(res) < data.size())
-            s.pendingTx.assign(data.begin() + res, data.end());
+    const W5100SendResult sent =
+        s.host->send(data.data(), data.size(), destination, port);
+    if (sent.status == W5100IoStatus::Ok) {
+        bytesSent_ += static_cast<uint64_t>(sent.bytes);
+        if (isTcp && sent.bytes < data.size())
+            s.pendingTx.assign(data.begin() + sent.bytes, data.end());
+    } else if (sent.status == W5100IoStatus::WouldBlock) {
+        if (isTcp) s.pendingTx = data;
     } else {
-        const int e = lastSocketError();
-        if (errWouldBlock(e) || errInterrupted(e)) {
-            if (isTcp) s.pendingTx = data;
-        } else {
-            clearSocket(i);
-        }
+        clearSocket(i);
     }
-#endif
 }
 
 void W5100Device::flushPendingTx(size_t i)
 {
-#if !POM2_HAS_SOCKETS
-    (void)i;
-#else
     Socket& s = sockets_[i];
-    if (s.pendingTx.empty() || !isValidSocket(s.fd)) return;
+    if (s.pendingTx.empty() || !s.host) return;
 
-    const iolen_t res = sendSocket(s.fd, s.pendingTx.data(), s.pendingTx.size());
-    if (res > 0) {
-        bytesSent_ += static_cast<uint64_t>(res);
-        s.pendingTx.erase(s.pendingTx.begin(), s.pendingTx.begin() + res);
-    } else if (res < 0) {
-        const int e = lastSocketError();
-        if (!errWouldBlock(e) && !errInterrupted(e)) {
-            clearSocket(i);
-            return;
+    const W5100SendResult sent =
+        s.host->send(s.pendingTx.data(), s.pendingTx.size(), 0, 0);
+    if (sent.status == W5100IoStatus::Ok) {
+        if (sent.bytes > 0) {
+            bytesSent_ += static_cast<uint64_t>(sent.bytes);
+            s.pendingTx.erase(s.pendingTx.begin(),
+                              s.pendingTx.begin() + sent.bytes);
         }
+    } else if (sent.status != W5100IoStatus::WouldBlock) {
+        clearSocket(i);
+        return;
     }
     // A peer that has not taken a megabyte is not coming back; an honest
     // dead connection beats an unbounded host-side queue.
@@ -1010,7 +913,6 @@ void W5100Device::flushPendingTx(size_t i)
                             ": peer stalled with >1 MiB unsent — closing");
         clearSocket(i);
     }
-#endif
 }
 
 void W5100Device::sendDataMacRaw(const std::vector<uint8_t>& data)
@@ -1104,69 +1006,17 @@ void W5100Device::resolveDns(size_t i)
             s.registerAddress + kW5100SnDnsNameBegin + k))));
     }
 
-    uint32_t resolved = 0;
-    const auto cached = dnsCache_.find(name);
-    if (cached != dnsCache_.end()) {
-        resolved = cached->second;
-    } else {
-#if POM2_HAS_SOCKETS
-        // Cap the number of lookups still running detached: each hung
-        // resolver call is a live thread, and a guest looping OPEN over
-        // random hostnames must not mint them without bound. Checked
-        // BEFORE std::async — an un-detached future's destructor blocks.
-        {
-            std::lock_guard<std::mutex> lk(dnsMailbox_->mutex);
-            constexpr int kMaxDnsInFlight = 8;
-            if (dnsMailbox_->inFlight >= kMaxDnsInFlight) {
-                log().warn("W5100", "too many DNS lookups in flight — "
-                                    "'" + name + "' not attempted");
-                return;
-            }
-        }
-        // Off-thread with a bounded wait: a slow resolver must not stall
-        // the CPU thread. If the wait expires the lookup keeps running
-        // and lands in the cache, so the guest's retry succeeds.
-        auto future = std::async(std::launch::async,
-                                 [name]() { return hostByName(name); });
-        if (future.wait_for(std::chrono::milliseconds(kDnsWaitMs)) ==
-            std::future_status::ready) {
-            resolved = future.get();
-            // The cache is guest-fed (one entry per hostname ever opened):
-            // keep it from growing without bound across a long session.
-            if (dnsCache_.size() >= 512) dnsCache_.clear();
-            dnsCache_[name] = resolved;
-        } else {
-            // Still in flight. Detach it against the shared mailbox — the
-            // mailbox outlives this object if the card is unplugged
-            // mid-lookup, so the thread always has somewhere safe to
-            // write, and poll() folds the answer into dnsCache_ on the
-            // CPU thread. Never touch dnsCache_ from here.
-            auto shared = std::make_shared<std::future<uint32_t>>(std::move(future));
-            auto mailbox = dnsMailbox_;
-            {
-                std::lock_guard<std::mutex> lk(mailbox->mutex);
-                ++mailbox->inFlight;
-            }
-            std::thread([name, shared, mailbox]() {
-                const uint32_t late = shared->get();
-                std::lock_guard<std::mutex> lk(mailbox->mutex);
-                mailbox->pending.push_back({ name, late });
-                --mailbox->inFlight;
-            }).detach();
-            log().info("W5100", "DNS lookup for '" + name +
-                                "' still in flight — retry the connection");
-            return;
-        }
-#else
-        log().warn("W5100", "virtual DNS is unavailable in the WASM build");
+    if (!socketFactory_) {
+        log().warn("W5100", "virtual DNS requested without a host socket adapter");
         return;
-#endif
     }
 
-    if (resolved == 0) {
-        log().warn("W5100", "could not resolve '" + name + "'");
-        return;
-    }
+    // Resolution policy, caching and asynchronous host work belong to the
+    // injected runtime adapter. The device only applies an answer that is
+    // immediately available within its bounded command budget.
+    const uint32_t resolved = socketFactory_->resolveHostname(name, kDnsWaitMs);
+    if (resolved == 0) return;
+
     const uint8_t* ip = reinterpret_cast<const uint8_t*>(&resolved);
     for (int b = 0; b < 4; ++b)
         setMem(static_cast<uint16_t>(diprAddress + b), ip[b]);
@@ -1339,49 +1189,31 @@ void W5100Device::writeData(uint8_t value)
 // `Uthernet2.cpp:269-306` (Socket::process) + `:1527-1534`
 void W5100Device::poll()
 {
-    // Drain any DNS answer that arrived after its bounded wait expired.
-    drainPendingDns();
+    if (socketFactory_) socketFactory_->pollResolver();
 
     if (backend_) backend_->poll();
 
-#if POM2_HAS_SOCKETS
     for (size_t i = 0; i < kSocketCount; ++i) {
         // Retry TCP bytes the host socket refused earlier (short write /
         // EAGAIN) — see sendDataToSocket.
         if (!sockets_[i].pendingTx.empty()) flushPendingTx(i);
 
         Socket& s = sockets_[i];
-        if (!isValidSocket(s.fd) || s.status != kW5100SnSrSynSent) continue;
+        if (!s.host || s.status != kW5100SnSrSynSent) continue;
 
-        // Zero timeout: this runs on the emulation thread, so it polls and
-        // returns. A refused connection has to reach us too, not just a
-        // successful one — on Winsock that arrives through select()'s
-        // exception set, which is why waitSocket() is not WSAPoll. See
-        // SocketCompat.h.
-        if (waitSocket(s.fd, SocketWait::Write, 0) != WaitResult::Ready)
-            continue;
-
-        if (connectResult(s.fd) == 0) {
+        switch (s.host->pollConnect()) {
+        case W5100ConnectResult::Connected:
             setSocketStatus(i, kW5100SnSrEstablished);
-        } else {
+            break;
+        case W5100ConnectResult::Failed:
             // Connection refused / unreachable — back to CLOSED, which is
             // what the guest polls SN_SR for.
             clearSocket(i);
+            break;
+        case W5100ConnectResult::InProgress:
+            break;
         }
     }
-#endif
-}
-
-void W5100Device::drainPendingDns()
-{
-    std::vector<PendingDns> ready;
-    {
-        std::lock_guard<std::mutex> lk(dnsMailbox_->mutex);
-        if (dnsMailbox_->pending.empty()) return;
-        ready.swap(dnsMailbox_->pending);
-    }
-    if (dnsCache_.size() >= 512) dnsCache_.clear();   // same cap as resolveDns
-    for (const PendingDns& p : ready) dnsCache_[p.name] = p.address;
 }
 
 // ── Introspection ─────────────────────────────────────────────────────
@@ -1400,7 +1232,7 @@ W5100Device::SocketInfo W5100Device::socketInfo(size_t i) const
     info.txPending  = txDataSize(i);
     info.rxCapacity = s.receiveSize;
     info.txCapacity = s.transmitSize;
-    info.hasHostSocket = isValidSocket(s.fd);
+    info.hasHostSocket = static_cast<bool>(s.host);
     return info;
 }
 

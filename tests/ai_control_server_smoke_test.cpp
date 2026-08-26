@@ -20,6 +20,7 @@
 
 #include "AiControlServer.h"
 #include "Apple2Display.h"
+#include "DiskIICard.h"
 #include "EmulationController.h"
 #include "Memory.h"
 #include "MouseCard.h"
@@ -143,6 +144,45 @@ void testStatusEndpoint(EmulationController& ctrl, pom2::AiControlServer& srv)
     assert(contains(r.body, "\"cpu\""));
     assert(contains(r.body, "\"profile\":\"Test Profile\""));
     std::puts("  status: OK");
+}
+
+void testDiskTopologyResolution(EmulationController& ctrl,
+                                Apple2Display& display,
+                                pom2::AiControlServer& srv)
+{
+    const auto status = [] {
+        return oneShot(kTestPort,
+            "GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
+    };
+
+    assert(contains(status().body, "\"disks\":[]"));
+    {
+        auto state = ctrl.lockState();
+        state.memory().slotBus().plug(
+            6, std::make_unique<DiskIICard>(6));
+    }
+    assert(contains(status().body, "\"slot\":6"));
+
+    // detach() is now only a topology-rebuild gate: it carries no card
+    // pointer. Re-attaching reopens endpoints, which must discover the card
+    // that already lives in SlotBus.
+    {
+        auto state = ctrl.lockState();
+        srv.detach();
+    }
+    assert(contains(status().body, "\"disks\":[]"));
+    {
+        auto state = ctrl.lockState();
+        srv.attach(&ctrl, &display);
+    }
+    assert(contains(status().body, "\"slot\":6"));
+
+    {
+        auto state = ctrl.lockState();
+        (void)state.memory().slotBus().unplug(6);
+    }
+    assert(contains(status().body, "\"disks\":[]"));
+    std::puts("  disk topology resolution: OK");
 }
 
 void testAuth(EmulationController& /*ctrl*/, pom2::AiControlServer& srv)
@@ -587,11 +627,12 @@ int main()
     ctrl.setMode(EmulationController::Mode::Stopped);
 
     pom2::AiControlServer srv;
-    srv.attach(&ctrl, &display, nullptr, nullptr);
+    srv.attach(&ctrl, &display);
     const bool started = srv.start(kTestPort);
     assert(started && "AiControlServer failed to bind test port — is something else on 36502?");
 
     testStatusEndpoint   (ctrl, srv);
+    testDiskTopologyResolution(ctrl, display, srv);
     testAuth             (ctrl, srv);
     testMemoryRoundtrip  (ctrl, srv);
     testReset            (ctrl, srv);

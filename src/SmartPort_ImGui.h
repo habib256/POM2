@@ -7,8 +7,8 @@
 // (Liron-class). One row per unit (kMaxUnits=2): type selector
 // ([empty] / 3.5" 800K / ProDOS HDV), mount + eject buttons, write-back
 // toggle, and an inline path field. The panel is pure data-in / actions-
-// out — MainWindow owns the SmartPortCard pointer and applies the
-// requested changes under the state mutex.
+// out — StorageCoordinator resolves the card under the state lock and
+// applies the requested command without exposing card pointers to ImGui.
 //
 // Why a separate panel from `Disk35Controller_ImGui`: the existing
 // 3.5" panel drives the //c+ on-board pair of `Disk35Image` instances
