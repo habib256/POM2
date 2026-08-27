@@ -38,6 +38,7 @@ COORD = (
     'slotConfigCoordinator_->',
     'slotCardFactory_->',
     'debugCoordinator_->',
+    'networkCoordinator_->',
     'storageCoordinator_->',
     'slotConfigurationCoordinator_->',
     'slotProvisioningCoordinator_->',
@@ -76,6 +77,18 @@ LOCK_FREE = (
     #    across a rebuild anyway). See CLAUDE.md, "Never hold stateMutex
     #    across file I/O".
     'create',
+    # NetworkCoordinator's host-only state: no controller, so no machine lock.
+    # setHelperPath does search PATH, which is filesystem I/O — acceptable at
+    # its one locked call site for the same reason SlotCardFactory::create's
+    # ROM reads are: it is the profile-switch rebuild, where the CPU worker is
+    # stopped anyway. It is not acceptable anywhere else.
+    'setHelperPath',
+    'helperPath',
+    'helperResolved',
+    'serialDevices',
+    'rescanSerialDevices',
+    'setStatus',
+    'clearStatus',
     'captureLive',                   # 2. takes SlotBus&
     'resolve',                       # 1. plan resolution over Settings
     'effectivePlan',                 # 1.

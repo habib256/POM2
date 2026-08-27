@@ -56,6 +56,7 @@ namespace pom2 { class SlotRebuildCoordinator; }
 namespace pom2 { class SlotConfigurationCoordinator; }
 namespace pom2 { class SlotProvisioningCoordinator; }
 namespace pom2 { class DebugCoordinator; }
+namespace pom2 { class NetworkCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -343,6 +344,12 @@ private:
     /// snapshots. Owns no card pointer.
     std::unique_ptr<pom2::MouseCoordinator> mouseCoordinator_;
 
+    /// Host network policy: resolves the FujiNet card under the machine
+    /// lock for every panel frame, and owns the host-only state that has no
+    /// emulated counterpart — the serial scan, the helper paths, the status
+    /// line.
+    std::unique_ptr<pom2::NetworkCoordinator> networkCoordinator_;
+
     /// Host printer cable: resolves every feed source under lockState(),
     /// drains exactly one by physical priority and hands an owned byte
     /// batch out after unlocking. Owns no card pointer.
@@ -395,8 +402,9 @@ private:
     // `sscCards.empty() ? nullptr : sscCards.front()` (kept for legacy
     // callers like SnapshotIO + AI control). Multi-instance code paths
     // (menu, panel tabs, settings persistence) iterate `sscCards`.
-    std::vector<SuperSerialCard*> sscCards;
-    SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
+    // The SSC aliases are gone; `serialCards()` reads the live bus. The //c
+    // ships TWO SSC-compatible ports (printer + modem), so this is genuinely
+    // plural, and the primary is simply the lowest slot.
     // Both mouse implementations (MouseCard, MouseCardAppleWin) are reached
     // through `mouseCoordinator_`, never through a retained alias: a slot
     // replacement or a profile switch destroys the card, and the aliases were
@@ -416,10 +424,10 @@ private:
     // Ethernet. Both are multi-pluggable in principle but the panel and
     // settings track one of each — two NICs on one virtual network is a
     // configuration nobody asks for, and each would need its own MAC.
-    /// FujiNet relay. Single-instance on purpose: the card holds a listening
-    /// socket (or an open serial device), and a second one would just fail to
-    /// bind / open the same endpoint.
-    pom2::FujiNetCard*           fujiNetCard      = nullptr; // non-owning, owned by SlotBus
+    // The FujiNet card is reached through `networkCoordinator_`, which
+    // resolves it from the live SlotBus under the machine lock. It owns a
+    // listening socket or an open serial device and a worker thread, so an
+    // alias to it was the worst of the eighteen to hold across a rebuild.
     /// Status of the Mouse Card ROM probe — used by the Slot
     /// Configuration UI to indicate whether 'mouse' is selectable.
     /// "" = not yet probed, "loaded: <paths>" = ready, otherwise the
@@ -720,12 +728,8 @@ private:
     /// FujiNet: last link error / info line, and the cached serial-device
     /// list (scanning /dev or the registry every frame would be silly, and
     /// the list only changes when hardware is plugged in).
-    std::string fujiNetStatus_;
-    std::vector<std::pair<std::string, std::string>> fujiNetSerialDevices_;
     /// Helper program the user configured (empty = auto-detect), and what
     /// auto-detection last resolved it to.
-    std::string fujiNetHelperPath_;
-    std::string fujiNetHelperResolved_;
     /// Threshold / inversion for Machine ▸ Print screen. Auto-invert by
     /// default, so a text screen prints black-on-white instead of flooding
     /// the sheet.
@@ -1153,6 +1157,8 @@ private:
     /// `blockCards()` above: every writer runs on this thread. Per-card STATE
     /// still goes through `storageCoordinator_`, which takes the machine lock.
     std::vector<DiskIICard*> diskIICards() const;
+    std::vector<SuperSerialCard*> serialCards() const;
+    SuperSerialCard* primarySerialCard() const;
     DiskIICard* primaryDiskII() const;
     ProDOSHardDiskCard* primaryHdvCard() const;
     pom2::CffaCard* primaryCffaCard() const;

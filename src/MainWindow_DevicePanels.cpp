@@ -59,7 +59,7 @@ void MainWindow::renderEthernetPanelWindow()
 
 void MainWindow::renderSscPanelWindow()
 {
-    if (!show(pom2::PanelId::Ssc) || sscCards.empty()) return;
+    if (!show(pom2::PanelId::Ssc) || serialCards().empty()) return;
 
     ImGui::SetNextWindowSize(ImVec2(480, 320), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Super Serial###sscPanel", &show(pom2::PanelId::Ssc))) {
@@ -185,21 +185,24 @@ void MainWindow::renderSscPanelWindow()
         ImGui::PopID();
     };
 
-    if (sscCards.size() == 1) {
-        renderOne(sscCards[0]);
+    // Hoisted: each call walks the bus, and the topology cannot change
+    // inside one UI-thread frame.
+    const auto ports = serialCards();
+    if (ports.size() == 1) {
+        renderOne(ports[0]);
     } else if (ImGui::BeginTabBar("##sscTabs")) {
         // //c convention: sl1 = printer port, sl2 = modem port. Other
         // profiles just label by slot number.
-        const bool isIIcLayout = (sscCards.size() == 2) &&
-            (sscCards[0]->getSlot() == 1) && (sscCards[1]->getSlot() == 2);
-        for (size_t i = 0; i < sscCards.size(); ++i) {
-            const int slot = sscCards[i]->getSlot();
+        const bool isIIcLayout = (ports.size() == 2) &&
+            (ports[0]->getSlot() == 1) && (ports[1]->getSlot() == 2);
+        for (size_t i = 0; i < ports.size(); ++i) {
+            const int slot = ports[i]->getSlot();
             std::string tab;
             if (isIIcLayout) tab = (i == 0) ? "Printer port (sl1)"
                                             : "Modem port (sl2)";
             else             tab = "Slot " + std::to_string(slot);
             if (ImGui::BeginTabItem(tab.c_str())) {
-                renderOne(sscCards[i]);
+                renderOne(ports[i]);
                 ImGui::EndTabItem();
             }
         }
@@ -355,9 +358,9 @@ void MainWindow::renderPrinterPanelWindow()
 
 SuperSerialCard* MainWindow::printerTapSsc() const
 {
-    // sscCards is sorted by slot ascending, so the first tapped card is
+    // serialCards() is sorted by slot ascending, so the first tapped card is
     // the lowest slot — the //c printer port when that profile is active.
-    for (auto* ssc : sscCards)
+    for (auto* ssc : serialCards())
         if (ssc && ssc->printerTap()) return ssc;
     return nullptr;
 }

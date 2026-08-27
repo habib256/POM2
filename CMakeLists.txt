@@ -220,6 +220,7 @@ set(SOURCES
     src/DebugCoordinator.cpp
     src/DevicePanelCoordinator.cpp
     src/MouseCoordinator.cpp
+    src/NetworkCoordinator.cpp
     src/PrinterCoordinator.cpp
     src/SlotCardFactory.cpp
     src/SlotConfigurationCoordinator.cpp
@@ -759,6 +760,7 @@ add_library(pom2_core_test STATIC
     src/AudioCoordinator.cpp
     src/DevicePanelCoordinator.cpp
     src/MouseCoordinator.cpp
+    src/NetworkCoordinator.cpp
     src/PrinterCoordinator.cpp
     src/SlotCardFactory.cpp
     src/SlotConfigurationCoordinator.cpp
