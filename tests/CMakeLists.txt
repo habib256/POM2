@@ -5781,3 +5781,27 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME iic_ioudis_dhgr COMMAND test_iic_ioudis_dhgr)
 set_tests_properties(iic_ioudis_dhgr PROPERTIES TIMEOUT 30)
+
+# ─── II+ : $C00C/$C00D reach the RGB card and nothing else ──────────────
+# Pins the deliberate II+/IIe asymmetry flagged by the 2026-07-12 Chat Mauve
+# review: a II+ has no 80COL switch, so POM2 synthesises the RGB card's data
+# line from the bus access — and that flag must stay inert for rendering.
+add_executable(test_iiplus_rgb_data_line
+    iiplus_rgb_data_line_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+)
+target_include_directories(test_iiplus_rgb_data_line PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+    target_link_libraries(test_iiplus_rgb_data_line PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iiplus_rgb_data_line PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME iiplus_rgb_data_line COMMAND test_iiplus_rgb_data_line)
+set_tests_properties(iiplus_rgb_data_line PROPERTIES TIMEOUT 30)
