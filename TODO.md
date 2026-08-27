@@ -812,13 +812,27 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   left in `W5100Device` when the socket seam landed: an async mailbox with an
   in-flight cap, a bounded wait and its own cache, wired to register reads.
   Its own pass, and not on anything's critical path.
-- 🟢 **The SDK install contract** *(2026-08-27)* — `find_package(pom2_core)`,
-  the `POM2::core` imported target and the standalone consumer example are the
-  last piece still on `refactor/core-boundaries-and-coordinators`. They need an
-  installable library target, which the flat v0.8.5 tree does not define; the
-  facade itself (`include/pom2/core.hpp`) and its contract test are already in.
-  The **layer guard landed separately** — it turned out to need only source
-  manifests, not the branch's object libraries.
+- ✅ **The SDK install contract** *(done 2026-08-27)* — POM2 is now consumable
+  as a **dependency**, not only as a build. `pom2_core` is a real installable
+  STATIC target (the source list `POM2_CORE_SOURCES` is shared with
+  `pom2_core_test`, so the SDK can never drift from what the tests cover),
+  exported under a `pom2_core_sdk` component as `POM2::core` with `include/`
+  PUBLIC and `src/` PRIVATE — a consumer sees `<pom2/core.hpp>` and nothing
+  else. `set_target_properties(... EXPORT_NAME core)` is load-bearing: the
+  in-build `POM2::core` ALIAS does **not** survive into the installed package,
+  and without it consumers would have to write `POM2::pom2_core`.
+  `pom2_core_sdk_consumer` (ctest #215, label `slow`) is the only test that
+  exercises POM2 from the outside — it installs into a throwaway prefix,
+  configures `examples/pom2_core_consumer` as a standalone project through
+  `find_package`, builds it against the imported target and runs it (boots a
+  machine, renders a frame, pulls audio). Mutation-checked: deleting the
+  `EXPORT_NAME` line makes it fail. A broken export set, a missing header or a
+  dependency the package file forgets to re-find all pass an in-tree build and
+  fail here. The **layer guard landed separately** — it turned out to need only
+  source manifests, not the branch's object libraries.
+
+  With this, **nothing remains parked on the refactor branch that was wanted**;
+  the inventory below is now a record of what was deliberately left behind.
 - 🟢 **What is still parked on `refactor/core-boundaries-and-coordinators`**
   *(inventory, 2026-08-27)* — so nobody re-derives it from the diff: the
   branch's own `MainWindow`/`Memory` decompositions (superseded by v0.8.5's and

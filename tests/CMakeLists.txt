@@ -5805,3 +5805,27 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME iiplus_rgb_data_line COMMAND test_iiplus_rgb_data_line)
 set_tests_properties(iiplus_rgb_data_line PROPERTIES TIMEOUT 30)
+
+# ─── SDK install contract ───────────────────────────────────────────────
+# The only test that exercises POM2 as a DEPENDENCY rather than as a build.
+# It installs the pom2_core_sdk component into an isolated prefix, configures
+# examples/pom2_core_consumer as a standalone project through
+# find_package(pom2_core), builds it against POM2::core, and runs it.
+#
+# That end-to-end shape is the point: a broken export set, a missing header, a
+# renamed target or a dependency the package file forgets to re-find all pass
+# an in-tree build and fail here.
+add_test(NAME pom2_core_sdk_consumer
+    COMMAND ${CMAKE_COMMAND}
+        -DPOM2_BINARY_DIR=${CMAKE_BINARY_DIR}
+        -DPOM2_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DPOM2_TEST_CONFIG=$<CONFIG>
+        -DPOM2_TEST_GENERATOR=${CMAKE_GENERATOR}
+        -DPOM2_TEST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
+        -DPOM2_TEST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
+        -DPOM2_TEST_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/pom2_core_sdk_consumer_test.cmake)
+# Installs and builds a second project, so it is slower than a unit test and
+# depends on the SDK archive being built first.
+set_tests_properties(pom2_core_sdk_consumer PROPERTIES TIMEOUT 600)
+set_property(TEST pom2_core_sdk_consumer APPEND PROPERTY LABELS slow)
