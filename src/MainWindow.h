@@ -46,6 +46,7 @@ class EmulationController;
 // than included for the same reason as EmulationController itself — this
 // header stays outside that include cone; see `emul()` below.
 namespace pom2 { class StateAccess; }
+namespace pom2 { class MouseCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -324,6 +325,11 @@ private:
     // diskCards.front()`. Most legacy code paths use `diskCard` directly
     // (auto-turbo, AI control attach, menu Eject); the panel render loop
     // iterates `diskCards`.
+    /// Host-mouse boundary: resolves both mouse implementations from the
+    /// live SlotBus under the machine lock and publishes immutable inspector
+    /// snapshots. Owns no card pointer.
+    std::unique_ptr<pom2::MouseCoordinator> mouseCoordinator_;
+
     std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
@@ -337,11 +343,11 @@ private:
     std::vector<SuperSerialCard*> sscCards;
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
     ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
-    MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
-    // AppleWin-style HLE mouse — alternative to MouseCard (only one of
-    // the two is plugged at a time). Both implement the same setHostMouse
-    // API so the UI input layer is variant-agnostic.
-    MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
+    // Both mouse implementations (MouseCard, MouseCardAppleWin) are reached
+    // through `mouseCoordinator_`, never through a retained alias: a slot
+    // replacement or a profile switch destroys the card, and the aliases were
+    // read from GLFW callbacks that hold no lock. The coordinator re-resolves
+    // from the live SlotBus under lockState() on every capture and route.
     // These three are "last one plugged wins" aliases used by the mixer /
     // panels. They are NOT a complete inventory: several of these card
     // types are distinct catalog keys that can coexist (e.g. "mockingboard"

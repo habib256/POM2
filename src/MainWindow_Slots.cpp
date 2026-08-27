@@ -1047,8 +1047,6 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         sscCard          = nullptr;
         sscCards.clear();
         clockCard        = nullptr;
-        mouseCard        = nullptr;
-        mouseAwCard      = nullptr;
         mockingboardCard = nullptr;
         phasorCard       = nullptr;
         echoPlusCard     = nullptr;
@@ -1404,8 +1402,6 @@ bool MainWindow::restartEmulationFromSettings()
         sscCard          = nullptr;
         sscCards.clear();
         clockCard        = nullptr;
-        mouseCard        = nullptr;
-        mouseAwCard      = nullptr;
         mockingboardCard = nullptr;
         phasorCard       = nullptr;
         echoPlusCard     = nullptr;

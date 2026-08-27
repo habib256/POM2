@@ -18,6 +18,7 @@
 #include "Voxel3DRenderer.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
+#include "MouseCoordinator.h"
 #include "NoSlotClock.h"
 #include "NtscPostProcessor.h"
 #include "Settings.h"
@@ -453,6 +454,12 @@ void MainWindow::renderMouseInspectorWindow()
                     sxRatio, syRatio);
     }
 
+    // One immutable snapshot for the whole panel body. It resolves both card
+    // implementations AND reads the AppleMouse screen holes inside a single
+    // lockState(), where this panel used to hold a card alias across the frame
+    // and then take the lock a second time just for the holes.
+    const auto mouseInventory = mouseCoordinator_->capture();
+
     // ── MouseCard 8-bit running counter (MainWindow side) ─────────────
     if (ImGui::CollapsingHeader("MouseCard input (8-bit counter)",
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -461,17 +468,17 @@ void MainWindow::renderMouseInspectorWindow()
         ImGui::Text("Sub-pixel acc : (%.3f, %.3f)",
                     mouseSubAppleX, mouseSubAppleY);
         const char* cardName =
-            mouseAwCard ? "AppleWin HLE (mouseaw)" :
-            mouseCard   ? "MAME-faithful (mouse)" :
-                          "(no card plugged)";
+            mouseInventory.appleWinPlugged ? "AppleWin HLE (mouseaw)" :
+            mouseInventory.mamePlugged     ? "MAME-faithful (mouse)" :
+                                             "(no card plugged)";
         ImGui::Text("Active card   : %s", cardName);
     }
 
     // ── AppleWin HLE card-internal state ──────────────────────────────
-    if (mouseAwCard) {
+    if (mouseInventory.appleWinPlugged) {
         if (ImGui::CollapsingHeader("AppleWin HLE — firmware state",
                                     ImGuiTreeNodeFlags_DefaultOpen)) {
-            const auto s = mouseAwCard->debugSnapshot();
+            const auto& s = mouseInventory.appleWin;
             ImGui::Text("Clamp X       : [%d .. %d]", s.iMinX, s.iMaxX);
             ImGui::Text("Clamp Y       : [%d .. %d]", s.iMinY, s.iMaxY);
             ImGui::Text("Cursor iX/iY  : (%d, %d)", s.iX, s.iY);
@@ -506,7 +513,7 @@ void MainWindow::renderMouseInspectorWindow()
                         s.lastCmd, cmdName, s.buffPos, s.dataLen);
             ImGui::Text("PIA latches   : A=0x%02X  B=0x%02X", s.by6821A, s.by6821B);
         }
-    } else if (mouseCard) {
+    } else if (mouseInventory.mamePlugged) {
         if (ImGui::CollapsingHeader("MAME-faithful — card state",
                                     ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::TextDisabled(
@@ -519,26 +526,16 @@ void MainWindow::renderMouseInspectorWindow()
     // ── AppleMouse firmware screen holes (per Apple II Mouse FAQ) ─────
     if (ImGui::CollapsingHeader("Screen holes (AppleMouse firmware)",
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
-        const int activeSlot =
-            mouseAwCard ? mouseAwCard->getSlot() :
-            mouseCard   ? mouseCard  ->getSlot() : 0;
+        const int activeSlot = mouseInventory.slot > 0 ? mouseInventory.slot : 0;
         if (activeSlot < 1 || activeSlot > 7) {
             ImGui::TextDisabled("(no mouse card plugged)");
         } else {
-            int holeXlo = 0, holeXhi = 0, holeYlo = 0, holeYhi = 0;
-            int holeMode = 0, holeStatus = 0;
-            {
-                auto st = controller->lockState();
-                Memory& mem = st.memory();
-                holeXlo   = mem.peekMainRam(uint16_t(0x0478 + activeSlot));
-                holeXhi   = mem.peekMainRam(uint16_t(0x0578 + activeSlot));
-                holeYlo   = mem.peekMainRam(uint16_t(0x04F8 + activeSlot));
-                holeYhi   = mem.peekMainRam(uint16_t(0x05F8 + activeSlot));
-                holeStatus = mem.peekMainRam(uint16_t(0x0778 + activeSlot));
-                holeMode  = mem.peekMainRam(uint16_t(0x07F8 + activeSlot));
-            }
-            const int holeX = (holeXhi << 8) | holeXlo;
-            const int holeY = (holeYhi << 8) | holeYlo;
+            const auto& holes = mouseInventory.holes;
+            const int holeXlo = holes.xLo, holeXhi = holes.xHi;
+            const int holeYlo = holes.yLo, holeYhi = holes.yHi;
+            const int holeMode = holes.mode, holeStatus = holes.status;
+            const int holeX = holes.x();
+            const int holeY = holes.y();
             ImGui::Text("Slot          : %d", activeSlot);
             ImGui::Text("X = $%04X     : %d  (lo $%04X=0x%02X  hi $%04X=0x%02X)",
                         0x0478 + activeSlot, holeX,
@@ -597,21 +594,10 @@ void MainWindow::renderMouseInspectorWindow()
         const double now = ImGui::GetTime();
         if (now - mouseInspectorLastLogTime >= 1.0 / 30.0) {
             mouseInspectorLastLogTime = now;
-            int activeSlot =
-                mouseAwCard ? mouseAwCard->getSlot() :
-                mouseCard   ? mouseCard  ->getSlot() : 0;
-            int holeX = 0, holeY = 0, holeMode = 0;
-            if (activeSlot >= 1 && activeSlot <= 7) {
-                auto st = controller->lockState();
-                Memory& mem = st.memory();
-                holeX = mem.peekMainRam(uint16_t(0x0478 + activeSlot)) |
-                       (mem.peekMainRam(uint16_t(0x0578 + activeSlot)) << 8);
-                holeY = mem.peekMainRam(uint16_t(0x04F8 + activeSlot)) |
-                       (mem.peekMainRam(uint16_t(0x05F8 + activeSlot)) << 8);
-                holeMode = mem.peekMainRam(uint16_t(0x07F8 + activeSlot));
-            }
-            MouseCardAppleWin::DebugSnapshot s{};
-            if (mouseAwCard) s = mouseAwCard->debugSnapshot();
+            const int holeX = mouseInventory.holes.x();
+            const int holeY = mouseInventory.holes.y();
+            const int holeMode = mouseInventory.holes.mode;
+            const auto& s = mouseInventory.appleWin;
             auto& os = *mouseInspectorLogStream;
             os << now << ','
                << lastMouseHostX << ',' << lastMouseHostY << ','

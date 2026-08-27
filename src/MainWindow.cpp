@@ -56,6 +56,7 @@
 #include "Pom2HgrPaintHost.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
+#include "MouseCoordinator.h"
 #include "MouseCardAppleWin.h"
 #include "MouseGrab.h"
 #include "NtscPostProcessor.h"
@@ -181,6 +182,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
+      mouseCoordinator_(std::make_unique<pom2::MouseCoordinator>(*controller)),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -1953,7 +1955,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // Mouse Card's MCU PB6 reaches the CPU via SlotPeripheral::
         // assertIrq, which fans out through M6502::setIrqLine(slot, …).
         mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
-        mouseCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -2019,7 +2020,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                     pom2::profileConfig(activeProfile).videoStandard);
                 card->setVblCycles(vt.scanlinesPerFrame * vt.cyclesPerScanline);
             }
-            mouseAwCard = card.get();
             st.memory().slotBus().plug(s, std::move(card));
         }
         else if (kind == "mockingboard")   plugMockingboard(s, MockingboardCard::Variant::AC);
@@ -2479,7 +2479,7 @@ void MainWindow::renderCommandPalette()
         "Ctrl+Alt+F / F10", true, kiosk_);
     add("view.mousegrab", "View",
         mouseGrabbed_ ? "Release mouse capture" : "Capture mouse",
-        "Ctrl+Alt+G", (mouseCard != nullptr) || (mouseAwCard != nullptr),
+        "Ctrl+Alt+G", mouseCoordinator_->capture().plugged(),
         mouseGrabbed_);
 
     // Speed buckets, labelled with the real clock so "2x" isn't abstract.
@@ -3151,7 +3151,7 @@ void MainWindow::renderMenuBar()
         // Greyed with no Mouse Card on the bus: capturing the pointer with
         // nothing to feed it is the one state this feature must not reach.
         {
-            const bool haveCard = (mouseCard != nullptr) || (mouseAwCard != nullptr);
+            const bool haveCard = mouseCoordinator_->capture().plugged();
             if (ImGui::MenuItem(ICON_FA_ARROW_POINTER " Capture mouse",
                                 "Ctrl+Alt+G", mouseGrabbed_, haveCard)) {
                 toggleMouseGrab();
@@ -3549,7 +3549,7 @@ void MainWindow::renderStatusBar()
                                        " Ctrl+Alt+G or middle click to release");
                 }
             } else if (!mouseGrabbed_ && screenHovered_ &&
-                       (mouseCard || mouseAwCard) && roomFor(30.0f)) {
+                       mouseCoordinator_->capture().plugged() && roomFor(30.0f)) {
                 // Not captured, but the pointer is over the emulated screen
                 // with a Mouse Card on the bus — the exact moment the user is
                 // about to wonder why the guest cursor won't follow theirs.
@@ -4865,7 +4865,7 @@ static_assert(pom2::mousegrab::kButtonMiddle == GLFW_MOUSE_BUTTON_MIDDLE);
 pom2::mousegrab::Context MainWindow::mouseGrabContext() const
 {
     pom2::mousegrab::Context c;
-    c.cardPlugged = (mouseCard != nullptr) || (mouseAwCard != nullptr);
+    c.cardPlugged = mouseCoordinator_->capture().plugged();
     c.grabbed     = mouseGrabbed_;
     c.voxelView   = show(pom2::PanelId::Voxel);
     // Hover, NOT rect containment. `screenHovered_` is ImGui's own z-order
@@ -4884,7 +4884,7 @@ pom2::mousegrab::Context MainWindow::mouseGrabContext() const
 void MainWindow::setMouseGrab(bool on)
 {
     if (on == mouseGrabbed_) return;
-    if (on && !mouseCard && !mouseAwCard) {
+    if (on && !mouseCoordinator_->capture().plugged()) {
         // Capturing the pointer with nothing to feed would strand the user
         // in a hidden-cursor mode for no gain.
         tapeStatusMessage = "Mouse capture: no Mouse Card plugged "
@@ -4935,8 +4935,7 @@ void MainWindow::setMouseGrab(bool on)
     // Never leave the guest holding a button it can no longer release.
     if (!on && mouseButtonHeld) {
         mouseButtonHeld = false;
-        if (mouseCard)   mouseCard  ->setHostMouse(mouseAppleX, mouseAppleY, false);
-        if (mouseAwCard) mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, false);
+        (void)mouseCoordinator_->routeHost(mouseAppleX, mouseAppleY, false);
     }
 
     tapeStatusMessage = on
@@ -4972,18 +4971,17 @@ void MainWindow::onMouseMove(double x, double y)
     lastMouseHostX = x;
     lastMouseHostY = y;
 
-    // Either MAME-faithful MouseCard or AppleWin HLE MouseCardAppleWin
-    // can be plugged (mutually exclusive). Both expose the same
-    // `setHostMouse(rawX, rawY, button)` + `getSlot()` API; route through
-    // tiny lambdas so the absolute / relative cursor logic below stays
-    // variant-agnostic.
+    // Either MAME-faithful MouseCard or AppleWin HLE MouseCardAppleWin can be
+    // plugged (mutually exclusive). MouseCoordinator re-resolves both from the
+    // live SlotBus under the machine lock, so the absolute / relative cursor
+    // logic below stays variant-agnostic AND cannot write through a card that
+    // a slot replacement has already destroyed.
     const pom2::mousegrab::Context grabCtx = mouseGrabContext();
     // Card plugged + (pointer captured, or hovering the screen widget).
     // Uncaptured motion outside the widget belongs to ImGui — see MouseGrab.h.
     if (!pom2::mousegrab::shouldRouteMotion(grabCtx)) return;
     auto pushMouse = [&](uint8_t rx, uint8_t ry, bool btn) {
-        if (mouseCard)   mouseCard  ->setHostMouse(rx, ry, btn);
-        if (mouseAwCard) mouseAwCard->setHostMouse(rx, ry, btn);
+        (void)mouseCoordinator_->routeHost(rx, ry, btn);
     };
     // Need a valid Apple II Screen widget rect to map host pixels into
     // Apple-cursor coordinates. Bail until renderScreen has populated it.
@@ -5010,9 +5008,11 @@ void MainWindow::onMouseMove(double x, double y)
     // large gaps (first event after re-entry, big window resize) converge
     // over several events.
     bool absoluteHandled = false;
-    if (mouseAwCard && pom2::mousegrab::allowAbsoluteSync(grabCtx)) {
-        const auto s = mouseAwCard->debugSnapshot();
-        const bool mouseOn = (s.byMode & 0x01) != 0;
+    const auto mouseInventory = mouseCoordinator_->capture();
+    if (mouseInventory.appleWinPlugged &&
+        pom2::mousegrab::allowAbsoluteSync(grabCtx)) {
+        const auto& s = mouseInventory.appleWin;
+        const bool mouseOn = s.mouseOn();
         const int rangeX = s.iMaxX - s.iMinX;
         const int rangeY = s.iMaxY - s.iMinY;
         if (mouseOn && rangeX > 0 && rangeY > 0) {
@@ -5122,10 +5122,8 @@ void MainWindow::onMouseButton(int button, int action)
     if (!pom2::mousegrab::shouldRouteButton(grabCtx, button, press)) return;
 
     mouseButtonHeld = press;
-    if (mouseCard)
-        mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
-    if (mouseAwCard)
-        mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+    (void)mouseCoordinator_->routeHost(mouseAppleX, mouseAppleY,
+                                       mouseButtonHeld);
 }
 
 void MainWindow::bootHdvImage()
@@ -5426,8 +5424,9 @@ void MainWindow::renderAbstractionPanel()
     row("prodosvol", Live::NotApplicable);
 
     // ── Input, clocks, printing ─────────────────────────────────────────
-    row("mouse",   mouseCard   ? Live::Active : Live::NotPlugged);
-    row("mouseaw", mouseAwCard ? Live::Active : Live::NotPlugged);
+    const auto mouseInventory = mouseCoordinator_->capture();
+    row("mouse",   mouseInventory.mamePlugged     ? Live::Active : Live::NotPlugged);
+    row("mouseaw", mouseInventory.appleWinPlugged ? Live::Active : Live::NotPlugged);
     degradable("clock", plugged("clock"),
                clockCard && clockCard->romFromDump(), pom2::AbsLevel::H1,
                "roms/thunderclock_u9_v1.3.bin absent — running the synthetic "
@@ -5516,7 +5515,9 @@ void MainWindow::renderAbstractionPanel()
                          "so it never drops motion — smoother, and less\n"
                          "correct. Needs a compensating absolute cursor sync\n"
                          "the L0 card does not.";
-        t.selected     = mouseCard ? 0 : (mouseAwCard ? 1 : -1);
+        const auto mouseInventory = mouseCoordinator_->capture();
+        t.selected     = mouseInventory.mamePlugged ? 0
+                       : (mouseInventory.appleWinPlugged ? 1 : -1);
         if (t.selected < 0)
             t.note = "Neither is plugged — add a mouse in Slot Configuration "
                      "first, then switch levels here.";
@@ -8690,12 +8691,12 @@ void MainWindow::render()
 
     // A pointer capture only makes sense while a Mouse Card is on the bus.
     // Every path that can take one away — Slot Configuration, a profile
-    // switch, a snapshot restore — nulls `mouseCard`/`mouseAwCard`, so
+    // switch, a snapshot restore — unplugs both mouse cards, so
     // releasing here covers all of them at one point instead of chasing
     // each call site. Kiosk deliberately keeps the grab (it is the mode
     // most likely to want it), which is why this sits above the kiosk
     // early-out below.
-    if (mouseGrabbed_ && !mouseCard && !mouseAwCard) setMouseGrab(false);
+    if (mouseGrabbed_ && !mouseCoordinator_->capture().plugged()) setMouseGrab(false);
 
     // Decide CPU turbo from disk activity every frame, independent of whether
     // any disk panel window is open (the disk panel defaults to hidden).
@@ -8894,9 +8895,9 @@ void MainWindow::render()
     // it Normal (default ImGuiMouseCursor_Arrow) brings the OS cursor
     // back. The screen rect is fresh because `renderScreenWindow()` ran
     // earlier this frame.
-    if (mouseAwCard) {
-        const auto s = mouseAwCard->debugSnapshot();
-        const bool mouseOn = (s.byMode & 0x01) != 0;
+    const auto mouseInventory = mouseCoordinator_->capture();
+    if (mouseInventory.appleWinPlugged) {
+        const bool mouseOn = mouseInventory.appleWin.mouseOn();
         const float w = screenRectMax.x - screenRectMin.x;
         const float h = screenRectMax.y - screenRectMin.y;
         const bool insideWidget =
