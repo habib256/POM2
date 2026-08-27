@@ -3144,6 +3144,7 @@ add_executable(test_smartport_rom_layout
     ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_smartport_rom_layout PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)

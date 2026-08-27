@@ -38,6 +38,14 @@
 //      routines are where the dispatch thinks they are. A relocation that
 //      compiles and fits but points somewhere wrong still fails here.
 //
+// Both passes matter. With roms/liron.rom loaded the slot page is re-based on
+// the real dump and only $Cn20-$CnE2 is overlaid with POM2's routines —
+// $Cn13-$Cn1F and $CnE3-$CnFF are deliberately left as the real controller's
+// identity bytes. A routine parked in one of those gaps works perfectly on the
+// synthetic base and executes real Liron firmware on the authentic one, which
+// is why the pre-flight and STATUS live in the $C800 bank instead. Running the
+// whole test twice is what says so.
+//
 // Empty-bay error codes are part of (2). READ used to fall through to the
 // transfer and come back $27 "I/O error"; WRITE checked write-protect BEFORE
 // media and came back $2B "write protected". Neither is true of an empty bay:
@@ -49,6 +57,7 @@
 #include "Memory.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
+#include "ResourcePaths.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -94,6 +103,16 @@ int main()
 {
     const uint8_t romHi = static_cast<uint8_t>(0xC0 + kSlot);
     const std::string po = writeSyntheticPo("pom2_sp_romlayout.po");
+    const std::string lironRom = pom2::findResource("roms/liron.rom");
+
+    for (int pass = 0; pass < 2; ++pass) {
+    const bool useLiron = pass == 1;
+    if (useLiron && lironRom.empty()) {
+        std::printf("smartport_rom_layout: roms/liron.rom absent — "
+                    "real-dump pass skipped\n");
+        break;
+    }
+    const std::string tag = useLiron ? "[real Liron ROM] " : "[synthetic ROM] ";
 
     Memory mem;
     M6502  cpu(&mem);
@@ -101,18 +120,29 @@ int main()
 
     // Bay 0 holds a writable disk, bay 1 is EMPTY — the case that was wrong.
     auto loaded = std::make_unique<pom2::SmartPort35Unit>();
-    expect(loaded->loadImage(po), "load the synthetic .po");
+    expect(loaded->loadImage(po), tag + "load the synthetic .po");
     loaded->setWriteBackEnabled(true);            // clears the WP gate
 
     auto card  = std::make_unique<pom2::SmartPortCard>(kSlot);
     auto* craw = card.get();
+    if (useLiron) expect(card->loadLironRom(lironRom), tag + "load roms/liron.rom");
     card->setUnit(0, std::move(loaded));
     card->setUnit(1, std::make_unique<pom2::SmartPort35Unit>());
     mem.slotBus().plug(kSlot, std::move(card));
 
+    // The two passes must actually differ, or "it works with the real dump"
+    // means nothing. $Cn07 is the controller class byte: $01 (ProDOS block
+    // device) on the synthetic base, $00 (SmartPort) from the real dump.
+    {
+        const uint8_t cn07 = mem.memRead(static_cast<uint16_t>(0xC007 + kSlot * 0x100));
+        expect(cn07 == (useLiron ? 0x00 : 0x01),
+               tag + "$Cn07 should distinguish the two ROM bases (got $"
+               + std::to_string(cn07) + ")");
+    }
+
     // ── 1. Nothing overflowed ────────────────────────────────────────────
     expect(!craw->romLayoutOverflowed(),
-           "a slot-ROM region overflowed its budget");
+           tag + "a slot-ROM region overflowed its budget");
 
     // Caller: JSR $Cn50, capture A, X, Y and the carry flag.
     const uint8_t prog[] = {
@@ -151,32 +181,32 @@ int main()
     // the real routine at all, so the block count never came back.
     {
         Result r = call(0x00, kDrive1, 0);
-        expect(r.carry == 0, "STATUS on a loaded bay must return CLC");
-        expect(r.a == 0x00,  "STATUS on a loaded bay must return A = 0");
+        expect(r.carry == 0, tag + "STATUS on a loaded bay must return CLC");
+        expect(r.a == 0x00,  tag + "STATUS on a loaded bay must return A = 0");
         const uint16_t blocks =
             static_cast<uint16_t>(r.x) | static_cast<uint16_t>(r.y) << 8;
         expect(blocks == kBlocks,
-               "STATUS must report the block count in X/Y (got "
+               tag + "STATUS must report the block count in X/Y (got "
                + std::to_string(blocks) + ")");
     }
 
     // ── 3. An empty bay is "no device", not "I/O error" or "protected" ───
     {
         Result r = call(0x00, kDrive2, 0);
-        expect(r.carry == 1, "STATUS on an empty bay must return SEC");
-        expect(r.a == 0x28, "STATUS on an empty bay must be $28, not $"
+        expect(r.carry == 1, tag + "STATUS on an empty bay must return SEC");
+        expect(r.a == 0x28, tag + "STATUS on an empty bay must be $28, not $"
                             + std::to_string(r.a));
     }
     {
         Result r = call(0x01, kDrive2, 0);
-        expect(r.carry == 1, "READ from an empty bay must return SEC");
-        expect(r.a == 0x28, "READ from an empty bay must be $28 (was $27 "
+        expect(r.carry == 1, tag + "READ from an empty bay must return SEC");
+        expect(r.a == 0x28, tag + "READ from an empty bay must be $28 (was $27 "
                             "I/O error — it fell through to the transfer)");
     }
     {
         Result r = call(0x02, kDrive2, 0);
-        expect(r.carry == 1, "WRITE to an empty bay must return SEC");
-        expect(r.a == 0x28, "WRITE to an empty bay must be $28 (was $2B "
+        expect(r.carry == 1, tag + "WRITE to an empty bay must return SEC");
+        expect(r.a == 0x28, tag + "WRITE to an empty bay must be $28 (was $2B "
                             "write-protected — it checked WP before media)");
     }
 
@@ -185,17 +215,19 @@ int main()
     // proves it did not simply stop reporting write-protect at all.
     {
         auto wp = std::make_unique<pom2::SmartPort35Unit>();
-        expect(wp->loadImage(po), "reload for the WP case");
+        expect(wp->loadImage(po), tag + "reload for the WP case");
         wp->setWriteBackEnabled(false);        // WP gate on
         craw->setUnit(1, std::move(wp));
 
         Result r = call(0x02, kDrive2, 0);
-        expect(r.carry == 1, "WRITE to a write-protected bay must return SEC");
-        expect(r.a == 0x2B, "a LOADED but write-protected bay must be $2B");
+        expect(r.carry == 1, tag + "WRITE to a write-protected bay must return SEC");
+        expect(r.a == 0x2B, tag + "a LOADED but write-protected bay must be $2B");
 
         Result s = call(0x01, kDrive2, 0);
-        expect(s.carry == 0, "READ from a write-protected bay must succeed");
+        expect(s.carry == 0, tag + "READ from a write-protected bay must succeed");
     }
+
+    }  // pass
 
     fs::remove(po);
 

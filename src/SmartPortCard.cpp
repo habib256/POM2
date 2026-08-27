@@ -31,14 +31,29 @@ namespace {
 
 constexpr uint8_t kBootOff   = 0x20;
 constexpr uint8_t kDriverOff = 0x50;
-/// Shared media pre-flight, in the gap between the $Cn10 entry and the boot
-/// routine at $Cn20.
-constexpr uint8_t kPreflightOff = 0x13;
 /// Halt loop the boot routine jumps to when the boot block will not load.
 constexpr uint8_t kHaltOff   = 0xE0;
-/// ProDOS STATUS. It used to live at $CnC0 and was silently overwritten —
-/// see the layout comment in buildRom().
-constexpr uint8_t kStatusOff = 0xE3;
+
+/// The ProDOS media pre-flight and STATUS routines live in the $C800 bank,
+/// not in the slot page.
+///
+/// The slot page has been over budget since the write routine grew: boot (36)
+/// + dispatch (31) + read (51) + write (62) + halt (3) + STATUS (25) is 208
+/// bytes for the 195 that $Cn20-$CnE2 actually holds, which is how the write
+/// routine came to overrun STATUS at $CnC0 in silence. And the gaps that look
+/// free are not: with roms/liron.rom loaded, $Cn13-$Cn1F and $CnE3-$CnFF are
+/// deliberately left as the REAL dump's identity bytes, so a routine placed
+/// there works on the synthetic base and executes real Liron firmware on the
+/// authentic one.
+///
+/// The $C800 bank has 1.5 KB free and is already where the SmartPort handler
+/// lives ($CE00), reached exactly this way. Executing the dispatch in the slot
+/// page is itself what points $C800 at this slot (SlotBus::slotRomRead sets
+/// the active expansion slot), so these are directly callable from there.
+constexpr size_t   kPreflightC800 = 0x500;      // → $CD00
+constexpr size_t   kStatusC800    = 0x510;      // → $CD10
+constexpr uint16_t kPreflightAddr = 0xC800 + kPreflightC800;
+constexpr uint16_t kStatusAddr    = 0xC800 + kStatusC800;
 
 /// Emit bytes at `pc`, refusing to run past `limit` (exclusive).
 ///
@@ -548,32 +563,6 @@ void SmartPortCard::buildRom()
     //   $CnFE-$CnFF  capability + driver-entry bytes
     bool overflow = false;
 
-    // ── Media pre-flight ($Cn13) ───────────────────────────────────────
-    // Both transfer routines have to answer "is there a disk in this bay?"
-    // before anything else, and the answer has to be the same in both. A
-    // shared subroutine is also the only way this fits: duplicating the
-    // check inline is what pushed the write routine over $CnC0.
-    //
-    // $C0n4 is the side-effect-free status byte, and it puts no-media at
-    // bit 7 and write-protect at bit 6 precisely so one BIT can test both:
-    // BIT sets N from bit 7 and V from bit 6 without disturbing A.
-    //
-    // Returns carry set + A = $28 ("no device connected", the ProDOS driver
-    // error set the dispatch already speaks) when the bay is empty; carry
-    // clear otherwise.
-    {
-        uint8_t pf = kPreflightOff;
-        emit(rom_, pf, kBootOff, {
-            0x2C, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // BIT $C0n4
-            0x10, 0x04,        // BPL +4      ; media present
-            0xA9, 0x28,        // LDA #$28    ; no device connected
-            0x38,              // SEC
-            0x60,              // RTS
-            0x18,              // CLC         ; media present → carry clear
-            0x60               // RTS
-        }, overflow);
-    }
-
     // ── Boot routine ($Cn20) ───────────────────────────────────────────
     uint8_t pc = kBootOff;
     emit(rom_, pc, kDriverOff, {
@@ -624,47 +613,14 @@ void SmartPortCard::buildRom()
                                // surfaced as a bogus code in Filer.
         0x38,                  // SEC
         0x60,                  // RTS
-        // status: jump to the full STATUS routine (returns the block count
-        // in X/Y). Kept 4 bytes (JMP + NOP pad) so the BEQ read/write
-        // offsets above stay valid — pinned by
+        // status: jump to the full STATUS routine in the $C800 bank
+        // (returns the block count in X/Y). Kept 4 bytes (JMP + NOP pad) so
+        // the BEQ read/write offsets above stay valid — pinned by
         // tests/smartport_write_dispatch_test.cpp.
-        0x4C, kStatusOff, kSlotRomHi, // status: JMP $CnE3
+        0x4C, static_cast<uint8_t>(kStatusAddr & 0xFF),
+              static_cast<uint8_t>(kStatusAddr >> 8),   // status: JMP $CD10
         0xEA                    // pad
     }, overflow);
-
-    // ── STATUS routine ($CnE3) ─────────────────────────────────────────
-    // ProDOS STATUS (cmd $00) pre-flights the device (TRM driver
-    // conventions): no media → SEC + $28 "no device connected", write-
-    // protected → SEC + $2B, else CLC with total blocks in X (low) /
-    // Y (high) from $C0n5/$C0n6 so a volume scanner (BITSY, ONLINE) can
-    // size it. The unit was latched via $C0n0 at the top of the dispatch;
-    // $C0n4 is the side-effect-free status byte (bit7 no-media, bit6 WP).
-    // Formatters that pre-flight STATUS used to get CLC on an empty/WP bay.
-    //
-    // It lives ABOVE the halt loop now. At $CnC0 it sat directly in the
-    // path of the growing write-block routine and was silently overwritten;
-    // up here the only thing below it is the $CnFE/$CnFF signature, which
-    // never moves. One BIT does both bit tests (N = bit 7, V = bit 6),
-    // which is also what makes it fit in the 27 bytes left.
-    {
-        uint8_t sp = kStatusOff;
-        emit(rom_, sp, 0xFE, {
-            0x2C, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // BIT $C0n4
-            0x10, 0x04,        // BPL +4      ; media present
-            0xA9, 0x28,        // LDA #$28    ; no device connected
-            0x38,              // SEC
-            0x60,              // RTS
-            0x50, 0x04,        // BVC +4      ; not write-protected
-            0xA9, 0x2B,        // LDA #$2B    ; write protected
-            0x38,              // SEC
-            0x60,              // RTS
-            0xAE, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDX $C0n5
-            0xAC, static_cast<uint8_t>(kDeviceBase + 0x06), 0xC0, // LDY $C0n6
-            0xA9, 0x00,        // LDA #$00
-            0x18,              // CLC
-            0x60               // RTS
-        }, overflow);
-    }
 
     const uint8_t blkLoReg = static_cast<uint8_t>(kDeviceBase + 0x01);
     const uint8_t blkHiReg = static_cast<uint8_t>(kDeviceBase + 0x02);
@@ -678,7 +634,8 @@ void SmartPortCard::buildRom()
     // original 34 bytes is why the dispatch `BEQ write` operand above is $39
     // (was $2E) — pinned by tests/smartport_write_dispatch_test.cpp.
     emit(rom_, pc, kHaltOff, {
-        0x20, kPreflightOff, kSlotRomHi,  // JSR $Cn13  ; empty bay → $28
+        0x20, static_cast<uint8_t>(kPreflightAddr & 0xFF),
+              static_cast<uint8_t>(kPreflightAddr >> 8),  // JSR $CD00 (pre-flight)
         0x90, 0x01,            // BCC +1      ; media present → carry on
         0x60,                  // RTS         ; else return $28 + SEC
         0xA5, 0x46,            // LDA $46
@@ -713,7 +670,8 @@ void SmartPortCard::buildRom()
     // bit 0 so an out-of-range / rejected writeBlock returns carry-set
     // ($27) instead of the old unconditional CLC "success".
     emit(rom_, pc, kHaltOff, {
-        0x20, kPreflightOff, kSlotRomHi,  // JSR $Cn13  ; empty bay → $28
+        0x20, static_cast<uint8_t>(kPreflightAddr & 0xFF),
+              static_cast<uint8_t>(kPreflightAddr >> 8),  // JSR $CD00 (pre-flight)
         0x90, 0x01,            // BCC +1
         0x60,                  // RTS         ; empty: $28, NOT "write protected"
         0x2C, statReg, 0xC0,   // BIT $C0n4   ; V = WP bit
@@ -823,6 +781,61 @@ void SmartPortCard::buildC800()
     // Register-operand lo bytes (0x80+reg placeholders) → this slot's base.
     static constexpr size_t kRegPatch[] =
         { 24, 31, 66, 74, 91, 100, 113, 118, 127, 138, 149 };
+
+    // ── ProDOS media pre-flight ($CD00) and STATUS ($CD10) ─────────────
+    // Both are reached from the slot page's ProDOS driver, which is what
+    // points the $C800 window at this slot in the first place. They live here
+    // rather than in the slot page because the slot page has no room for them
+    // and the gaps that look free are the real Liron dump's identity bytes.
+    //
+    // $C0n4 is the side-effect-free status byte, and it puts no-media at bit 7
+    // and write-protect at bit 6 precisely so ONE BIT answers both: BIT sets N
+    // from bit 7 and V from bit 6 without touching A.
+    {
+        const uint8_t statReg = static_cast<uint8_t>(0x80 + slot_ * 16 + 0x04);
+        const uint8_t blk5    = static_cast<uint8_t>(0x80 + slot_ * 16 + 0x05);
+        const uint8_t blk6    = static_cast<uint8_t>(0x80 + slot_ * 16 + 0x06);
+
+        // Pre-flight: carry set + A = $28 ("no device connected") when the bay
+        // is empty, carry clear otherwise. Shared by READ and WRITE so both
+        // give the same answer — READ used to fall through to the transfer and
+        // report $27 "I/O error", WRITE tested write-protect first and reported
+        // $2B "write protected". An empty bay is neither.
+        const uint8_t pf[] = {
+            0x2C, statReg, 0xC0,   // BIT $C0n4   ; N = no media, V = WP
+            0x10, 0x04,            // BPL +4      ; media present
+            0xA9, 0x28,            // LDA #$28    ; no device connected
+            0x38,                  // SEC
+            0x60,                  // RTS
+            0x18,                  // CLC
+            0x60                   // RTS
+        };
+        std::memcpy(c800_.data() + kPreflightC800, pf, sizeof pf);
+
+        // STATUS (ProDOS cmd $00): no media → $28, write-protected → $2B, else
+        // CLC with the total block count in X (low) / Y (high) so a volume
+        // scanner (BITSY, ONLINE) can size the device. Formatters pre-flight
+        // through here too.
+        const uint8_t st[] = {
+            0x2C, statReg, 0xC0,   // BIT $C0n4
+            0x10, 0x04,            // BPL +4      ; media present
+            0xA9, 0x28,            // LDA #$28    ; no device connected
+            0x38,                  // SEC
+            0x60,                  // RTS
+            0x50, 0x04,            // BVC +4      ; not write-protected
+            0xA9, 0x2B,            // LDA #$2B    ; write protected
+            0x38,                  // SEC
+            0x60,                  // RTS
+            0xAE, blk5, 0xC0,      // LDX $C0n5
+            0xAC, blk6, 0xC0,      // LDY $C0n6
+            0xA9, 0x00,            // LDA #$00
+            0x18,                  // CLC
+            0x60                   // RTS
+        };
+        static_assert(sizeof st <= kStatusC800 - kPreflightC800 + 0x100,
+                      "STATUS must not run into the handler at $CE00");
+        std::memcpy(c800_.data() + kStatusC800, st, sizeof st);
+    }
 
     constexpr size_t kHandlerOff = 0x600;   // $CE00
     std::memcpy(c800_.data() + kHandlerOff, kHandler, sizeof(kHandler));
