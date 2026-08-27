@@ -709,35 +709,37 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   so a FujiNet-only setup showed an unconnected printer, and a spool read with
   no lock under a comment claiming the opposite.
 
-  **`StorageCoordinator` is wired for topology + the panel/menu commands**
-  (2026-08-27, three commits). All five aliases (`diskCards` `diskCard`
-  `hdvCard` `cffaCard` `smartPortCard`) are gone — `diskIICards()` /
-  `primaryDiskII()` / `primaryHdvCard()` / `primaryCffaCard()` /
-  `primarySmartPortCard()` resolve from the live bus instead. Four persistence
-  defects fixed on the way, all the same shape (mutate the card, forget the
-  key): Machine ▸ Eject disk and Eject HDV left `disk_path_slotN` / `hdv_path`
-  set so the next launch re-mounted what had just been ejected, and the Disk II
-  and HDV write-back toggles never wrote their keys — which matters because
-  `isWriteProtected()` is `fileWriteProtected || !writeBack`, so the setting
-  coming back off means the guest sees WRITE PROTECTED again. Eject-all also
-  only ever ejected drive 1 and reported success over a failed write-back.
+  **`StorageCoordinator` is done** (2026-08-27, seven commits). All five
+  aliases gone; topology, media commands, the two-phase construct-then-restore,
+  both rebuild paths, the SmartPort panel and the 3.5" routing all go through
+  it. Nine defects fixed on the way, seven of them the same shape — a default
+  argument that meant "drive 1 only", or a mutation that never wrote the key
+  recording it:
 
-  **Left, in the order to do them:**
-
-  | Piece | Note |
+  | Defect | Was |
   |---|---|
-  | plug-time media restore | ~12 sites: `plugDiskII`/`plugHdv`/`plugCffa`/SmartPort units still `loadImage` + `setWriteBackEnabled` inline while building the card. The coordinator's `restoreMediaFromSettings()` is the replacement, but it wants the branch's two-phase shape (construct empty hardware, then restore against the finished topology) — a structural change, not a substitution. |
-  | `captureRebuildSnapshot` / `restoreRebuildSnapshot` | profile switch + Slot Config Apply still keep their own path/write-back arrays in `MainWindow_Slots.cpp`. Landing these is what makes drive 2 survive a profile switch. |
-  | `captureSmartPortPanel` / `applySmartPortPanel` | the SmartPort panel still walks units directly (`u->setWriteBackEnabled`, `u->loadImage`). |
-  | `captureDisk35` + the 3.5" routing | `routeMount35` and the Floppy Emu paths. `convertDisk35WozToPo` is already in the coordinator and unused. |
-  | `SlotCardFactory` + `SlotConfiguration` + `SlotProvisioning` + `SlotRebuild` | slot composition and the teardown transaction |
-  | `DebugCoordinator` | needs Dear ImGui, so it is frontend-only |
-  | `NetworkCoordinator` (`sscCards` `sscCard` `fujiNetCard`, ~29 sites) | **blocked** on the device seams below |
+  | drive 2 never restored at startup | ctor's own restore loop, `insertDisk(path)` |
+  | drive 2 lost on every profile switch | `isDiskLoaded()` / `getDiskPath()` in the snapshot |
+  | drive 2 dropped by Slot Config Apply | same, in the settings sync |
+  | eject-all left drive 2 mounted | `ejectDisk()` |
+  | eject-all reported success over a failed write-back | return value ignored |
+  | Eject disk / Eject HDV re-mounted next launch | key never cleared |
+  | Disk II + HDV write-back toggles forgotten | key never written |
+  | Library 3.5" eject did nothing under a SmartPort card | `eject35()` unconditionally |
+  | SmartPort unit reused across ~5 lock acquisitions | one `SmartPortUnit*` per frame |
 
-  `storage_coordinator` (596 lines) already pins per-slot restoration, a moved
-  primary HDV, CFFA policy, the session-only HDV guard and both Disk II drives
-  — wire the remaining pieces against those rather than by inspection.
-  → `CHANGELOG.md` 2026-08-26/27. *1-3 d left.*
+  Also removed a double restore: the ctor's loop ran AFTER the plug pass, so
+  every image was opened twice at startup.
+
+  **Left:**
+
+  | Coordinator | Aliases | Note |
+  |---|---|---|
+  | `SlotCardFactory` + `SlotConfiguration` + `SlotProvisioning` + `SlotRebuild` | `slotCards[]` draft/live | slot composition + teardown transaction |
+  | `DebugCoordinator` | — | needs Dear ImGui, so frontend-only |
+  | `NetworkCoordinator` | `sscCards` `sscCard` `fujiNetCard` (~29 sites) | **blocked** on the device seams below |
+
+  → `CHANGELOG.md` 2026-08-26/27. *1-2 d left.*
 
 - 🟠 **No test drives the ImGui panels, so a UI-thread deadlock fails nothing**
   *(found the hard way 2026-08-27)* — wiring `PrinterCoordinator` into
