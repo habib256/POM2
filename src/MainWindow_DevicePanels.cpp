@@ -59,7 +59,7 @@ void MainWindow::renderEthernetPanelWindow()
 
 void MainWindow::renderSscPanelWindow()
 {
-    if (!show(pom2::PanelId::Ssc) || serialCards().empty()) return;
+    if (!show(pom2::PanelId::Ssc)) return;
 
     ImGui::SetNextWindowSize(ImVec2(480, 320), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("Super Serial###sscPanel", &show(pom2::PanelId::Ssc))) {
@@ -71,20 +71,27 @@ void MainWindow::renderSscPanelWindow()
     // two (printer + modem); other profiles typically run zero or one.
     // Per-slot port-input state lives in a static map so each tab keeps
     // its own draft port number across frames.
-    auto renderOne = [&](SuperSerialCard* ssc) {
-        if (!ssc) return;
-        const int slot = ssc->getSlot();
+    // Renders ONE tab from an immutable snapshot and returns what the user
+    // asked for. It touches no card: the panel used to read eight fields and
+    // perform four mutations straight through a card pointer, unlocked, from
+    // a tab body that a slot rebuild could invalidate mid-frame.
+    using Serial = pom2::DevicePanelCoordinator::SerialSnapshot;
+    using SerialCmd = pom2::DevicePanelCoordinator::SerialCommand;
+    auto renderOne = [&](const Serial& ssc) -> SerialCmd {
+        SerialCmd cmd;
+        const int slot = ssc.slot;
+        cmd.slot = slot;
         static std::map<int, int> portDrafts;
         auto it = portDrafts.find(slot);
         if (it == portDrafts.end()) {
-            portDrafts[slot] = ssc->getPort() ? ssc->getPort()
+            portDrafts[slot] = ssc.port ? ssc.port
                 : SuperSerialCard::kDefaultPort;
             it = portDrafts.find(slot);
         }
         int& portDraft = it->second;
 
-        const bool listening = ssc->isListening();
-        const bool connected = ssc->clientConnected();
+        const bool listening = ssc.listening;
+        const bool connected = ssc.connected;
 
         ImGui::Text("Status: %s%s",
             listening ? "listening" : "stopped",
@@ -118,19 +125,18 @@ void MainWindow::renderSscPanelWindow()
         ImGui::SameLine();
         if (!listening) {
             if (ImGui::Button("Start listener")) {
-                if (!ssc->startListening(static_cast<uint16_t>(portDraft))) {
-                    tapeStatusMessage = "SSC slot " + std::to_string(slot) +
-                        ": bind failed (port busy?)";
-                    tapeStatusUntil   = lastFrameTime + 4.0;
-                }
+                // Whether the bind succeeded is not known here — the
+                // coordinator reports it back after applying.
+                cmd.requestStart = true;
+                cmd.port = static_cast<uint16_t>(portDraft);
             }
         } else {
-            if (ImGui::Button("Stop listener")) ssc->stopListening();
+            if (ImGui::Button("Stop listener")) cmd.requestStop = true;
         }
 
         if (listening) {
             ImGui::TextWrapped("Connect from a host terminal:");
-            ImGui::TextWrapped("  telnet 127.0.0.1 %d", ssc->getPort());
+            ImGui::TextWrapped("  telnet 127.0.0.1 %d", ssc.port);
             ImGui::TextWrapped("In the Apple II:  PR#%d  (or IN#%d for input)",
                 slot, slot);
         } else {
@@ -141,9 +147,10 @@ void MainWindow::renderSscPanelWindow()
 #endif
 
         ImGui::Separator();
-        bool raw = ssc->rawMode();
+        bool raw = ssc.rawMode;
         if (ImGui::Checkbox("Raw mode (8-bit binary)", &raw)) {
-            ssc->setRawMode(raw);
+            cmd.requestRawMode = true;
+            cmd.rawMode = raw;
         }
         ImGui::SameLine();
         ImGui::TextDisabled("(?)");
@@ -154,9 +161,10 @@ void MainWindow::renderSscPanelWindow()
                               "XMODEM / Kermit / ADTPro / any binary protocol.");
         }
 
-        bool tap = ssc->printerTap();
+        bool tap = ssc.printerTap;
         if (ImGui::Checkbox("Feed ImageWriter printer", &tap)) {
-            ssc->setPrinterTap(tap);
+            cmd.requestPrinterTap = true;
+            cmd.printerTap = tap;
         }
         ImGui::SameLine();
         ImGui::TextDisabled("(?)");
@@ -170,43 +178,56 @@ void MainWindow::renderSscPanelWindow()
 
         ImGui::Separator();
         ImGui::Text("RX (telnet → A2): %llu B",
-            static_cast<unsigned long long>(ssc->bytesRx()));
+            static_cast<unsigned long long>(ssc.bytesRx));
         ImGui::Text("TX (A2 → telnet): %llu B",
-            static_cast<unsigned long long>(ssc->bytesTx()));
+            static_cast<unsigned long long>(ssc.bytesTx));
 
         if (ImGui::CollapsingHeader("Recent traffic")) {
             ImGui::TextDisabled("Last bytes the Apple II printed via PR#%d:",
                                 slot);
-            ImGui::TextWrapped("%s", ssc->recentTxText().c_str());
+            ImGui::TextWrapped("%s", ssc.recentTxText.c_str());
             ImGui::Spacing();
             ImGui::TextDisabled("Last bytes the host typed:");
-            ImGui::TextWrapped("%s", ssc->recentRxText().c_str());
+            ImGui::TextWrapped("%s", ssc.recentRxText.c_str());
         }
         ImGui::PopID();
     };
 
-    // Hoisted: each call walks the bus, and the topology cannot change
-    // inside one UI-thread frame.
-    const auto ports = serialCards();
+    // One acquisition for every tab's data, taken before any of them render.
+    const auto ports = devicePanelCoordinator_->captureSerialCards();
+    pom2::DevicePanelCoordinator::SerialCommand cmd;
     if (ports.size() == 1) {
-        renderOne(ports[0]);
+        cmd = renderOne(ports[0]);
     } else if (ImGui::BeginTabBar("##sscTabs")) {
         // //c convention: sl1 = printer port, sl2 = modem port. Other
         // profiles just label by slot number.
         const bool isIIcLayout = (ports.size() == 2) &&
-            (ports[0]->getSlot() == 1) && (ports[1]->getSlot() == 2);
+            (ports[0].slot == 1) && (ports[1].slot == 2);
         for (size_t i = 0; i < ports.size(); ++i) {
-            const int slot = ports[i]->getSlot();
+            const int slot = ports[i].slot;
             std::string tab;
             if (isIIcLayout) tab = (i == 0) ? "Printer port (sl1)"
                                             : "Modem port (sl2)";
             else             tab = "Slot " + std::to_string(slot);
             if (ImGui::BeginTabItem(tab.c_str())) {
-                renderOne(ports[i]);
+                cmd = renderOne(ports[i]);
                 ImGui::EndTabItem();
             }
         }
         ImGui::EndTabBar();
+    }
+
+    // Applied once, after every tab has rendered: the coordinator re-resolves
+    // the card under the machine lock, so a slot rebuild between the snapshot
+    // and here means the command is dropped rather than written to a freed
+    // card. A failed bind is reported back rather than guessed at.
+    if (!cmd.empty()) {
+        const auto r = devicePanelCoordinator_->applySerial(cmd);
+        if (r.startAttempted && !r.startSucceeded) {
+            tapeStatusMessage = "SSC slot " + std::to_string(cmd.slot) +
+                                ": bind failed (port busy?)";
+            tapeStatusUntil   = lastFrameTime + 4.0;
+        }
     }
 
     ImGui::End();
