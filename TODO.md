@@ -801,12 +801,25 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   - 🟡 **`SuperSerialTransport`** — the telnet listener. Main added
     `ThreadGuard` and a join-before-reassign fix inside the code the branch
     moved; port those into the transport, do not merge over them.
-  - 🟡 **`FujiNetLink`** — the SP-over-SLIP link. Main added the dead-helper
-    timeout fix and the log throttle.
+  - ✅ **`FujiNetLink`** — done, and it needed no code moved: SpOverSlipLink
+    already implemented every method with matching signatures, it was just
+    never named as an interface. Main's dead-helper timeout fix and log
+    throttle stayed untouched underneath. The card's accessor split into
+    `link()` (commands) and `transportLink()` (lifecycle the UI configures).
+    Pinned by `fujinet_link_seam`.
   - 🟡 **W5100 name resolution** — deliberately left in `W5100Device`: an
     async mailbox with an in-flight cap, a bounded wait and its own cache,
     wired to register reads. Its own pass.
-  `NetworkCoordinator` lands with the last of these. *1-2 d left.*
+  `NetworkCoordinator` lands with the last of these. *~1 d left.*
+
+  The SSC one is the largest by far and the only one that moves a thread: its
+  worker is ~180 lines of socket + telnet-IAC parsing that reaches into the
+  card's RX ring, TX deque, pacing state and printer tap. The branch's answer
+  is three hooks on the card (`processTransportTextRx`, `deliverTransportBytes`,
+  `drainTransportTx`) with the thread and sockets in the transport TU. Port
+  main's `guardedThread` wrapper AND the join-before-reassign fix into it —
+  assigning a new `std::thread` over a joinable member calls `std::terminate`,
+  and the worker can exit on its own after a listen error.
 - 🟢 **The SDK install contract + the CMake layer guard** *(2026-08-26 merge)* —
   `find_package(pom2_core)` / `POM2::core`, the standalone consumer example and
   the configure-time rejection of upward includes all rest on the branch's
