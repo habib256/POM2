@@ -216,6 +216,7 @@ set(SOURCES
     # v0.8.5 tree does not have.
     src/Pom2Core.cpp
     src/W5100HostSockets.cpp
+    src/W5100NameResolver.cpp
     src/AudioCoordinator.cpp
     src/DebugCoordinator.cpp
     src/DevicePanelCoordinator.cpp
@@ -270,6 +271,7 @@ set(SOURCES
     src/UthernetCard.cpp
     src/W5100Device.cpp
     src/W5100HostSockets.cpp
+    src/W5100NameResolver.cpp
     src/UthernetIICard.cpp
     src/SlirpNetworkBackend.cpp
     src/Uthernet_ImGui.cpp
@@ -730,6 +732,7 @@ add_library(pom2_core_test STATIC
     src/RewindBuffer.cpp
     src/AiControlServer.cpp
     src/W5100HostSockets.cpp
+    src/W5100NameResolver.cpp
     src/Pom2Core.cpp
     src/Apple2Display.cpp
     src/AppleWinNtsc.cpp
@@ -791,6 +794,7 @@ add_library(pom2_core_test STATIC
     src/UthernetCard.cpp
     src/W5100Device.cpp
     src/W5100HostSockets.cpp
+    src/W5100NameResolver.cpp
     src/UthernetIICard.cpp
     src/SlirpNetworkBackend.cpp
     src/SmartPort35Unit.cpp

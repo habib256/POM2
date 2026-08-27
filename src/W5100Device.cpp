@@ -11,6 +11,7 @@
 #include "W5100Device.h"
 
 #include "W5100HostSockets.h"
+#include "W5100NameResolver.h"
 #include "Pom2Build.h"
 
 #include "Logger.h"
@@ -261,7 +262,7 @@ void W5100Device::reset(bool powerCycle)
         // reset — Uthernet II manual p.10.
         dataAddress_ = 0;
         arpCache_.clear();
-        dnsCache_.clear();
+        if (resolver_) resolver_->clearCache();
     }
 
     for (size_t i = 0; i < kSocketCount; ++i) clearSocket(i);
@@ -1137,82 +1138,21 @@ void W5100Device::resolveDns(size_t i)
             s.registerAddress + kW5100SnDnsNameBegin + k))));
     }
 
-    uint32_t resolved = 0;
-    const auto cached = dnsCache_.find(name);
-    if (cached != dnsCache_.end()) {
-        resolved = cached->second;
-    } else {
-#if POM2_HAS_SOCKETS
-        // Cap the number of lookups still running detached: each hung
-        // resolver call is a live thread, and a guest looping OPEN over
-        // random hostnames must not mint them without bound. Checked
-        // BEFORE std::async — an un-detached future's destructor blocks.
-        {
-            std::lock_guard<std::mutex> lk(dnsMailbox_->mutex);
-            constexpr int kMaxDnsInFlight = 8;
-            if (dnsMailbox_->inFlight >= kMaxDnsInFlight) {
-                log().warn("W5100", "too many DNS lookups in flight — "
-                                    "'" + name + "' not attempted");
-                return;
-            }
-        }
-        // Off-thread with a bounded wait: a slow resolver must not stall
-        // the CPU thread. If the wait expires the lookup keeps running
-        // and lands in the cache, so the guest's retry succeeds.
-        auto future = std::async(std::launch::async,
-                                 [name]() { return hostByName(name); });
-        if (future.wait_for(std::chrono::milliseconds(kDnsWaitMs)) ==
-            std::future_status::ready) {
-            resolved = future.get();
-            // The cache is guest-fed (one entry per hostname ever opened):
-            // keep it from growing without bound across a long session.
-            if (dnsCache_.size() >= 512) dnsCache_.clear();
-            dnsCache_[name] = resolved;
-        } else {
-            // Still in flight. Detach it against the shared mailbox — the
-            // mailbox outlives this object if the card is unplugged
-            // mid-lookup, so the thread always has somewhere safe to
-            // write, and poll() folds the answer into dnsCache_ on the
-            // CPU thread. Never touch dnsCache_ from here.
-            auto shared = std::make_shared<std::future<uint32_t>>(std::move(future));
-            auto mailbox = dnsMailbox_;
-            {
-                std::lock_guard<std::mutex> lk(mailbox->mutex);
-                ++mailbox->inFlight;
-            }
-            // Guarded: future::get() rethrows whatever the lookup task threw,
-            // and push_back can throw bad_alloc — either would escape a
-            // detached thread and call std::terminate(). The inFlight slot has
-            // to be released on both paths too: leaking it would pin the guest
-            // on "still in flight" for the rest of the session.
-            std::thread([name, shared, mailbox]() {
-                bool counted = false;
-                pom2::runGuarded("W5100", [&] {
-                    const uint32_t late = shared->get();
-                    std::lock_guard<std::mutex> lk(mailbox->mutex);
-                    mailbox->pending.push_back({ name, late });
-                    --mailbox->inFlight;
-                    counted = true;
-                });
-                if (!counted) {
-                    std::lock_guard<std::mutex> lk(mailbox->mutex);
-                    --mailbox->inFlight;
-                }
-            }).detach();
-            log().info("W5100", "DNS lookup for '" + name +
-                                "' still in flight — retry the connection");
-            return;
-        }
-#else
-        log().warn("W5100", "virtual DNS is unavailable in the WASM build");
+    // The lookup, its cache, the bounded wait and the in-flight cap all live
+    // in W5100NameResolver now. What stays here is the part that IS the chip:
+    // reading the name out of the socket's DNS registers above, and writing
+    // the answer into DIPR below.
+    if (!resolver_) resolver_ = std::make_unique<W5100NameResolver>();
+    const auto answer = resolver_->resolve(name, kDnsWaitMs);
+    if (answer.status != W5100NameResolver::Status::Resolved) {
+        if (answer.status == W5100NameResolver::Status::Failed)
+            log().warn("W5100", "could not resolve '" + name + "'");
+        // Pending and Refused already logged their own reason.
         return;
-#endif
     }
+    const uint32_t resolved = answer.address;
 
-    if (resolved == 0) {
-        log().warn("W5100", "could not resolve '" + name + "'");
-        return;
-    }
+
     const uint8_t* ip = reinterpret_cast<const uint8_t*>(&resolved);
     for (int b = 0; b < 4; ++b)
         setMem(static_cast<uint16_t>(diprAddress + b), ip[b]);
@@ -1421,14 +1361,8 @@ void W5100Device::poll()
 
 void W5100Device::drainPendingDns()
 {
-    std::vector<PendingDns> ready;
-    {
-        std::lock_guard<std::mutex> lk(dnsMailbox_->mutex);
-        if (dnsMailbox_->pending.empty()) return;
-        ready.swap(dnsMailbox_->pending);
-    }
-    if (dnsCache_.size() >= 512) dnsCache_.clear();   // same cap as resolveDns
-    for (const PendingDns& p : ready) dnsCache_[p.name] = p.address;
+    // CPU thread only, which is what keeps the resolver's cache lock-free.
+    if (resolver_) resolver_->poll();
 }
 
 // ── Introspection ─────────────────────────────────────────────────────

@@ -4722,6 +4722,7 @@ add_executable(test_uthernet2_w5100
     ${CMAKE_SOURCE_DIR}/src/UthernetIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
     ${CMAKE_SOURCE_DIR}/src/W5100HostSockets.cpp
+    ${CMAKE_SOURCE_DIR}/src/W5100NameResolver.cpp
     ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_uthernet2_w5100 PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -5014,6 +5015,7 @@ add_executable(test_w5100_udp_recv
     w5100_udp_recv_test.cpp
     ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
     ${CMAKE_SOURCE_DIR}/src/W5100HostSockets.cpp
+    ${CMAKE_SOURCE_DIR}/src/W5100NameResolver.cpp
 )
 target_include_directories(test_w5100_udp_recv PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -5746,5 +5748,17 @@ if(TARGET pom2_core_test)
 pom2_add_headless_test(test_serial_panel_boundary
     NAME serial_panel_boundary TIMEOUT 10 PORTABLE
     SOURCES serial_panel_boundary_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+endif()
+
+# ─── W5100 virtual-DNS resolver ─────────────────────────────────────────
+# The lookup is injectable, so these run with no network and no waiting.
+# The bounded wait was previously reachable only against a genuinely slow
+# resolver, and the in-flight cap only by a guest looping OPEN faster than
+# DNS could answer.
+if(TARGET pom2_core_test)
+pom2_add_headless_test(test_w5100_name_resolver
+    NAME w5100_name_resolver TIMEOUT 30 PORTABLE
+    SOURCES w5100_name_resolver_test.cpp
     LINK_LIBRARIES pom2_core_test)
 endif()

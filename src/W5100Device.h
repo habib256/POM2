@@ -64,6 +64,7 @@
 
 #include "NetworkBackend.h"
 #include "SocketCompat.h"
+#include "W5100NameResolver.h"
 #include "W5100Socket.h"   // socket_t / kInvalidSocket for Socket::fd
 
 #include <array>
@@ -372,14 +373,9 @@ private:
     void resolveDns(size_t i);
     void macForAddress(uint32_t ipv4, MacAddress& out);
 
-    /// A name lookup that outlived its bounded wait. The resolver thread
-    /// parks the answer here; `poll()` (CPU thread) folds it into
-    /// `dnsCache_`. Keeps the cache single-threaded despite the async
-    /// lookup — the mutex guards only this hand-off queue.
-    struct PendingDns {
-        std::string name;
-        uint32_t    address = 0;
-    };
+    /// Virtual DNS. Created lazily so a card that never resolves a name
+    /// never starts a resolver.
+    std::unique_ptr<W5100NameResolver> resolver_;
     void drainPendingDns();
 
     std::vector<uint8_t>              memory_;
@@ -392,21 +388,7 @@ private:
     /// The real card has no ARP cache — this one exists purely so an
     /// IPRAW send does not re-resolve on every packet.
     std::map<uint32_t, MacAddress> arpCache_;
-    std::map<std::string, uint32_t> dnsCache_;
 
-    /// Written by detached resolver threads, drained by poll(). Shared
-    /// through a shared_ptr so a lookup that outlives the card (the user
-    /// pulled it out of the slot mid-resolve) has nowhere unsafe to write.
-    struct DnsMailbox {
-        std::mutex              mutex;
-        std::vector<PendingDns> pending;
-        /// Detached lookups still running. Checked before std::async is
-        /// even called (its future's destructor would block), so a guest
-        /// looping OPEN over random hostnames cannot pile up resolver
-        /// threads without bound.
-        int                     inFlight = 0;
-    };
-    std::shared_ptr<DnsMailbox> dnsMailbox_ = std::make_shared<DnsMailbox>();
 
     uint64_t bytesSent_     = 0;
     uint64_t bytesReceived_ = 0;
