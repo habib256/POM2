@@ -1,8 +1,19 @@
-// VERHILLE Arnaud 2026
-
 // POM2 Apple II Emulator
-// Copyright (C) 2026
+// Copyright (C) 2026 VERHILLE Arnaud
 //
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 // Keyboard — see Keyboard.h. Bodies moved verbatim from Memory.cpp (the paste
 // FIFO's control-byte filtering, CR/LF collapse and case-fold, and the
 // newest-wins latch), with only the member renames Memory used inline

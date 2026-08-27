@@ -1,8 +1,19 @@
-// VERHILLE Arnaud 2026
-
 // POM2 Apple II Emulator
-// Copyright (C) 2026
+// Copyright (C) 2026 VERHILLE Arnaud
 //
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 // Mat4 — minimal column-major 4×4 matrix + Vec3 math for the 3D voxel view.
 // Header-only, no GL, no dependency (the repo has no glm). Column-major to
 // match OpenGL's uniform layout, so the float[16] can be handed straight to
