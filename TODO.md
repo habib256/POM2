@@ -700,29 +700,68 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   &lt; 3 000 lines/file. *1-2 d.*
   → [DEV](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp)
 - 🟠 **Wire the remaining coordinators into `MainWindow`** *(2026-08-26 merge;
-  in progress 2026-08-27)* — **done so far**: `MouseCoordinator`,
-  `PrinterCoordinator`, `AudioCoordinator`, `DevicePanelCoordinator`. That
-  removed 8 of the 18 card aliases (mouse ×2, printer ×2, audio ×4, Chat
-  Mauve, Clock, Uthernet ×2) and fixed three real defects on the way — a mixer
-  that hid a coexisting second Mockingboard, an ImageWriter "not feeding" list
-  that never named the FujiNet unit, and a panel reading a spool with no lock.
-  **Left**: `StorageCoordinator` (diskCards/diskCard/hdvCard/cffaCard/
-  smartPortCard — ~200 call sites, by far the biggest), `SlotCardFactory` +
-  `SlotConfigurationCoordinator` + `SlotProvisioningCoordinator` +
-  `SlotRebuildCoordinator` (slot composition and the teardown transaction),
-  and `DebugCoordinator`. `sscCards`/`sscCard` and `fujiNetCard` wait on
-  `NetworkCoordinator`, which needs the device seams first (item below).
+  in progress 2026-08-27)* — **done**: `MouseCoordinator`,
+  `PrinterCoordinator`, `AudioCoordinator`, `DevicePanelCoordinator`. 8 of the
+  18 card aliases gone (mouse ×2, printer ×2, audio ×4, Chat Mauve, Clock,
+  Uthernet ×2), and three real defects fixed on the way: a mixer that hid a
+  coexisting second Mockingboard (and let it inherit the other's persisted
+  level), an ImageWriter "not feeding" list that never named the FujiNet unit
+  so a FujiNet-only setup showed an unconnected printer, and a spool read with
+  no lock under a comment claiming the opposite.
+
+  **Left, in the order to do them:**
+
+  | Coordinator | Aliases | Sites | Note |
+  |---|---|---|---|
+  | `StorageCoordinator` | `diskCards` `diskCard` `hdvCard` `cffaCard` `smartPortCard` | ~200 | biggest by far; do it alone |
+  | `SlotCardFactory` + `SlotConfiguration` + `SlotProvisioning` + `SlotRebuild` | `slotCards[]` draft/live | — | slot composition + teardown transaction |
+  | `DebugCoordinator` | — | few | needs Dear ImGui, so it is frontend-only |
+  | `NetworkCoordinator` | `sscCards` `sscCard` `fujiNetCard` | ~29 | **blocked** on the device seams below |
+
+  `StorageCoordinator` is the one to be careful with: unlike the four already
+  done, a mistake there costs disk images rather than a hang — it owns mount,
+  eject, write-back and the WOZ→PO conversion. Its own tests
+  (`storage_coordinator`, 596 lines) already pin per-slot restoration, a moved
+  primary HDV, CFFA policy and the session-only HDV persistence guard, so wire
+  it against those rather than by inspection.
   → `CHANGELOG.md` 2026-08-26/27. *2-4 d left.*
+
 - 🟠 **No test drives the ImGui panels, so a UI-thread deadlock fails nothing**
-  *(found the hard way 2026-08-27)* — wiring a coordinator into
-  `renderFujiNetPanelWindow` put a `lockState()` call inside an existing
-  `lock_guard(stateMutex())` scope. `stateMutex` is non-recursive, so opening
-  that panel would have hung the UI thread and the emulator with it, and the
-  full 207-test suite stayed green. Caught by a static scan, not by a test.
-  `tests/frontend_device_panel_concurrency` is exactly the missing net and is
-  still on `refactor/core-boundaries-and-coordinators` waiting on the device
-  seams. Until it lands, every new coordinator call site needs the scan.
+  *(found the hard way 2026-08-27)* — wiring `PrinterCoordinator` into
+  `renderFujiNetPanelWindow` put a `captureHost()` inside an existing
+  `lock_guard(stateMutex())` scope. Every coordinator capture/apply takes the
+  machine lock itself and `stateMutex` is **non-recursive**, so opening that
+  panel would have hung the UI thread and the emulator together — while the
+  full 207-test suite stayed green, because nothing drives the panels.
+
+  Mitigation in the tree now: **`tools/check_coordinator_locks.sh`**, run it
+  after touching any coordinator call site. It is falsifiable — checked out
+  against `44b715f` it reports the real bug and exits 1. Two working notes it
+  encodes, both learned by getting them wrong:
+  - it must match **both** `lockState()` and the bare `stateMutex()`; the
+    first version looked only for the former and missed this bug;
+  - a lock opened in a nested block that has since closed is NOT held —
+    naive brace counting produces false positives on `renderMenuBar`,
+    `renderStatusBar` and `applyProfile`, all of which are fine.
+
+  The real fix is still `tests/frontend_device_panel_concurrency` (a headless
+  ImGui frame driven while cards are replugged), which sits on
+  `refactor/core-boundaries-and-coordinators` waiting on the device seams.
   *1 d, after the seams.*
+
+- 🟡 **The wiring pattern, so the remaining tranches match the done ones**
+  *(2026-08-27, working note)* — capture per call site rather than caching a
+  per-frame snapshot in `MainWindow` (that is what the branch does and what
+  its TSan pass covers); re-resolve the card inside the coordinator before
+  applying a command, because ImGui callbacks (`onCardDipChanged`) fire later
+  in the frame than the panel that installed them; bind panel-registry
+  availability + label to a snapshot, not to `card(&alias)` — the registry
+  takes the *address* of the member, so the alias cannot simply be deleted;
+  and replace alias-nulling in the two `MainWindow_Slots.cpp` teardown blocks
+  with an explicit invalidation where the coordinator holds identity across a
+  rebuild (`PrinterCoordinator::resetFeedCursor` — a rebuild can hand a
+  replacement card the same allocator address).
+
 - 🟡 **Re-derive the device injection seams on top of v0.8.5** *(2026-08-26
   merge)* — `W5100Socket` / `SuperSerialTransport` / `FujiNetLink` and their
   deterministic fakes stayed on `refactor/core-boundaries-and-coordinators`
@@ -738,6 +777,29 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   v0.8.5 source lists have no installable library target to attach them to, so
   these land with that layering or not at all. The facade itself
   (`include/pom2/core.hpp`, pinned by `pom2_core_api`) is already in.
+- 🟢 **What is still parked on `refactor/core-boundaries-and-coordinators`**
+  *(inventory, 2026-08-27)* — so nobody re-derives it from the diff: the
+  branch's own `MainWindow`/`Memory` decompositions (superseded by v0.8.5's and
+  **not** wanted), the device seams `W5100Socket` / `SuperSerialTransport` /
+  `FujiNetLink` + `FujiNetHost` + `W5100HostSockets` + `SuperSerialTcpTransport`,
+  the three deterministic fakes and `tests/deterministic_adapter_injection`,
+  `NetworkCoordinator`, `tests/frontend_device_panel_concurrency`,
+  `tests/input_c0xx_contract`, `tests/mainwindow_tu_size.cmake`,
+  `cmake/Pom2Architecture.cmake` + the layer-guard tests,
+  `cmake/pom2_coreConfig.cmake.in` + `examples/pom2_core_consumer` +
+  `tests/pom2_core_sdk_consumer.cmake`, and `docs/ARCHITECTURE.md`. Everything
+  else from that branch is merged. Keep the branch until the seams item is
+  done; it is the only copy.
+- 🟢 **New headless tests link `pom2_core_test`** *(2026-08-26, working note)* —
+  the assertion-enabled core-minus-renderer archive added with the merge
+  (`CMakeLists.txt`), plus the `pom2_add_headless_test()` constructor in
+  `tests/cmake/Pom2Test.cmake`. Declare a new test with SOURCES + `LINK_LIBRARIES
+  pom2_core_test` instead of re-listing a private bundle of core sources. The
+  197 pre-existing tests deliberately keep their explicit bundles — the archive
+  is linked per target, not at directory scope, so converting them is optional
+  cleanup rather than a prerequisite. The archive excludes `JoystickInput.cpp`
+  (GLFW) and `DebugCoordinator.cpp` (Dear ImGui), the two core-list files that
+  do reach the renderer.
 - 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
   to centralize into a `Config` (env → CLI → Settings → defaults),
   list env vars in `--help`. *1 d.* Architect **P4**.
