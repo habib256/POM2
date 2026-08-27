@@ -5979,40 +5979,13 @@ pom2::SmartPortCard* MainWindow::primarySmartPortCard() const
 
 bool MainWindow::flushSlotMedia(std::string& err)
 {
-    err.clear();
-    bool allSaved = true;
-    const auto recordFailure = [&](std::string message) {
-        if (!err.empty()) err += "; ";
-        err += std::move(message);
-        allSaved = false;
-    };
+    // The coordinator walks the same three families (Disk II pending writes,
+    // block devices, SmartPort units) and aggregates the same failure text.
+    // It is the flush half of the rebuild transaction — only a successful one
+    // may prepare a teardown — so it has to be the same code as the one the
+    // rebuild path uses, not a second copy that can drift.
     std::lock_guard<std::mutex> lk(controller->stateMutex());
-    for (auto* card : diskIICards()) {
-        if (card && !card->flushPendingWrites()) {
-            recordFailure("Disk II slot " + std::to_string(card->getSlot()) +
-                          ": " + card->getLastError());
-        }
-    }
-    for (auto* card : blockCards()) {
-        if (card && !card->saveDirty()) {
-            recordFailure("block device slot " +
-                          std::to_string(card->getSlot()) + ": " +
-                          card->getLastError());
-        }
-    }
-    for (auto* card : smartPortCards()) {
-        if (!card) continue;
-        for (size_t bay = 0; bay < pom2::SmartPortCard::kMaxUnits; ++bay) {
-            auto* unit = card->unit(bay);
-            if (unit && !unit->saveDirty()) {
-                recordFailure("SmartPort slot " +
-                              std::to_string(card->getSlot()) + " bay " +
-                              std::to_string(bay + 1) + ": " +
-                              unit->lastError());
-            }
-        }
-    }
-    return allSaved;
+    return storageCoordinator_->flushAll(controller->memory().slotBus(), err);
 }
 
 int MainWindow::ensureHdvCardForBoot()
@@ -7608,7 +7581,7 @@ std::string freePoNameFor(const std::string& wozPath)
 }
 }  // namespace
 
-bool MainWindow::convertWoz35ToPo(int drive, bool useSmartPort35)
+bool MainWindow::convertWoz35ToPo(int drive, bool /*useSmartPort35*/)
 {
     // The way out of a read-only 3.5" WOZ, and the reason it exists: POM2
     // decodes Sony GCR but cannot encode it, so a `.woz` mounted at 800K can
@@ -7617,75 +7590,26 @@ bool MainWindow::convertWoz35ToPo(int drive, bool useSmartPort35)
     // setup is the canonical case). The decode already produced the exact
     // 1600 blocks a `.po` holds, so the conversion is a file write and
     // nothing more. The WOZ is never touched: it stays the archival master.
-    std::string outPath, err;
-    bool ok = false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        pom2::Disk35Image* img = nullptr;
-        if (useSmartPort35 && primarySmartPortCard()) {
-            if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                    primarySmartPortCard()->unit(static_cast<size_t>(drive))))
-                img = &u->image();
-        } else {
-            img = (drive == 0) ? &controller->disk35Internal()
-                               : &controller->disk35External();
-        }
-        if (!img || img->kind() != pom2::Disk35Image::ImageKind::Woz35) {
-            tapeStatusMessage = "Convert: that drive does not hold a 3.5\" WOZ";
-            tapeStatusUntil   = lastFrameTime + 4.0;
-            return false;
-        }
-        outPath = freePoNameFor(img->path());
-        if (outPath.empty()) {
-            tapeStatusMessage = "Convert: no free .po filename beside the WOZ";
-            tapeStatusUntil   = lastFrameTime + 6.0;
-            return false;
-        }
-        ok = img->exportRawTo(outPath, err);
-    }
-    if (!ok) {
-        tapeStatusMessage = "Convert failed: " + err;
-        tapeStatusUntil   = lastFrameTime + 8.0;
-        pom2::log().warn("Disk 3.5", tapeStatusMessage);
+    //
+    // The coordinator picks the source image by the same routing rule as
+    // mount and eject, writes the `.po`, re-mounts it in place of the WOZ and
+    // persists the new path — so the drive the panel is showing is the drive
+    // that gets converted. The routing argument is ignored and kept only so
+    // the call sites need not change.
+    const auto r = storageCoordinator_->convertDisk35WozToPo(*controller,
+                                                             *settings, drive);
+    if (!r.ok) {
+        tapeStatusMessage = "3.5\" convert failed: " + r.error;
+        tapeStatusUntil   = lastFrameTime + 6.0;
         return false;
     }
-    pom2::log().info("Disk 3.5", "converted WOZ to " + outPath);
-
-    // Mount the copy in the same drive and turn write-back ON. Both halves
-    // matter: leaving the WOZ mounted would mean the user converts, sees
-    // nothing change and still cannot save; and mounting the .po with
-    // write-back off would refuse the writes for a SECOND reason, which is
-    // precisely the confusion this feature exists to end. `routeMount35`
-    // takes the lock itself, so this runs unlocked.
-    if (!routeMount35(drive, outPath, err)) {
-        tapeStatusMessage = "Converted to " + outPath +
-                            ", but mounting it failed: " + err;
-        tapeStatusUntil   = lastFrameTime + 8.0;
-        return false;
-    }
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (useSmartPort35 && primarySmartPortCard()) {
-            if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                    primarySmartPortCard()->unit(static_cast<size_t>(drive)))) {
-                u->setWriteBackEnabled(true);
-                const std::string base =
-                    "smartport_slot" +
-                    std::to_string(primarySmartPortCard()->getSlot()) +
-                    "_unit" + std::to_string(drive);
-                settings->setBool(base + "_writeback", true);
-            }
-        } else {
-            pom2::Disk35Image& img = (drive == 0)
-                ? controller->disk35Internal() : controller->disk35External();
-            img.setWriteBackEnabled(true);
-        }
-    }
-    settings->save();
-    tapeStatusMessage = "Converted to " +
-        std::filesystem::path(outPath).filename().string() +
-        " and mounted with write-back on — the .woz is untouched";
-    tapeStatusUntil = lastFrameTime + 8.0;
+    // The memoised convert-target name is stale the moment the medium
+    // changes: the drive now holds the .po, not the WOZ it was computed from.
+    convertSrc_[drive].clear();
+    convertDst_[drive].clear();
+    tapeStatusMessage = "3.5\" drive " + std::string(drive == 0 ? "1" : "2") +
+                        " converted to " + r.outputPath + " (now writable)";
+    tapeStatusUntil   = lastFrameTime + 6.0;
     return true;
 }
 
@@ -7694,75 +7618,43 @@ void MainWindow::renderDisk35PanelWindow()
     if (!show(pom2::PanelId::Disk35)) return;
 
     pom2::Disk35Controller_ImGui::PanelSnapshot snap;
-    // 3.5" is "supported" by the //c+ profile (on-board SmartPort + MIG)
-    // OR by ANY profile where the user plugged a SmartPort 3.5" card
-    // (option C 2026-05-15: //e + Liron-class card). Both paths share
-    // the same Disk35Image objects so the panel doesn't have to care
-    // which mux is talking.
+    // 3.5" is "supported" by the //c+ profile (on-board SmartPort + MIG) OR by
+    // ANY profile where the user plugged a SmartPort 3.5" card (//e +
+    // Liron-class). Both paths share the same Disk35Image objects, so the
+    // panel does not have to care which mux is talking.
     snap.supportedByProfile =
         (activeProfile == pom2::SystemProfile::AppleIIcPlus) ||
         (primarySmartPortCard() != nullptr);
 
-    // Source selection: a SmartPort slot card on any NON-//c+ profile owns
-    // its 3.5" media in its own per-unit `Disk35Image` (SmartPort35Unit) —
-    // NOT the //c+ on-board hub's pair. The panel used to always read the
-    // hub here, so on a //e + Liron-class card it showed two empty on-board
-    // drives while the actual media sat in the card's units (and mount /
-    // eject / write-back all hit the wrong object). Read + route from the
-    // card's units when that's the source; keep the hub path for //c+.
-    const bool useSmartPort35 =
-        (primarySmartPortCard() != nullptr &&
-         activeProfile != pom2::SystemProfile::AppleIIcPlus);
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (useSmartPort35) {
-            for (int i = 0; i < 2; ++i) {
-                auto& s = snap.drives[i];
-                auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                    primarySmartPortCard()->unit(static_cast<size_t>(i)));
-                if (!u) { s = {}; continue; }  // empty or non-3.5 (HDV) unit
-                const pom2::Disk35Image& img = u->image();
-                s.diskLoaded        = u->isLoaded();
-                s.motorOn           = false;  // block-level card: no flux/motor line
-                s.track             = 0;
-                s.side1             = false;
-                s.writeProtected    = u->isWriteProtected();
-                s.diskPath          = u->path();
-                s.lastError         = u->lastError();
-                s.hasUnsavedChanges = img.hasUnsavedChanges();
-                s.writeBackEnabled  = u->isWriteBackEnabled();
-                s.isWoz = (img.kind() == pom2::Disk35Image::ImageKind::Woz35);
-            }
-        } else {
-            const pom2::Sony35Drive* drives[2] = {
-                &controller->sony35Internal(), &controller->sony35External(),
-            };
-            const pom2::Disk35Image* images[2] = {
-                &controller->disk35Internal(),  &controller->disk35External(),
-            };
-            for (int i = 0; i < 2; ++i) {
-                auto& s = snap.drives[i];
-                s.diskLoaded        = drives[i]->isInserted();
-                s.motorOn           = drives[i]->isMotorOn();
-                s.track             = drives[i]->track();
-                s.side1             = drives[i]->side1();
-                s.writeProtected    = drives[i]->isWriteProtected();
-                s.diskPath          = images[i]->path();
-                s.lastError         = images[i]->lastError();
-                s.hasUnsavedChanges = images[i]->hasUnsavedChanges();
-                s.writeBackEnabled  = images[i]->isWriteBackEnabled();
-                s.isWoz = (images[i]->kind() ==
-                           pom2::Disk35Image::ImageKind::Woz35);
-            }
-        }
+    // One acquisition, and — this is the behaviour change — the SAME source
+    // rule the mount path uses: a plugged SmartPort card owns the 3.5" media,
+    // whatever the profile. The panel used to exclude //c+ from that branch
+    // and read the on-board hub instead, while routeMount35 sent the media to
+    // the card's units regardless. So on //c+ the panel showed two empty
+    // on-board drives over media that was really in the card, and eject and
+    // write-back hit the wrong object.
+    const auto d35 = storageCoordinator_->captureDisk35(*controller);
+    for (int i = 0; i < 2; ++i) {
+        const auto& src = d35.drives[i];
+        auto& dst = snap.drives[i];
+        dst.diskLoaded        = src.loaded;
+        dst.motorOn           = src.motorOn;
+        dst.track             = src.track;
+        dst.side1             = src.side1;
+        dst.writeProtected    = src.writeProtected;
+        dst.diskPath          = src.path;
+        dst.lastError         = src.lastError;
+        dst.hasUnsavedChanges = src.hasUnsavedChanges;
+        dst.writeBackEnabled  = src.writeBackEnabled;
+        dst.isWoz             = src.isWoz;
     }
 
-    // Convert-target names are resolved OUTSIDE the lock and memoised on the
-    // source path. `freePoNameFor` stats the filesystem (up to 99 times when
-    // earlier candidates are taken), and this panel re-snapshots every frame
-    // — doing that under `stateMutex` put blocking I/O on the lock the CPU
-    // worker needs 60x/s. The answer only changes when the medium changes,
-    // so the path is the whole cache key.
+    // Convert-target names stay memoised HERE rather than taken from the
+    // snapshot. The coordinator computes them outside its lock (so they never
+    // block the CPU worker), but it recomputes on every capture, and
+    // `freePoNameFor` stats the filesystem up to 99 times when earlier
+    // candidates are taken — this panel re-snapshots every frame. The answer
+    // only changes when the medium changes, so the path is the whole key.
     for (int i = 0; i < 2; ++i) {
         auto& s = snap.drives[i];
         if (!s.isWoz) { convertSrc_[i].clear(); convertDst_[i].clear(); continue; }
@@ -7835,62 +7727,31 @@ void MainWindow::renderDisk35PanelWindow()
         disk35Title, show(pom2::PanelId::Disk35), snap);
 
     if (result.requestConvertDrive >= 0)
-        convertWoz35ToPo(result.requestConvertDrive, useSmartPort35);
+        convertWoz35ToPo(result.requestConvertDrive, d35.usesSmartPort());
 
     for (int d = 0; d < 2; ++d) {
         if (result.requestEject[d]) {
-            bool ok = false;
-            std::string err;
-            if (useSmartPort35) {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                        primarySmartPortCard()->unit(static_cast<size_t>(d)))) {
-                    ok = u->eject();
-                    if (!ok) err = u->lastError();
-                    const std::string base =
-                        "smartport_slot" +
-                        std::to_string(primarySmartPortCard()->getSlot()) +
-                        "_unit" + std::to_string(d);
-                    if (ok) {
-                        settings->setString(base + "_path", "");
-                        settings->save();
-                    }
-                }
-            } else {
-                ok = controller->eject35(d);
-                if (!ok) {
-                    const auto& img = d == 0 ? controller->disk35Internal()
-                                             : controller->disk35External();
-                    err = img.lastError();
-                }
-            }
-            tapeStatusMessage = ok
+            // Routed like the mount: the coordinator decides whether the
+            // medium lives in a SmartPort unit or the on-board pair, ejects
+            // there and clears the matching settings key. The two branches
+            // here duplicated that decision and only the SmartPort one
+            // persisted, so an on-board eject came back on the next launch.
+            const auto e = storageCoordinator_->ejectDisk35(*controller,
+                                                            *settings, d);
+            tapeStatusMessage = e.ok
                 ? (std::string("3.5\" drive ") +
                    (d == 0 ? "1 (internal)" : "2 (external)") + " ejected")
-                : ("3.5\" eject failed: " + err);
+                : ("3.5\" eject failed: " + e.error);
             tapeStatusUntil = lastFrameTime + 4.0;
         }
-        // Per-drive write-back toggle. Apply under stateMutex so a save-
-        // on-eject race against the worker can't half-flip the flag.
+        // Per-drive write-back toggle. The coordinator applies it under the
+        // machine lock — a save-on-eject race against the worker must not
+        // half-flip the flag — and persists after unlocking. The on-board
+        // branch here never wrote a settings key at all, so that toggle was
+        // forgotten every launch.
         if (result.requestWriteBackToggle[d]) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (useSmartPort35) {
-                if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                        primarySmartPortCard()->unit(static_cast<size_t>(d)))) {
-                    u->setWriteBackEnabled(result.newWriteBack[d]);
-                    const std::string base =
-                        "smartport_slot" +
-                        std::to_string(primarySmartPortCard()->getSlot()) +
-                        "_unit" + std::to_string(d);
-                    settings->setBool(base + "_writeback", result.newWriteBack[d]);
-                    settings->save();
-                }
-            } else {
-                pom2::Disk35Image& img = (d == 0)
-                    ? controller->disk35Internal()
-                    : controller->disk35External();
-                img.setWriteBackEnabled(result.newWriteBack[d]);
-            }
+            (void)storageCoordinator_->setDisk35WriteBack(
+                *controller, *settings, d, result.newWriteBack[d]);
             tapeStatusMessage = std::string("3.5\" drive ")
                 + (d == 0 ? "1" : "2")
                 + (result.newWriteBack[d]
@@ -7934,11 +7795,11 @@ void MainWindow::renderDisk35PanelWindow()
             // PR#N landing should follow that. On //c+ on-board, fall
             // back to `coldBoot()` so the ROM autostart picks up the
             // built-in SmartPort firmware.
-            if (useSmartPort35) {
-                controller->bootFromSlot(primarySmartPortCard()->getSlot());
+            if (d35.usesSmartPort()) {
+                controller->bootFromSlot(d35.smartPortSlot);
                 tapeStatusMessage = "3.5\" drive "
                     + std::string(d == 0 ? "1" : "2")
-                    + " booted (slot " + std::to_string(primarySmartPortCard()->getSlot())
+                    + " booted (slot " + std::to_string(d35.smartPortSlot)
                     + "): " + result.requestInsertAndBoot;
             } else {
                 controller->coldBoot();
