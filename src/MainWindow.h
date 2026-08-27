@@ -46,6 +46,10 @@ class EmulationController;
 // than included for the same reason as EmulationController itself — this
 // header stays outside that include cone; see `emul()` below.
 namespace pom2 { class StateAccess; }
+namespace pom2 { class MouseCoordinator; }
+namespace pom2 { class PrinterCoordinator; }
+namespace pom2 { class AudioCoordinator; }
+namespace pom2 { class DevicePanelCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -324,11 +328,30 @@ private:
     // diskCards.front()`. Most legacy code paths use `diskCard` directly
     // (auto-turbo, AI control attach, menu Eject); the panel render loop
     // iterates `diskCards`.
+    /// Host-mouse boundary: resolves both mouse implementations from the
+    /// live SlotBus under the machine lock and publishes immutable inspector
+    /// snapshots. Owns no card pointer.
+    std::unique_ptr<pom2::MouseCoordinator> mouseCoordinator_;
+
+    /// Host printer cable: resolves every feed source under lockState(),
+    /// drains exactly one by physical priority and hands an owned byte
+    /// batch out after unlocking. Owns no card pointer.
+    std::unique_ptr<pom2::PrinterCoordinator> printerCoordinator_;
+
+    /// Audio bus policy: owns the authoritative registration inventory used
+    /// for teardown, and resolves every Mockingboard / Phasor / Echo variant
+    /// from the live SlotBus for the mixer and the inspectors.
+    std::unique_ptr<pom2::AudioCoordinator> audioCoordinator_;
+
+    /// Chat Mauve, Clock, Uthernet I/II and the Super Serial inventory:
+    /// resolves each from the live SlotBus, copies an immutable snapshot for
+    /// ImGui and applies the frame's commands after re-resolution.
+    std::unique_ptr<pom2::DevicePanelCoordinator> devicePanelCoordinator_;
+
     std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     pom2::CffaCard*              cffaCard = nullptr;       // non-owning, owned by SlotBus
-    LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
     // Plural alias: the //c built-in lineup ships TWO SSC-compatible
     // serial ports (printer + modem). `sscCard` is the primary alias =
     // `sscCards.empty() ? nullptr : sscCards.front()` (kept for legacy
@@ -336,30 +359,26 @@ private:
     // (menu, panel tabs, settings persistence) iterate `sscCards`.
     std::vector<SuperSerialCard*> sscCards;
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
-    ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
-    MouseCard*                   mouseCard = nullptr;      // non-owning, owned by SlotBus
-    // AppleWin-style HLE mouse — alternative to MouseCard (only one of
-    // the two is plugged at a time). Both implement the same setHostMouse
-    // API so the UI input layer is variant-agnostic.
-    MouseCardAppleWin*           mouseAwCard = nullptr;    // non-owning, owned by SlotBus
-    // These three are "last one plugged wins" aliases used by the mixer /
-    // panels. They are NOT a complete inventory: several of these card
-    // types are distinct catalog keys that can coexist (e.g. "mockingboard"
-    // = Variant::AC in one slot AND "mockingboard_c" = Variant::SoundII in
-    // another, which the single-instance uniqueness rule does not merge).
-    // Never drive AudioDevice teardown off them — see registeredAudioSources_.
-    MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
-    PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
-    EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
-    EchoPlusTMS5220Card*         echoPlusTmsCard  = nullptr; // non-owning, owned by SlotBus
+    // Both mouse implementations (MouseCard, MouseCardAppleWin) are reached
+    // through `mouseCoordinator_`, never through a retained alias: a slot
+    // replacement or a profile switch destroys the card, and the aliases were
+    // read from GLFW callbacks that hold no lock. The coordinator re-resolves
+    // from the live SlotBus under lockState() on every capture and route.
+    // The four audio-card aliases are gone. They were "last one plugged wins"
+    // and so were never a complete inventory: several of these types are
+    // distinct catalog keys that CAN coexist ("mockingboard" = Variant::AC in
+    // one slot and "mockingboard_c" = Variant::SoundII in another, which the
+    // single-instance uniqueness rule does not merge), and the mixer showed
+    // only one of them. `audioCoordinator_` enumerates every live instance.
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
-    PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
-    GrapplerCard*                grapplerCard     = nullptr; // non-owning, owned by SlotBus
+    // PrinterCard / GrapplerCard / the FujiNet printer unit / the SSC printer
+    // tap are the four things that can feed the ImageWriter. All four are
+    // reached through `printerCoordinator_`, which resolves them under the
+    // machine lock and owns the feed-cursor handover — the panel used to read
+    // a spool through a bare alias while the CPU thread appended to it.
     // Ethernet. Both are multi-pluggable in principle but the panel and
     // settings track one of each — two NICs on one virtual network is a
     // configuration nobody asks for, and each would need its own MAC.
-    pom2::UthernetCard*          uthernetCard     = nullptr; // non-owning, owned by SlotBus
-    pom2::UthernetIICard*        uthernetIICard   = nullptr; // non-owning, owned by SlotBus
     /// FujiNet relay. Single-instance on purpose: the card holds a listening
     /// socket (or an open serial device), and a second one would just fail to
     /// bind / open the same endpoint.
@@ -553,16 +572,11 @@ private:
     // ImageWriter II paper-tray window (rendered printout). Visible by
     // default: it is one of the three tabs the default dock layout seeds to
     // the right of the screen (see `applyDockLayout`, DockLayout::Reset).
-    // How many spool bytes have already been fed to `imageWriter`, so a
-    // poll only picks up what arrived since the previous frame. Re-seated
-    // whenever the source card changes or its spool is cleared — see
-    // `printerFeedCursor` (PrinterFeedCursor.h) for the two rules.
-    size_t       imageWriterConsumed = 0;
-    // Identity of the card the cursor above counts against. The three
-    // spools grow independently, so a cursor carried across a source
-    // switch (e.g. PrinterCard unplugged, SSC tap takes over) would skip
-    // or replay part of the new source's stream.
-    const void*  imageWriterSource = nullptr;
+    // The feed cursor and the identity of the card it counts against now
+    // live inside PrinterCoordinator — they are one invariant with the drain
+    // that advances them, and keeping them here meant every source branch
+    // re-stated the handover rules. See PrinterFeedCursor.h for the rules
+    // themselves, which are unchanged.
     /// Whether the printer's full input buffer holds the ACK line and so
     /// blocks the guest — the real handshake. OFF by default: it is
     /// faithful (a real Apple II *did* sit there for minutes printing a
@@ -1063,7 +1077,10 @@ private:
     /// Remove every source added via registerAudioSource(). MUST run before
     /// `slotBus().clear()` destroys the owning cards.
     void unregisterAllAudioSources();
-    std::vector<AudioSource*> registeredAudioSources_;
+    // The registration inventory moved into `audioCoordinator_`: it is one
+    // invariant with the add/remove calls that maintain it, and teardown must
+    // drive off it rather than off the card aliases (a card can be destroyed
+    // while still registered).
 
     // ── Disk insert+boot routing (shared by Disk Library UI + CLI) ───────
     // Promoted from file-local lambdas in renderDiskLibraryWindow so

@@ -24,6 +24,8 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "DevicePanelCoordinator.h"
+#include "PrinterCoordinator.h"
 #include "MediaMount.h"
 
 // Same heavy-includes-here pattern as MainWindow.cpp — MainWindow.h
@@ -1043,23 +1045,14 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         diskPanel        = nullptr;
         hdvCard          = nullptr;
         cffaCard         = nullptr;
-        chatMauveCard    = nullptr;
         sscCard          = nullptr;
         sscCards.clear();
-        clockCard        = nullptr;
-        mouseCard        = nullptr;
-        mouseAwCard      = nullptr;
-        mockingboardCard = nullptr;
-        phasorCard       = nullptr;
-        echoPlusCard     = nullptr;
-        echoPlusTmsCard  = nullptr;
-        printerCard      = nullptr;
-        // grapplerCard feeds pumpImageWriter() every frame — leaving it
-        // dangling here is a use-after-free the moment the card is gone.
-        grapplerCard     = nullptr;
+        // The printer sources are no longer aliased here. A rebuild can hand
+        // a replacement card the same allocator address, so the feed cursor's
+        // identity must be invalidated explicitly or the new card's spool is
+        // counted against the old card's cursor.
+        printerCoordinator_->resetFeedCursor();
         // Same hazard: the Ethernet panel dereferences these every frame.
-        uthernetCard     = nullptr;
-        uthernetIICard   = nullptr;
         // The FujiNet card owns a listening socket / open serial device and
         // a worker thread; slotBus().clear() destroys it, which joins the
         // thread. Dropping our alias first keeps the panel from touching a
@@ -1202,7 +1195,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             if (cfg.builtInSlots[s].has_value() &&
                 cfg.builtInSlots[s]->cardKey == "chatmauve")
                 builtinRgb = true;
-        if (builtinRgb && chatMauveCard)
+        if (builtinRgb &&
+            devicePanelCoordinator_->captureInventory().chatMauvePlugged())
             display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
     }
 
@@ -1391,7 +1385,7 @@ bool MainWindow::restartEmulationFromSettings()
         // slot bus destroys it — otherwise the audio thread's next
         // callback dereferences a freed source. The inventory covers every
         // registered source, including the second of two coexisting
-        // Mockingboard variants that the single `mockingboardCard` alias
+        // Mockingboard variants that a single last-plugged alias
         // cannot represent. Same gotcha mirrored in applyProfile's teardown.
         unregisterAllAudioSources();
         diskCard         = nullptr;
@@ -1400,20 +1394,9 @@ bool MainWindow::restartEmulationFromSettings()
         diskPanel        = nullptr;
         hdvCard          = nullptr;
         cffaCard         = nullptr;
-        chatMauveCard    = nullptr;
         sscCard          = nullptr;
         sscCards.clear();
-        clockCard        = nullptr;
-        mouseCard        = nullptr;
-        mouseAwCard      = nullptr;
-        mockingboardCard = nullptr;
-        phasorCard       = nullptr;
-        echoPlusCard     = nullptr;
-        echoPlusTmsCard  = nullptr;
-        printerCard      = nullptr;
-        grapplerCard     = nullptr;   // see pumpImageWriter() — non-owning
-        uthernetCard     = nullptr;   // see the Ethernet panel — non-owning
-        uthernetIICard   = nullptr;
+        printerCoordinator_->resetFeedCursor();   // see pumpImageWriter()
         fujiNetCard      = nullptr;   // owns a socket + worker thread
         smartPortCard    = nullptr;
         st.memory().slotBus().clear();

@@ -11,6 +11,8 @@
 // anonymous-namespace helpers that keep the storage panels in MainWindow.cpp.
 
 #include "MainWindow.h"
+#include "DevicePanelCoordinator.h"
+#include "AudioCoordinator.h"
 #include "EmulationController.h"
 
 #include "AudioDevice.h"
@@ -212,45 +214,34 @@ void MainWindow::renderAudioMixerWindow()
     if (tapeMute != tape.isMuted()) tape.setMuted(tapeMute);
 
     // ── Slot audio cards (Mockingboard / Phasor / Echo+) ──────────────
-    // Only rows for plugged cards — empty slots stay out of the mixer.
-    if (mockingboardCard) {
-        float mbVol = mockingboardCard->getVolume();
-        bool  mbMute = mockingboardCard->isMuted();
-        const std::string lbl = "Mockingbd (S" +
-            std::to_string(mockingboardCard->getSlot()) + ")";
-        AudioSource* mbSrc = mockingboardCard->audioSource();
-        const float mbPeak = mbSrc
-            ? mbSrc->lastBufferPeak.load(std::memory_order_relaxed)
-            : 0.0f;
-        channelRow(lbl.c_str(), mbVol, mbMute, mbPeak, "mb", false);
-        if (mbVol != mockingboardCard->getVolume()) mockingboardCard->setVolume(mbVol);
-        if (mbMute != mockingboardCard->isMuted()) mockingboardCard->setMuted(mbMute);
-    }
-    if (phasorCard) {
-        float phVol = phasorCard->getVolume();
-        bool  phMute = phasorCard->isMuted();
-        const std::string lbl = "Phasor (S" +
-            std::to_string(phasorCard->getSlot()) + ")";
-        AudioSource* phSrc = phasorCard->audioSource();
-        const float phPeak = phSrc
-            ? phSrc->lastBufferPeak.load(std::memory_order_relaxed)
-            : 0.0f;
-        channelRow(lbl.c_str(), phVol, phMute, phPeak, "phasor", false);
-        if (phVol != phasorCard->getVolume()) phasorCard->setVolume(phVol);
-        if (phMute != phasorCard->isMuted()) phasorCard->setMuted(phMute);
-    }
-    if (echoPlusCard) {
-        float epVol = echoPlusCard->getVolume();
-        bool  epMute = echoPlusCard->isMuted();
-        const std::string lbl = "Echo+ (S" +
-            std::to_string(echoPlusCard->getSlot()) + ")";
-        AudioSource* epSrc = echoPlusCard->audioSource();
-        const float epPeak = epSrc
-            ? epSrc->lastBufferPeak.load(std::memory_order_relaxed)
-            : 0.0f;
-        channelRow(lbl.c_str(), epVol, epMute, epPeak, "echop", false);
-        if (epVol != echoPlusCard->getVolume()) echoPlusCard->setVolume(epVol);
-        if (epMute != echoPlusCard->isMuted()) echoPlusCard->setMuted(epMute);
+    // One row per LIVE card, not one per alias. Two Mockingboard variants can
+    // sit on the bus at once (catalog `mockingboard` = AC and
+    // `mockingboard_c` = Sound II are different keys, so the duplicate check
+    // does not object); the old `if (mockingboardCard)` showed only whichever
+    // was plugged last and the other had no control at all.
+    using AC = pom2::AudioCoordinator;
+    for (const auto& card : audioCoordinator_->captureMixerCards()) {
+        const char* name = "Card";
+        const char* idTag = "card";
+        switch (card.kind) {
+            case AC::CardKind::Mockingboard:    name = "Mockingbd"; idTag = "mb";     break;
+            case AC::CardKind::Phasor:          name = "Phasor";    idTag = "phasor"; break;
+            case AC::CardKind::EchoPlus:        name = "Echo+";     idTag = "echop";  break;
+            case AC::CardKind::EchoPlusTms5220: name = "Echo+ TMS"; idTag = "echotms";break;
+        }
+        const std::string lbl =
+            std::string(name) + " (S" + std::to_string(card.slot) + ")";
+        // Slot-qualified so two cards of the same type keep distinct ImGui ids.
+        const std::string id = std::string(idTag) + std::to_string(card.slot);
+        float vol = card.volume;
+        bool mute = card.muted;
+        channelRow(lbl.c_str(), vol, mute, card.peak, id.c_str(), false);
+        if (vol != card.volume || mute != card.muted) {
+            // Re-resolves the card under the lock before writing — the row was
+            // drawn from a snapshot, and the slot can have been rebuilt since.
+            audioCoordinator_->applyMixerCard(
+                AC::MixerCardCommand{ card.kind, card.slot, vol, mute });
+        }
     }
 
     // ── Disk 5.25" ─────────────────────────────────────────────────────
@@ -314,19 +305,11 @@ void MainWindow::renderChatMauvePanelWindow()
 {
     if (!show(pom2::PanelId::ChatMauve)) return;
 
-    pom2::LeChatMauve_ImGui::Snapshot snap;
-    if (chatMauveCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.plugged         = true;
-        snap.slot            = chatMauveCard->getSlot();
-        snap.mode            = chatMauveCard->currentMode();
-        snap.fifoBits        = chatMauveCard->fifoBits();
-        snap.eightyCol       = chatMauveCard->eightyCol();
-        snap.an3High         = chatMauveCard->an3High();
-        snap.invertBit7      = chatMauveCard->invertBit7();
-        snap.colorTextEnable = chatMauveCard->colorTextEnabled();
-        snap.hgrDuochrome    = chatMauveCard->hgrDuochromeEnabled();
-    }
+    // One acquisition for the snapshot, one for whatever the frame asked for.
+    // This panel used to take the bare stateMutex SIX times per frame — once
+    // to build the snapshot and once per toggle — through an alias that a
+    // slot rebuild could have invalidated between any two of them.
+    const auto snap = devicePanelCoordinator_->captureChatMauve();
 
     ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330,  500), ImGuiCond_FirstUseEver);
@@ -334,35 +317,9 @@ void MainWindow::renderChatMauvePanelWindow()
     auto result = chatMauvePanel->render("Le Chat Mauve###chatMauvePanel",
                                         show(pom2::PanelId::ChatMauve), snap);
 
-    if (chatMauveCard && result.requestOverride) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        chatMauveCard->overrideMode(result.overrideTo);
-    }
-    if (chatMauveCard && result.requestReset) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        chatMauveCard->onReset();
-    }
-    if (chatMauveCard && result.requestInvertBit7) {
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            chatMauveCard->setInvertBit7(result.invertBit7To);
-        }
-        if (settings) settings->setBool("chatmauve_invert_bit7", result.invertBit7To);
-    }
-    if (chatMauveCard && result.requestColorTextEnable) {
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            chatMauveCard->setColorTextEnabled(result.colorTextEnableTo);
-        }
-        if (settings) settings->setBool("chatmauve_color_text", result.colorTextEnableTo);
-    }
-    if (chatMauveCard && result.requestHgrDuochrome) {
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            chatMauveCard->setHgrDuochromeEnabled(result.hgrDuochromeTo);
-        }
-        if (settings) settings->setBool("chatmauve_hgr_duochrome", result.hgrDuochromeTo);
-    }
+    // Re-resolves the card under the lock and applies every requested change
+    // in one critical section, then persists the toggles after unlocking.
+    devicePanelCoordinator_->applyChatMauve(result);
 }
 
 // ─── Mockingboard live state panel ───────────────────────────────────────
@@ -399,55 +356,27 @@ void MainWindow::renderMockingboardPanelWindow()
         return;
     }
 
-    if (!mockingboardCard) {
+    // One acquisition for the whole panel: plugged state, slot, level, the two
+    // 6522+AY pairs and the Sound II SSI263. The card is resolved from the
+    // live SlotBus inside that lock, so the panel can no longer read through
+    // an alias that a slot rebuild has already destroyed. It also replaces
+    // TWO separate lock_guard(stateMutex()) blocks — the chip registers and
+    // the SSI263 state could previously come from different machine states.
+    const auto mb = audioCoordinator_->captureMockingboard();
+    if (!mb.plugged) {
         ImGui::TextDisabled("No Mockingboard plugged. Use Hardware → Slot "
                             "Configuration to assign it to a slot.");
         ImGui::End();
         return;
     }
-
-    // Snapshot all the per-chip state under one lock so the two VIAs and
-    // two AYs are coherent against each other. The card's accessors are
-    // const-ish reads — no side effects on the running emulator.
-    struct ChipSnap {
-        uint8_t t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
-        uint8_t ay[16];
-        uint32_t viaWrites, ayWrites, ayResets;
-        uint32_t cmdInactive, cmdRead, cmdWrite, cmdLatch;
-    } via[2]{};
-    bool slotIrq = false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        slotIrq = mockingboardCard->isIrqAsserted();
-        for (int c = 0; c < 2; ++c) {
-            via[c].t1cl = mockingboardCard->peekViaRegister(c, 0x04);
-            via[c].t1ch = mockingboardCard->peekViaRegister(c, 0x05);
-            via[c].t1ll = mockingboardCard->peekViaRegister(c, 0x06);
-            via[c].t1lh = mockingboardCard->peekViaRegister(c, 0x07);
-            via[c].sr   = mockingboardCard->peekViaRegister(c, 0x0A);
-            via[c].acr  = mockingboardCard->peekViaRegister(c, 0x0B);
-            via[c].pcr  = mockingboardCard->peekViaRegister(c, 0x0C);
-            via[c].ifr  = mockingboardCard->peekViaRegister(c, 0x0D);
-            via[c].ier  = mockingboardCard->peekViaRegister(c, 0x0E);
-            for (int r = 0; r < 16; ++r) {
-                via[c].ay[r] = mockingboardCard->getAyRegister(c, r);
-            }
-            via[c].viaWrites = mockingboardCard->getViaWriteCount(c);
-            via[c].ayWrites  = mockingboardCard->getAyWriteCount(c);
-            via[c].ayResets  = mockingboardCard->getAyResetCount(c);
-            via[c].cmdInactive = mockingboardCard->getAyCommandCount(c, 0);
-            via[c].cmdRead     = mockingboardCard->getAyCommandCount(c, 1);
-            via[c].cmdWrite    = mockingboardCard->getAyCommandCount(c, 2);
-            via[c].cmdLatch    = mockingboardCard->getAyCommandCount(c, 3);
-        }
-    }
+    const auto& via = mb.via;
+    const bool slotIrq = mb.slotIrq;
 
     // Slot IRQ indicator and volume readout.
     ImGui::Text("Slot IRQ line: %s", slotIrq ? "ASSERTED (low)" : "released");
     ImGui::SameLine();
     ImGui::TextDisabled(" | Volume: %.2f %s",
-                        mockingboardCard->getVolume(),
-                        mockingboardCard->isMuted() ? "(MUTED)" : "");
+                        mb.volume, mb.muted ? "(MUTED)" : "");
     ImGui::Separator();
 
     // Two-column display, one per 6522+AY pair.
@@ -519,13 +448,8 @@ void MainWindow::renderMockingboardPanelWindow()
     }
 
     // ── Sound II SSI263 section (only if this variant has one) ─────────
-    MockingboardCard::Ssi263Snap ssiSnap;
-    bool hasSsi = false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        hasSsi = mockingboardCard->snapshotSsi263(&ssiSnap);
-    }
-    if (hasSsi) {
+    const auto& ssiSnap = mb.ssi;
+    if (mb.hasSsi) {
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f),
                            "SSI263 (Sound II — speech @ $Cs40-$Cs44)");
@@ -567,50 +491,20 @@ void MainWindow::renderPhasorPanelWindow()
         return;
     }
 
-    if (!phasorCard) {
+    // One acquisition for VIAs + AYs + mode + level, with the card resolved
+    // from the live SlotBus inside it.
+    const auto ph = audioCoordinator_->capturePhasor();
+    if (!ph.plugged) {
         ImGui::TextDisabled("No Phasor plugged. Use Hardware → Slot "
                             "Configuration to assign it to a slot.");
         ImGui::End();
         return;
     }
-
-    // Snapshot everything under one lock so VIAs + AYs + mode are
-    // coherent. None of the read accessors mutate emulator state.
-    struct ViaSnap {
-        uint8_t  t1cl, t1ch, t1ll, t1lh, sr, acr, pcr, ifr, ier;
-        uint32_t writes;
-    } via[2]{};
-    struct AySnap {
-        uint8_t  regs[16];
-        uint32_t writes, resets;
-    } ay[4]{};
-    PhasorCard::Mode mode = PhasorCard::PH_Mockingboard;
-    int  clockScale = 1;
-    bool slotIrq    = false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        mode       = phasorCard->mode();
-        clockScale = phasorCard->clockScale();
-        slotIrq    = phasorCard->isIrqAsserted();
-        for (int c = 0; c < 2; ++c) {
-            via[c].t1cl = phasorCard->peekViaRegister(c, 0x04);
-            via[c].t1ch = phasorCard->peekViaRegister(c, 0x05);
-            via[c].t1ll = phasorCard->peekViaRegister(c, 0x06);
-            via[c].t1lh = phasorCard->peekViaRegister(c, 0x07);
-            via[c].sr   = phasorCard->peekViaRegister(c, 0x0A);
-            via[c].acr  = phasorCard->peekViaRegister(c, 0x0B);
-            via[c].pcr  = phasorCard->peekViaRegister(c, 0x0C);
-            via[c].ifr  = phasorCard->peekViaRegister(c, 0x0D);
-            via[c].ier  = phasorCard->peekViaRegister(c, 0x0E);
-            via[c].writes = phasorCard->getViaWriteCount(c);
-        }
-        for (int c = 0; c < 4; ++c) {
-            for (int r = 0; r < 16; ++r)
-                ay[c].regs[r] = phasorCard->getAyRegister(c, r);
-            ay[c].writes = phasorCard->getAyWriteCount(c);
-            ay[c].resets = phasorCard->getAyResetCount(c);
-        }
-    }
+    const auto& via = ph.via;
+    const auto& ay  = ph.ay;
+    const auto mode = static_cast<PhasorCard::Mode>(ph.mode);
+    const int  clockScale = ph.clockScale;
+    const bool slotIrq    = ph.slotIrq;
 
     // ── Mode banner ─────────────────────────────────────────────────────
     const char* modeLabel =
@@ -630,13 +524,12 @@ void MainWindow::renderPhasorPanelWindow()
     ImGui::Text("Slot IRQ line: %s", slotIrq ? "ASSERTED (low)" : "released");
     ImGui::SameLine();
     ImGui::TextDisabled(" | Volume: %.2f %s",
-                        phasorCard->getVolume(),
-                        phasorCard->isMuted() ? "(MUTED)" : "");
+                        ph.volume, ph.muted ? "(MUTED)" : "");
     {
         // Device-select page for this slot is $C0n0..$C0nF where
         // n = 8 + slot (e.g. slot 4 → $C0C0..$C0CF). The mode soft-
         // switch responds to read OR write of those 16 addresses.
-        const int devHi = 0x8 + phasorCard->getSlot();
+        const int devHi = 0x8 + ph.slot;
         ImGui::TextDisabled(
             "Mode soft-switch: read/write $C0%X8 → MB, $C0%XD → Phasor",
             devHi, devHi);
@@ -730,26 +623,17 @@ void MainWindow::renderEchoPlusPanelWindow()
         return;
     }
 
-    if (!echoPlusCard) {
+    const auto ep = audioCoordinator_->captureEchoPlus();
+    if (!ep.plugged) {
         ImGui::TextDisabled("No Echo+ plugged. Use Hardware → Slot "
                             "Configuration to assign it to a slot.");
         ImGui::End();
         return;
     }
-
-    EchoPlusCard::ChipSnap s;
-    bool slotIrq = false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        s       = echoPlusCard->snapshotChip();
-        slotIrq = echoPlusCard->isIrqAsserted();
-    }
-
-    // ── Header ────────────────────────────────────────────────────────
-    ImGui::Text("Slot %d  |  Volume %.2f %s",
-                echoPlusCard->getSlot(),
-                echoPlusCard->getVolume(),
-                echoPlusCard->isMuted() ? "(MUTED)" : "");
+    const auto& s = ep.chip;
+    const bool slotIrq = ep.slotIrq;
+    ImGui::Text("Slot %d  |  Volume: %.2f %s",
+                ep.slot, ep.volume, ep.muted ? "(MUTED)" : "");
     ImGui::TextColored(slotIrq
                          ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f)
                          : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),

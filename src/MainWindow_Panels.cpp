@@ -22,7 +22,10 @@
 // It lives outside MainWindow.cpp for the reason the file-size ratchet exists:
 // the god-object does not get to grow by 250 lines of table.
 
+#include "AudioCoordinator.h"
+#include "DevicePanelCoordinator.h"
 #include "MainWindow.h"
+#include "PrinterCoordinator.h"
 
 #include "EchoPlusCard.h"
 #include "FujiNetCard.h"
@@ -86,11 +89,38 @@ void MainWindow::registerPanels()
     panels_.bind(P::FujiNet, RT{
         [this] { return "FujiNet" + slotSuffix(fujiNetCard); }, card(&fujiNetCard) });
     panels_.bind(P::Phasor, RT{
-        [this] { return "Phasor" + slotSuffix(phasorCard); }, card(&phasorCard) });
+        [this] {
+            const auto slots = audioCoordinator_->captureInventory().phasorSlots;
+            return slots.empty()
+                ? std::string("Phasor")
+                : "Phasor (slot " + std::to_string(slots.back()) + ")";
+        },
+        [this] {
+            return !audioCoordinator_->captureInventory().phasorSlots.empty();
+        } });
     panels_.bind(P::EchoPlus, RT{
-        [this] { return "Echo+" + slotSuffix(echoPlusCard); }, card(&echoPlusCard) });
+        [this] {
+            const auto slots = audioCoordinator_->captureInventory().echoPlusSlots;
+            return slots.empty()
+                ? std::string("Echo+")
+                : "Echo+ (slot " + std::to_string(slots.back()) + ")";
+        },
+        [this] {
+            return !audioCoordinator_->captureInventory().echoPlusSlots.empty();
+        } });
+    // Availability and label both come from the coordinator's snapshot: there
+    // is no PrinterCard alias to test the address of any more.
     panels_.bind(P::Printer, RT{
-        [this] { return "Printer" + slotSuffix(printerCard); }, card(&printerCard) });
+        [this] {
+            const int slot =
+                printerCoordinator_->captureHost(*controller).printerCardSlot;
+            return slot >= 0 ? "Printer (slot " + std::to_string(slot) + ")"
+                             : std::string("Printer");
+        },
+        [this] {
+            return printerCoordinator_->captureHost(*controller)
+                       .printerCardSlot >= 0;
+        } });
 
     // Super Serial is the one card a profile can carry TWICE (the //c's
     // printer and modem ports), so its label lists every slot it occupies.
@@ -112,19 +142,24 @@ void MainWindow::registerPanels()
     // One entry covers both NICs; the panel tabs between whichever are in.
     panels_.bind(P::Ethernet, RT{
         [this] {
-            if (uthernetIICard && uthernetCard)
+            const auto inv = devicePanelCoordinator_->captureInventory();
+            const bool u1 = inv.uthernetSlot >= 0;
+            const bool u2 = inv.uthernetIISlot >= 0;
+            if (u1 && u2)
+                return "Ethernet (I slot " +
+                       std::to_string(inv.uthernetSlot) + ", II slot " +
+                       std::to_string(inv.uthernetIISlot) + ")";
+            if (u2)
+                return "Ethernet (Uthernet II slot " +
+                       std::to_string(inv.uthernetIISlot) + ")";
+            if (u1)
                 return "Ethernet (Uthernet I slot " +
-                       std::to_string(uthernetCard->getSlot()) + ", II slot " +
-                       std::to_string(uthernetIICard->getSlot()) + ")";
-            if (uthernetIICard)
-                return "Ethernet (Uthernet II, slot " +
-                       std::to_string(uthernetIICard->getSlot()) + ")";
-            if (uthernetCard)
-                return "Ethernet (Uthernet I, slot " +
-                       std::to_string(uthernetCard->getSlot()) + ")";
-            return std::string("Ethernet (no card plugged)");
+                       std::to_string(inv.uthernetSlot) + ")";
+            return std::string("Ethernet");
         },
-        [this] { return uthernetCard || uthernetIICard; } });
+        [this] {
+            return devicePanelCoordinator_->captureInventory().ethernetPlugged();
+        } });
 
 #ifdef __EMSCRIPTEN__
     // AiControlServer::start() cannot open a listening socket in the browser

@@ -56,6 +56,10 @@
 #include "Pom2HgrPaintHost.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
+#include "MouseCoordinator.h"
+#include "AudioCoordinator.h"
+#include "DevicePanelCoordinator.h"
+#include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
 #include "MouseGrab.h"
 #include "NtscPostProcessor.h"
@@ -181,6 +185,12 @@ MainWindow::MainWindow(bool forceIIPlus)
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
+      mouseCoordinator_(std::make_unique<pom2::MouseCoordinator>(*controller)),
+      printerCoordinator_(std::make_unique<pom2::PrinterCoordinator>()),
+      audioCoordinator_(std::make_unique<pom2::AudioCoordinator>(
+          controller->audio(), *controller)),
+      devicePanelCoordinator_(std::make_unique<pom2::DevicePanelCoordinator>(
+          *controller, *settings)),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -838,13 +848,8 @@ Apple2Display&       MainWindow::displayRef() { return *display; }
 
 bool MainWindow::setChatMauveInvertBit7(bool v)
 {
-    if (!chatMauveCard) return false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        chatMauveCard->setInvertBit7(v);
-    }
-    if (settings) settings->setBool("chatmauve_invert_bit7", v);
-    return true;
+    // Resolves the card under the lock, writes, unlocks, then persists.
+    return devicePanelCoordinator_->setChatMauveInvertBit7(v);
 }
 
 MainWindow::~MainWindow()
@@ -1080,8 +1085,6 @@ MainWindow::~MainWindow()
     settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
     settings->setInt   ("imagewriter_model",
                         static_cast<int>(imageWriter->model()));
-    settings->setFloat ("printer_sound_volume", printerSound->volume());
-    settings->setBool  ("printer_sound_muted",  printerSound->muted());
     settings->setBool  ("imagewriter_backpressure", printerBackPressure);
     settings->setInt   ("imagewriter_ribbon",
                         static_cast<int>(imageWriter->ribbon()));
@@ -1089,12 +1092,9 @@ MainWindow::~MainWindow()
                         static_cast<int>(imageWriter->autoFeedMode()));
     settings->setInt   ("imagewriter_speed",
                         static_cast<int>(imageWriter->speed()));
-    if (grapplerCard) {
-        settings->setInt ("grappler_printer_type",
-                          static_cast<int>(grapplerCard->printerType()));
-        settings->setBool("grappler_msb_software",
-                          grapplerCard->msbSoftwareControl());
-    }
+    // No-ops when no Grappler+ is plugged, so the keys keep their previous
+    // values rather than being overwritten with a default.
+    printerCoordinator_->persistGrappler(*settings, *controller);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
     if (ntscFx) {
         const auto& p = ntscFx->getParams();
@@ -1134,27 +1134,20 @@ MainWindow::~MainWindow()
     settings->setString("library_recents",    joinPaths(libraryRecents_));
     settings->setBool  ("library_hide_sizedate", libraryHideSizeDate_);
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
-    settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
-    settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
-    settings->setFloat ("cassette_volume", controller->cassette().getVolume());
-    settings->setBool  ("cassette_auto_rewind",
-                        controller->cassette().isAutoRewindEnabled());
-    settings->setFloat ("floppy_sound_volume",    controller->floppySound525().getVolume());
-    settings->setBool  ("floppy_sound_muted",     controller->floppySound525().isMuted());
-    settings->setFloat ("floppy_sound_volume_35", controller->floppySound35().getVolume());
-    settings->setBool  ("floppy_sound_muted_35",  controller->floppySound35().isMuted());
-    settings->setFloat ("master_volume",          controller->audio().getMasterVolume());
-    settings->setBool  ("master_muted",           controller->audio().isMasterMuted());
-    settings->setBool  ("audio_mono_downmix",     controller->audio().isMonoDownmix());
-    settings->setFloat ("speaker_pan",            controller->speaker().pan.load());
-    settings->setFloat ("cassette_pan",           controller->cassette().pan.load());
-    settings->setFloat ("floppy_sound_pan",       controller->floppySound525().pan.load());
-    settings->setFloat ("floppy_sound_pan_35",    controller->floppySound35().pan.load());
+    // One call for the whole audio block, host controls and slot cards alike.
+    // The slot-card half is why it matters: the old code persisted a single
+    // `mockingboard_volume` read through the last-plugged alias, so with two
+    // Mockingboard variants on the bus one of them silently inherited the
+    // other's level on the next launch. Each live card now gets its own
+    // per-slot key, and the highest slot of each type still writes the legacy
+    // type-wide key so existing state.cfg files keep working.
+    audioCoordinator_->persist(*settings,
+                               controller->speaker(),
+                               controller->cassette(),
+                               controller->floppySound525(),
+                               controller->floppySound35(),
+                               *printerSound);
     settings->setString("char_rom_locale",        pom2::charRomLocaleKey(charRomLocale));
-    if (mockingboardCard) {
-        settings->setFloat("mockingboard_volume", mockingboardCard->getVolume());
-        settings->setBool ("mockingboard_muted",  mockingboardCard->isMuted());
-    }
 
     // Kiosk is a read-only launcher: don't write state.cfg, so the disk it
     // booted (and any HDV card auto-plugged for it by ensureHdvCardForBoot)
@@ -1221,24 +1214,15 @@ MainWindow::~MainWindow()
 
 void MainWindow::registerAudioSource(AudioSource* src)
 {
-    if (!src) return;
-    if (!controller->audio().isAvailable()) return;
-    // Idempotent: the printer sound is re-registered from every
-    // plugSlotsFromSettings() pass, and a double entry would mix the source
-    // twice and then leave a dangling pointer behind after one removeSource().
-    for (AudioSource* s : registeredAudioSources_)
-        if (s == src) return;
-    controller->audio().addSource(src);
-    registeredAudioSources_.push_back(src);
+    // Idempotent, and it stays idempotent: the printer sound is re-registered
+    // from every plugSlotsFromSettings() pass, and a double entry would mix
+    // the source twice and then dangle after a single removeSource().
+    audioCoordinator_->registerSource(src);
 }
 
 void MainWindow::unregisterAllAudioSources()
 {
-    if (controller->audio().isAvailable()) {
-        for (AudioSource* src : registeredAudioSources_)
-            controller->audio().removeSource(src);
-    }
-    registeredAudioSources_.clear();
+    audioCoordinator_->unregisterAll();
 }
 
 void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
@@ -1543,17 +1527,19 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 
     auto plugChatMauve = [&](int s) {
         auto card = std::make_unique<LeChatMauveCard>(s);
-        chatMauveCard = card.get();
+        // Local, not a retained alias: the display genuinely needs the card
+        // for its RGB decode path and is re-pointed on every rebuild.
+        LeChatMauveCard* plugged = card.get();
         if (settings) {
-            chatMauveCard->setInvertBit7(
+            plugged->setInvertBit7(
                 settings->getBool("chatmauve_invert_bit7", false));
-            chatMauveCard->setColorTextEnabled(
+            plugged->setColorTextEnabled(
                 settings->getBool("chatmauve_color_text", true));
-            chatMauveCard->setHgrDuochromeEnabled(
+            plugged->setHgrDuochromeEnabled(
                 settings->getBool("chatmauve_hgr_duochrome", false));
         }
         st.memory().slotBus().plug(s, std::move(card));
-        display->setChatMauveCard(chatMauveCard);
+        display->setChatMauveCard(plugged);
     };
 
     auto plugSsc = [&](int s) {
@@ -1596,7 +1582,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 
     auto plugClock = [&](int s) {
         auto card = std::make_unique<ClockCard>(s);
-        clockCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1613,7 +1598,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 
     auto plugPrinter = [&](int s) {
         auto card = std::make_unique<PrinterCard>(s);
-        printerCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1655,7 +1639,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // sees a frame — which is a better failure mode than hiding it.
         auto card = std::make_unique<pom2::UthernetCard>(s);
         card->setBackend(makeEthernetBackend("Uthernet"));
-        uthernetCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1671,7 +1654,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // PTIMER == 0.
         card->chip().setVirtualDnsEnabled(
             settings->getBool("uthernet2_virtual_dns", true));
-        uthernetIICard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1741,7 +1723,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setVolume(settings->getFloat("phasor_volume", 0.5f));
         card->setMuted (settings->getBool ("phasor_muted",  false));
         registerAudioSource(card->audioSource());
-        phasorCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1756,7 +1737,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setVolume(settings->getFloat("echoplus_volume", 0.7f));
         card->setMuted (settings->getBool ("echoplus_muted",  false));
         registerAudioSource(card->audioSource());
-        echoPlusCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1767,7 +1747,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // Audio is silent. See EchoPlusTMS5220Card.h for the chipset
         // sourcing notes.
         auto card = std::make_unique<EchoPlusTMS5220Card>(s);
-        echoPlusTmsCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1801,7 +1780,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 static_cast<int>(GrapplerCard::PrinterType::AppleDotMatrix))));
         card->setMsbSoftwareControl(
             settings->getBool("grappler_msb_software", true));
-        grapplerCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1837,7 +1815,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setVolume(settings->getFloat("mockingboard_volume", 0.5f));
         card->setMuted(settings->getBool ("mockingboard_muted",  false));
         registerAudioSource(card->audioSource());
-        mockingboardCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1953,7 +1930,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // Mouse Card's MCU PB6 reaches the CPU via SlotPeripheral::
         // assertIrq, which fans out through M6502::setIrqLine(slot, …).
         mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
-        mouseCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -2019,7 +1995,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                     pom2::profileConfig(activeProfile).videoStandard);
                 card->setVblCycles(vt.scanlinesPerFrame * vt.cyclesPerScanline);
             }
-            mouseAwCard = card.get();
             st.memory().slotBus().plug(s, std::move(card));
         }
         else if (kind == "mockingboard")   plugMockingboard(s, MockingboardCard::Variant::AC);
@@ -2479,7 +2454,7 @@ void MainWindow::renderCommandPalette()
         "Ctrl+Alt+F / F10", true, kiosk_);
     add("view.mousegrab", "View",
         mouseGrabbed_ ? "Release mouse capture" : "Capture mouse",
-        "Ctrl+Alt+G", (mouseCard != nullptr) || (mouseAwCard != nullptr),
+        "Ctrl+Alt+G", mouseCoordinator_->capture().plugged(),
         mouseGrabbed_);
 
     // Speed buckets, labelled with the real clock so "2x" isn't abstract.
@@ -2520,7 +2495,7 @@ void MainWindow::renderCommandPalette()
         pipe("disp.oecpu",    "Composite (OpenEmulator, CPU)", Apple2Display::HiResMode::ColorCompositeOECpu);
         pipe("disp.applewin", "AppleWin NTSC (TV line blur)", Apple2Display::HiResMode::ColorAppleWin);
         pipe("disp.rgb",      "RGB card - Le Chat Mauve", Apple2Display::HiResMode::ChatMauveRGB,
-             chatMauveCard != nullptr);
+             devicePanelCoordinator_->captureInventory().chatMauvePlugged());
         pipe("disp.mono",     "Monochrome white", Apple2Display::HiResMode::MonoWhite);
         pipe("disp.green",    "Monochrome green (P31)", Apple2Display::HiResMode::MonoGreen);
         pipe("disp.amber",    "Monochrome amber", Apple2Display::HiResMode::MonoAmber);
@@ -3120,7 +3095,8 @@ void MainWindow::renderMenuBar()
 
         // RGB card — clean Péritel decode, two distinct grays. Greyed out
         // when no Le Chat Mauve card is plugged in slot 7.
-        ImGui::BeginDisabled(chatMauveCard == nullptr);
+        ImGui::BeginDisabled(
+            !devicePanelCoordinator_->captureInventory().chatMauvePlugged());
         pipeItem("RGB card — Le Chat Mauve", nullptr,
                  Apple2Display::HiResMode::ChatMauveRGB);
         ImGui::EndDisabled();
@@ -3151,7 +3127,7 @@ void MainWindow::renderMenuBar()
         // Greyed with no Mouse Card on the bus: capturing the pointer with
         // nothing to feed it is the one state this feature must not reach.
         {
-            const bool haveCard = (mouseCard != nullptr) || (mouseAwCard != nullptr);
+            const bool haveCard = mouseCoordinator_->capture().plugged();
             if (ImGui::MenuItem(ICON_FA_ARROW_POINTER " Capture mouse",
                                 "Ctrl+Alt+G", mouseGrabbed_, haveCard)) {
                 toggleMouseGrab();
@@ -3549,7 +3525,7 @@ void MainWindow::renderStatusBar()
                                        " Ctrl+Alt+G or middle click to release");
                 }
             } else if (!mouseGrabbed_ && screenHovered_ &&
-                       (mouseCard || mouseAwCard) && roomFor(30.0f)) {
+                       mouseCoordinator_->capture().plugged() && roomFor(30.0f)) {
                 // Not captured, but the pointer is over the emulated screen
                 // with a Mouse Card on the bus — the exact moment the user is
                 // about to wonder why the guest cursor won't follow theirs.
@@ -3600,8 +3576,8 @@ void MainWindow::renderStatusBar()
             // Unexplained, that reads as a hung emulator.
             if (imageWriter && imageWriter->busy()) {
                 const bool waiting =
-                    printerBackPressure && grapplerCard &&
-                    grapplerCard->printerBusy();
+                    printerBackPressure &&
+                    printerCoordinator_->captureHost(*controller).grapplerBusy;
                 pom2::verticalRule();
                 ImGui::TextColored(u32(pal.warn),
                                    ICON_FA_PRINT " printing %zu B%s",
@@ -4865,7 +4841,7 @@ static_assert(pom2::mousegrab::kButtonMiddle == GLFW_MOUSE_BUTTON_MIDDLE);
 pom2::mousegrab::Context MainWindow::mouseGrabContext() const
 {
     pom2::mousegrab::Context c;
-    c.cardPlugged = (mouseCard != nullptr) || (mouseAwCard != nullptr);
+    c.cardPlugged = mouseCoordinator_->capture().plugged();
     c.grabbed     = mouseGrabbed_;
     c.voxelView   = show(pom2::PanelId::Voxel);
     // Hover, NOT rect containment. `screenHovered_` is ImGui's own z-order
@@ -4884,7 +4860,7 @@ pom2::mousegrab::Context MainWindow::mouseGrabContext() const
 void MainWindow::setMouseGrab(bool on)
 {
     if (on == mouseGrabbed_) return;
-    if (on && !mouseCard && !mouseAwCard) {
+    if (on && !mouseCoordinator_->capture().plugged()) {
         // Capturing the pointer with nothing to feed would strand the user
         // in a hidden-cursor mode for no gain.
         tapeStatusMessage = "Mouse capture: no Mouse Card plugged "
@@ -4935,8 +4911,7 @@ void MainWindow::setMouseGrab(bool on)
     // Never leave the guest holding a button it can no longer release.
     if (!on && mouseButtonHeld) {
         mouseButtonHeld = false;
-        if (mouseCard)   mouseCard  ->setHostMouse(mouseAppleX, mouseAppleY, false);
-        if (mouseAwCard) mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, false);
+        (void)mouseCoordinator_->routeHost(mouseAppleX, mouseAppleY, false);
     }
 
     tapeStatusMessage = on
@@ -4972,18 +4947,17 @@ void MainWindow::onMouseMove(double x, double y)
     lastMouseHostX = x;
     lastMouseHostY = y;
 
-    // Either MAME-faithful MouseCard or AppleWin HLE MouseCardAppleWin
-    // can be plugged (mutually exclusive). Both expose the same
-    // `setHostMouse(rawX, rawY, button)` + `getSlot()` API; route through
-    // tiny lambdas so the absolute / relative cursor logic below stays
-    // variant-agnostic.
+    // Either MAME-faithful MouseCard or AppleWin HLE MouseCardAppleWin can be
+    // plugged (mutually exclusive). MouseCoordinator re-resolves both from the
+    // live SlotBus under the machine lock, so the absolute / relative cursor
+    // logic below stays variant-agnostic AND cannot write through a card that
+    // a slot replacement has already destroyed.
     const pom2::mousegrab::Context grabCtx = mouseGrabContext();
     // Card plugged + (pointer captured, or hovering the screen widget).
     // Uncaptured motion outside the widget belongs to ImGui — see MouseGrab.h.
     if (!pom2::mousegrab::shouldRouteMotion(grabCtx)) return;
     auto pushMouse = [&](uint8_t rx, uint8_t ry, bool btn) {
-        if (mouseCard)   mouseCard  ->setHostMouse(rx, ry, btn);
-        if (mouseAwCard) mouseAwCard->setHostMouse(rx, ry, btn);
+        (void)mouseCoordinator_->routeHost(rx, ry, btn);
     };
     // Need a valid Apple II Screen widget rect to map host pixels into
     // Apple-cursor coordinates. Bail until renderScreen has populated it.
@@ -5010,9 +4984,11 @@ void MainWindow::onMouseMove(double x, double y)
     // large gaps (first event after re-entry, big window resize) converge
     // over several events.
     bool absoluteHandled = false;
-    if (mouseAwCard && pom2::mousegrab::allowAbsoluteSync(grabCtx)) {
-        const auto s = mouseAwCard->debugSnapshot();
-        const bool mouseOn = (s.byMode & 0x01) != 0;
+    const auto mouseInventory = mouseCoordinator_->capture();
+    if (mouseInventory.appleWinPlugged &&
+        pom2::mousegrab::allowAbsoluteSync(grabCtx)) {
+        const auto& s = mouseInventory.appleWin;
+        const bool mouseOn = s.mouseOn();
         const int rangeX = s.iMaxX - s.iMinX;
         const int rangeY = s.iMaxY - s.iMinY;
         if (mouseOn && rangeX > 0 && rangeY > 0) {
@@ -5122,10 +5098,8 @@ void MainWindow::onMouseButton(int button, int action)
     if (!pom2::mousegrab::shouldRouteButton(grabCtx, button, press)) return;
 
     mouseButtonHeld = press;
-    if (mouseCard)
-        mouseCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
-    if (mouseAwCard)
-        mouseAwCard->setHostMouse(mouseAppleX, mouseAppleY, mouseButtonHeld);
+    (void)mouseCoordinator_->routeHost(mouseAppleX, mouseAppleY,
+                                       mouseButtonHeld);
 }
 
 void MainWindow::bootHdvImage()
@@ -5426,15 +5400,17 @@ void MainWindow::renderAbstractionPanel()
     row("prodosvol", Live::NotApplicable);
 
     // ── Input, clocks, printing ─────────────────────────────────────────
-    row("mouse",   mouseCard   ? Live::Active : Live::NotPlugged);
-    row("mouseaw", mouseAwCard ? Live::Active : Live::NotPlugged);
+    const auto mouseInventory = mouseCoordinator_->capture();
+    row("mouse",   mouseInventory.mamePlugged     ? Live::Active : Live::NotPlugged);
+    row("mouseaw", mouseInventory.appleWinPlugged ? Live::Active : Live::NotPlugged);
     degradable("clock", plugged("clock"),
-               clockCard && clockCard->romFromDump(), pom2::AbsLevel::H1,
+               devicePanelCoordinator_->captureInventory().clockRomFromDump,
+               pom2::AbsLevel::H1,
                "roms/thunderclock_u9_v1.3.bin absent — running the synthetic "
                "ProDOS-signature stub, so tools that pull the driver off the "
                "card find nothing.");
     degradable("grappler", plugged("grappler"),
-               grapplerCard && grapplerCard->isRomLoaded(),
+               printerCoordinator_->captureHost(*controller).grapplerRomLoaded,
                pom2::AbsLevel::H1,
                "roms/grappler_plus.bin absent — running buildStubRom(), so "
                "the real Orange Micro firmware is not executing.");
@@ -5456,7 +5432,8 @@ void MainWindow::renderAbstractionPanel()
             oe ? "" : "Artifact colours are read from a table; no signal is "
                       "synthesised.");
     }
-    row("chatmauve", chatMauveCard ? Live::Active : Live::NotPlugged);
+    row("chatmauve", devicePanelCoordinator_->captureInventory().chatMauvePlugged()
+                         ? Live::Active : Live::NotPlugged);
 
     // ── Audio, network, CPU ─────────────────────────────────────────────
     row("mockingboard", (plugged("mockingboard") || plugged("mockingboard_c") ||
@@ -5516,7 +5493,9 @@ void MainWindow::renderAbstractionPanel()
                          "so it never drops motion — smoother, and less\n"
                          "correct. Needs a compensating absolute cursor sync\n"
                          "the L0 card does not.";
-        t.selected     = mouseCard ? 0 : (mouseAwCard ? 1 : -1);
+        const auto mouseInventory = mouseCoordinator_->capture();
+        t.selected     = mouseInventory.mamePlugged ? 0
+                       : (mouseInventory.appleWinPlugged ? 1 : -1);
         if (t.selected < 0)
             t.note = "Neither is plugged — add a mouse in Slot Configuration "
                      "first, then switch levels here.";
@@ -6962,16 +6941,26 @@ void MainWindow::renderFujiNetPanelWindow()
         snap.serialDevices = fujiNetSerialDevices_;
         snap.printerTap    = fujiNetCard->hasPrinterUnit();
         snap.printerBytes  = fujiNetCard->bytesWritten();
-        // pumpImageWriter() arbitrates: parallel cards outrank the FujiNet
-        // tap, which outranks the SSC tap.
-        snap.printerOutranked = snap.printerTap &&
-                                (printerCard != nullptr || grapplerCard != nullptr);
-        snap.hostClockCard = (clockCard != nullptr);
         snap.helperRunning  = fujiNetCard->helper().isRunning();
         snap.helperPath     = fujiNetHelperPath_;
         snap.helperExitCode = fujiNetCard->helper().lastExitCode();
         snap.helperResolved = fujiNetHelperResolved_;
     }
+
+    // Both of these take the machine lock themselves, so they MUST stay
+    // outside the guard above — stateMutex is non-recursive and asking for it
+    // twice on this thread hangs the UI and the emulator together.
+    //
+    // Outranked iff the arbitration picked something OTHER than this tap.
+    // Asking the coordinator which source won says that directly; the old
+    // `printerCard || grapplerCard` re-stated the priority list here and would
+    // have to be edited again for every new source.
+    snap.printerOutranked =
+        snap.printerTap &&
+        printerCoordinator_->captureHost(*controller).source !=
+            pom2::PrinterCoordinator::SourceKind::FujiNet;
+    snap.hostClockCard =
+        devicePanelCoordinator_->captureInventory().clockPlugged();
 
     const auto r = fujiNetPanel->render("FujiNet", show(pom2::PanelId::FujiNet), snap);
     if (!snap.plugged) return;
@@ -8690,12 +8679,12 @@ void MainWindow::render()
 
     // A pointer capture only makes sense while a Mouse Card is on the bus.
     // Every path that can take one away — Slot Configuration, a profile
-    // switch, a snapshot restore — nulls `mouseCard`/`mouseAwCard`, so
+    // switch, a snapshot restore — unplugs both mouse cards, so
     // releasing here covers all of them at one point instead of chasing
     // each call site. Kiosk deliberately keeps the grab (it is the mode
     // most likely to want it), which is why this sits above the kiosk
     // early-out below.
-    if (mouseGrabbed_ && !mouseCard && !mouseAwCard) setMouseGrab(false);
+    if (mouseGrabbed_ && !mouseCoordinator_->capture().plugged()) setMouseGrab(false);
 
     // Decide CPU turbo from disk activity every frame, independent of whether
     // any disk panel window is open (the disk panel defaults to hidden).
@@ -8894,9 +8883,9 @@ void MainWindow::render()
     // it Normal (default ImGuiMouseCursor_Arrow) brings the OS cursor
     // back. The screen rect is fresh because `renderScreenWindow()` ran
     // earlier this frame.
-    if (mouseAwCard) {
-        const auto s = mouseAwCard->debugSnapshot();
-        const bool mouseOn = (s.byMode & 0x01) != 0;
+    const auto mouseInventory = mouseCoordinator_->capture();
+    if (mouseInventory.appleWinPlugged) {
+        const bool mouseOn = mouseInventory.appleWin.mouseOn();
         const float w = screenRectMax.x - screenRectMin.x;
         const float h = screenRectMax.y - screenRectMin.y;
         const bool insideWidget =
