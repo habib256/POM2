@@ -2811,10 +2811,15 @@ void MainWindow::renderMenuBar()
         }
         if (ImGui::MenuItem("Eject disk", nullptr, false,
                             primaryDiskII() && primaryDiskII()->isDiskLoaded())) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = primaryDiskII()->ejectDisk();
-            tapeStatusMessage = ok ? "Disk ejected"
-                                   : "Disk eject failed: " + primaryDiskII()->getLastError();
+            // Through the coordinator so the persisted disk_path_slotN key is
+            // cleared with the medium. Ejecting from this menu used to leave
+            // the path behind, and the next launch re-mounted the disk the
+            // user had just ejected.
+            const int slot = primaryDiskII()->getSlot();
+            const auto r = storageCoordinator_->ejectDiskII(
+                *controller, *settings, slot, 0);
+            tapeStatusMessage = r.ok ? "Disk ejected"
+                                     : "Disk eject failed: " + r.error;
             tapeStatusUntil   = lastFrameTime + 4.0;
         }
         ImGui::EndDisabled();
@@ -2826,11 +2831,11 @@ void MainWindow::renderMenuBar()
         }
         if (ImGui::MenuItem("Eject HDV", nullptr, false,
                             primaryHdvCard() && primaryHdvCard()->isImageLoaded())) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = primaryHdvCard()->ejectImage();
-            if (ok) hdvStatus = "no image mounted";
-            tapeStatusMessage = ok ? "HDV ejected"
-                                   : "HDV eject failed: " + primaryHdvCard()->getLastError();
+            const int slot = primaryHdvCard()->getSlot();
+            const auto r = storageCoordinator_->ejectMediaBay(
+                *controller, *settings, slot, 0);
+            tapeStatusMessage = r.ok ? "HDV ejected"
+                                     : "HDV eject failed: " + r.error;
             tapeStatusUntil   = lastFrameTime + 4.0;
         }
         ImGui::EndDisabled();
@@ -5852,36 +5857,28 @@ bool MainWindow::ejectMediaBay(int slot, int index, bool diskII)
 
 void MainWindow::ejectAllDisks()
 {
-    // Eject under stateMutex for the things we own directly (DiskII, HDV,
-    // SmartPort units). `eject35` re-locks stateMutex itself — call it
-    // OUTSIDE the lock to avoid recursive locking on the non-recursive
-    // std::mutex (was crashing POM2 when Eject-All was clicked).
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskIICards()) if (c) c->ejectDisk();
-        // Every block-device card (HDV + CFFA may both be plugged).
-        for (auto* dev : blockCards()) dev->ejectImage();
-        // Every SmartPort card, and every unit inside each.
-        bool dirty = false;
-        for (auto* sp : smartPortCards()) {
-            for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
-                pom2::SmartPortUnit* u = sp->unit(k);
-                if (u && u->isLoaded()) {
-                    if (!u->eject()) continue;
-                    const std::string base =
-                        "smartport_slot" + std::to_string(sp->getSlot()) +
-                        "_unit" + std::to_string(k);
-                    settings->setString(base + "_path", "");
-                    dirty = true;
-                }
-            }
-        }
-        if (dirty) settings->save();
+    // One locked pass over the whole topology — Disk II (BOTH drives), every
+    // block device, every SmartPort unit and the on-board 3.5" pair — with the
+    // settings writes applied after the lock is released.
+    //
+    // Two things the hand-rolled version got wrong. It called `ejectDisk()`
+    // with the default argument, so it only ever ejected drive 1 and left
+    // drive 2's medium mounted with its path still persisted. And it ignored
+    // every eject's return value, so a medium whose write-back failed was
+    // reported as ejected: the failure is exactly when the user needs to know,
+    // because the card keeps that disk mounted so the write can be retried.
+    const auto result = storageCoordinator_->ejectAllMedia(*controller, *settings);
+
+    if (!result.ok()) {
+        std::string msg = "Eject failed (media left mounted): ";
+        for (size_t i = 0; i < result.failures.size(); ++i)
+            msg += (i ? "; " : "") + result.failures[i];
+        tapeStatusMessage = std::move(msg);
+    } else {
+        tapeStatusMessage = result.changed ? "Eject completed"
+                                           : "Nothing was mounted";
     }
-    controller->eject35(0);
-    controller->eject35(1);
-    tapeStatusMessage = "Eject completed (failed media remain mounted)";
-    tapeStatusUntil   = lastFrameTime + 3.0;
+    tapeStatusUntil = lastFrameTime + 3.0;
 }
 
 bool MainWindow::routeMount35(int driveIdx, const std::string& path,
@@ -7430,19 +7427,22 @@ void MainWindow::renderHdvPanelWindow()
     auto result = hdvPanel->render(hdvTitle, show(pom2::PanelId::Hdv), snap);
 
     if (result.writeBackToggleChanged && primaryHdvCard()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        primaryHdvCard()->setWriteBackEnabled(result.writeBackNewValue);
+        // Persists the hdv_writeback key with the change; the bare setter did
+        // not, so the toggle was forgotten at the next launch.
+        (void)storageCoordinator_->setMediaBayWriteBack(
+            *controller, *settings, primaryHdvCard()->getSlot(), 0,
+            result.writeBackNewValue);
         tapeStatusMessage = result.writeBackNewValue
             ? "HDV: write-back ENABLED (saves on eject)"
             : "HDV: write-back disabled";
         tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (result.requestEject && primaryHdvCard()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const bool ok = primaryHdvCard()->ejectImage();
-        if (ok) hdvStatus = "no image mounted";
-        tapeStatusMessage = ok ? "HDV ejected"
-                               : "HDV eject failed: " + primaryHdvCard()->getLastError();
+        const auto r = storageCoordinator_->ejectMediaBay(
+            *controller, *settings, primaryHdvCard()->getSlot(), 0);
+        if (r.ok) hdvStatus = "no image mounted";
+        tapeStatusMessage = r.ok ? "HDV ejected"
+                                 : "HDV eject failed: " + r.error;
         tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (result.requestBoot && primaryHdvCard()) {
