@@ -5868,13 +5868,19 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
             // only for the 2IMG parse and the swap. This was the largest
             // single stall in the tree — 12.8 ms warm-cache, most of a PAL
             // frame with the machine and the window both stopped.
-            if (!pom2::mountBlockCard(*controller, *dev, path, errOut)) {
+            // Same two-phase read, and the coordinator writes hdv_path with
+            // the mount instead of leaving it for the next shutdown.
+            const int slot = dev->getSlot();
+            const auto r = storageCoordinator_->mountMediaBay(
+                *controller, *settings, slot, 0, path);
+            if (!r.ok) {
+                errOut = r.error;
                 hdvStatus = "no image mounted";
                 return false;
             }
             hdvPath = path;
             hdvStatus = "loaded: " + path;
-            bootSlotOut = dev->getSlot();
+            bootSlotOut = slot;
             return true;
         }
     }
@@ -7295,7 +7301,17 @@ void MainWindow::renderHdvPanelWindow()
         bool ok = false;
         std::string err;
         {
-            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(), path, err);
+            // Through the coordinator: same two-phase read (32 MiB off the
+            // lock), plus the hdv_path key written with the mount. The bare
+            // helper left the key stale, so the panel and settings disagreed
+            // until the next shutdown.
+            {
+                const auto r = storageCoordinator_->mountMediaBay(
+                    *controller, *settings, primaryHdvCard()->getSlot(), 0,
+                    path);
+                ok  = r.ok;
+                err = r.error;
+            }
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
@@ -7346,7 +7362,17 @@ void MainWindow::renderHdvPanelWindow()
                 hdvStatus = err;
             }
         } else {
-            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(), path, err);
+            // Through the coordinator: same two-phase read (32 MiB off the
+            // lock), plus the hdv_path key written with the mount. The bare
+            // helper left the key stale, so the panel and settings disagreed
+            // until the next shutdown.
+            {
+                const auto r = storageCoordinator_->mountMediaBay(
+                    *controller, *settings, primaryHdvCard()->getSlot(), 0,
+                    path);
+                ok  = r.ok;
+                err = r.error;
+            }
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
@@ -7519,8 +7545,11 @@ void MainWindow::renderHdvFileDialog()
     ImGui::BeginDisabled(!canMount);
     if (ImGui::Button("Mount", ImVec2(120, 0))) {
         std::string mountErr;
-        if (pom2::mountBlockCard(*controller, *primaryHdvCard(), hdvPanel->dialogPath,
-                                 mountErr)) {
+        const auto r = storageCoordinator_->mountMediaBay(
+            *controller, *settings, primaryHdvCard()->getSlot(), 0,
+            hdvPanel->dialogPath);
+        mountErr = r.error;
+        if (r.ok) {
             hdvPath   = hdvPanel->dialogPath;
             hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;
             tapeStatusMessage = "HDV mounted: " + hdvPanel->dialogPath;
@@ -7536,8 +7565,11 @@ void MainWindow::renderHdvFileDialog()
         bool ok = false;
         {
             std::string mountErr;
-            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(),
-                                      hdvPanel->dialogPath, mountErr);
+            const auto r = storageCoordinator_->mountMediaBay(
+                *controller, *settings, primaryHdvCard()->getSlot(), 0,
+                hdvPanel->dialogPath);
+            ok = r.ok;
+            mountErr = r.error;
             if (ok) {
                 hdvPath   = hdvPanel->dialogPath;
                 hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;

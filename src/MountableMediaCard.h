@@ -24,6 +24,8 @@
 #define POM2_MOUNTABLE_MEDIA_CARD_H
 
 #include <cstdint>
+#include "Block512Backing.h"
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -69,8 +71,33 @@ public:
     virtual MediaBayInfo bayInfo(int bay) const = 0;
 
     /// Mount `path` into `bay`. On failure returns false and fills `errOut`.
+    ///
+    /// This is the ONE-PHASE form: it reads the file itself, so a caller
+    /// holding `stateMutex` blocks the CPU worker and the UI for the whole
+    /// read — 25.8 ms for a 32 MiB HDV before v0.8.5 split that path. Prefer
+    /// `prepareBay` + `adoptBay` from any locked context; this stays for
+    /// bays with no block backing, which cannot be prepared off the lock.
     virtual bool mountBay(int bay, const std::string& path,
                           std::string& errOut) = 0;
+
+    /// Phase 2 of a two-phase mount: adopt an image `Block512Backing::
+    /// readImageFile` produced with no lock held.
+    ///
+    /// Returns false with an **empty** `errOut` when this bay has no block
+    /// backing and therefore cannot adopt — the 3.5" SmartPort unit is the
+    /// case that exists. That is not an error: the caller falls back to
+    /// `mountBay`, exactly as `MediaMount.cpp`'s `mountBlockLike` does. A real
+    /// failure fills `errOut`.
+    ///
+    /// The default says "unsupported", so a card that has not opted in keeps
+    /// working through the fallback.
+    virtual bool adoptBay(int /*bay*/,
+                          Block512Backing::PreparedImage&& /*prepared*/,
+                          std::string& errOut)
+    {
+        errOut.clear();
+        return false;
+    }
 
     /// Eject `bay` (saves dirty blocks first when write-back is on).
     virtual bool ejectBay(int bay) = 0;

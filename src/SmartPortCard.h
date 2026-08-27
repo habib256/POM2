@@ -157,6 +157,8 @@ public:
     int  bayCount() const override { return static_cast<int>(kMaxUnits); }
     MediaBayInfo bayInfo(int bay) const override;
     bool mountBay(int bay, const std::string& path, std::string& errOut) override;
+    bool adoptBay(int bay, Block512Backing::PreparedImage&& prepared,
+                  std::string& errOut) override;
     bool ejectBay(int bay) override;
     void setBayWriteBack(int bay, bool on) override;
     std::vector<std::pair<std::string, std::string>>
