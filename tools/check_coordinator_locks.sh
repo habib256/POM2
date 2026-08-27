@@ -65,6 +65,15 @@ LOCK_FREE = (
     'persistDiskIIDrive',            # 2. takes SlotBus&
     'flushAll',                      # 2. takes SlotBus&
     'topology',                      # 2. takes SlotBus&
+    # 3. A third shape, and the clearest: the name ends in `Locked` and the
+    #    method takes a `const StateAccess&` — a token that exists only
+    #    because the caller took the lock. These MUST be called inside one,
+    #    so flagging them would be backwards.
+    'beginLocked',
+    'publishLocked',
+    'prepareAfterFlush',             # 1. mutates coordinator state + hooks
+    'phase',                         # 1.
+    'generation',                    # 1.
 )
 
 FUNC_START = re.compile(r'^[A-Za-z_][\w:<>,&*\s]*::\w+\(')

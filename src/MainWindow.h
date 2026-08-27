@@ -52,6 +52,7 @@ namespace pom2 { class AudioCoordinator; }
 namespace pom2 { class DevicePanelCoordinator; }
 namespace pom2 { class StorageCoordinator; }
 namespace pom2 { class SlotCardFactory; }
+namespace pom2 { class SlotRebuildCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -361,6 +362,11 @@ private:
     /// the runtime wiring (CPU pointer, sound sinks, IWM) and SlotBus
     /// ownership — composition, not construction.
     std::unique_ptr<pom2::SlotCardFactory> slotCardFactory_;
+
+    /// The slot-rebuild transaction: stable → prepared → rebuilding →
+    /// stable. Only a successful media flush may prepare it, and it owns the
+    /// order in which consumers detach before SlotBus is cleared.
+    std::unique_ptr<pom2::SlotRebuildCoordinator> slotRebuildCoordinator_;
 
     // The storage aliases are gone. `diskIICards()` / `primaryDiskII()` /
     // `primaryHdvCard()` / `primaryCffaCard()` / `primarySmartPortCard()`

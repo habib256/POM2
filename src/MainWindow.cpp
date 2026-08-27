@@ -60,6 +60,7 @@
 #include "AudioCoordinator.h"
 #include "DevicePanelCoordinator.h"
 #include "SlotCardFactory.h"
+#include "SlotRebuildCoordinator.h"
 #include "StorageCoordinator.h"
 #include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
@@ -195,6 +196,47 @@ MainWindow::MainWindow(bool forceIIPlus)
           *controller, *settings)),
       storageCoordinator_(std::make_unique<pom2::StorageCoordinator>()),
       slotCardFactory_(std::make_unique<pom2::SlotCardFactory>()),
+      // The rebuild transaction. Every hook is required — the coordinator
+      // throws rather than let a half-wired teardown run — and the ORDER is
+      // its contract, not this list's: gate AI requests, drop the non-owning
+      // views (audio sources, panels, the printer feed identity), clear the
+      // bus, then the host-side services that no longer have a card.
+      slotRebuildCoordinator_(std::make_unique<pom2::SlotRebuildCoordinator>(
+          pom2::SlotRebuildCoordinator::Hooks{
+              // Only reached after a successful flush, which is the point:
+              // history that indexes a topology must not outlive it, and
+              // session-only provisioning must not be persisted from it.
+              [this] {
+                  controller->rewind().clear();
+                  storageCoordinator_->clearAutoProvisioned();
+              },
+              [this] { aiServer->detach(); },
+              // Drive teardown off the registration inventory, never the card
+              // aliases: two coexisting Mockingboard variants left the first
+              // card's AudioSource registered against freed memory.
+              [this] { unregisterAllAudioSources(); },
+              [this] {
+                  diskPanels.clear();
+                  diskPanel = nullptr;
+                  // These are read by panels every frame. The FujiNet card
+                  // also owns a listening socket and a worker thread that
+                  // SlotBus::clear() joins, so the alias has to go before the
+                  // clear, not after it.
+                  sscCard = nullptr;
+                  sscCards.clear();
+                  fujiNetCard = nullptr;
+              },
+              [this] { printerCoordinator_->resetFeedCursor(); },
+              // Nothing host-side outlives the cards today; the hook exists
+              // so a helper process gets torn down here rather than somewhere
+              // that runs before SlotBus::clear().
+              [] {},
+              [this] { display->setChatMauveCard(nullptr); },
+              [this] {
+                  aiServer->attach(controller.get(), display.get(),
+                                   primaryDiskII(), primaryHdvCard());
+              },
+          })),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),

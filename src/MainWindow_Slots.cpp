@@ -24,6 +24,7 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "SlotRebuildCoordinator.h"
 #include "StorageCoordinator.h"
 #include "DevicePanelCoordinator.h"
 #include "PrinterCoordinator.h"
@@ -937,8 +938,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // The session-local auto-plugged HDV (POM2 <image.hdv> one-shot boot) is
     // destroyed by the slot rebuild below; clear its marker so a later real
     // HDV in the same slot number isn't wrongly skipped at shutdown.
-    storageCoordinator_->clearAutoProvisioned();
-    
+    // Commit the rebuild: the flush above succeeded, so history bound to the
+    // old topology (the rewind ring) and session-only provisioning are
+    // invalidated exactly once, before any card is destroyed.
+    slotRebuildCoordinator_->prepareAfterFlush();
+
 
     // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
     //    which reads `activeProfile` to apply the profile's built-in locked slots
@@ -1003,38 +1007,13 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    freed source otherwise — same gotcha as restartEmulationFromSettings).
     {
         auto st = controller->lockState();
-        // First: null the AI control server's card pointers under the
-        // same lock that handlers grab. A request that already passed
-        // its lock acquisition is using the still-alive card; later
-        // requests will see null and return 503. We re-attach at the
-        // end after the new cards are in place.
-        aiServer->detach();
-        // Any card that registered an AudioSource with the audio device
-        // must be unregistered BEFORE slotBus().clear() destroys it —
-        // otherwise the audio thread's next callback dereferences a
-        // freed source. Drive this off the registration inventory, not the
-        // `*Card` aliases: those are last-one-wins and a config with two
-        // Mockingboard variants (A/C + Sound II) left the first card's
-        // source registered against freed memory. Mirrored in
-        // restartEmulationFromSettings.
-        unregisterAllAudioSources();
-        diskPanels.clear();
-        diskPanel        = nullptr;
-        sscCard          = nullptr;
-        sscCards.clear();
-        // The printer sources are no longer aliased here. A rebuild can hand
-        // a replacement card the same allocator address, so the feed cursor's
-        // identity must be invalidated explicitly or the new card's spool is
-        // counted against the old card's cursor.
-        printerCoordinator_->resetFeedCursor();
-        // Same hazard: the Ethernet panel dereferences these every frame.
-        // The FujiNet card owns a listening socket / open serial device and
-        // a worker thread; slotBus().clear() destroys it, which joins the
-        // thread. Dropping our alias first keeps the panel from touching a
-        // card that is mid-teardown.
-        fujiNetCard      = nullptr;
-        st.memory().slotBus().clear();
-        display->setChatMauveCard(nullptr);
+        // Detach every consumer in dependency order, then clear the bus. The
+        // order is the coordinator's contract now, not a comment here: an AI
+        // request that already holds stateMutex finishes against the live bus,
+        // then audio sources and panel views go (the audio thread's next
+        // callback would otherwise dereference a freed source), then the
+        // printer feed identity, then the cards themselves.
+        slotRebuildCoordinator_->beginLocked(st);
 
         // 4. Cold-reset memory: wipe user RAM, aux RAM (if IIe), LC banks,
         //    soft switches. setIIEMode FIRST, for two reasons:
@@ -1245,8 +1224,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // handler observing the pointers between detach() and now sees the
     // null (→ 503) rather than a torn intermediate state.
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
+        // Publish under the machine lock so no AI request can observe a
+        // partially rebuilt machine, and through the transaction so it
+        // cannot happen while the bus is still being repopulated.
+        auto st = controller->lockState();
+        slotRebuildCoordinator_->publishLocked(st);
     }
     aiServer->setProfileLabel(std::string(cfg.displayName));
 }
@@ -1287,12 +1269,12 @@ bool MainWindow::restartEmulationFromSettings()
     // The rebuild is now committed. Its session-local auto-plugged media will
     // be destroyed below, so their shutdown-persistence markers no longer
     // describe a live card.
-    storageCoordinator_->clearAutoProvisioned();
-    
-    // Drop the rewind ring: its SLOTn sections describe the card set being
-    // torn down; restoring one onto the rebuilt (possibly different) cards
-    // would be incoherent. Same rationale as applyProfile.
-    controller->rewind().clear();
+    // Same commit point as applyProfile: the flush above succeeded, so the
+    // rewind ring — whose SLOTn sections describe the card set being torn
+    // down, and which would be incoherent restored onto the rebuilt set — and
+    // the session-only provisioning markers are invalidated once, by the
+    // transaction rather than by two hand-kept copies.
+    slotRebuildCoordinator_->prepareAfterFlush();
 
     // 2. Tear down all cards and clear our raw pointers. Holding the
     //    state mutex isn't strictly necessary now that the worker is
@@ -1304,25 +1286,9 @@ bool MainWindow::restartEmulationFromSettings()
     //    destroys their pointees.
     {
         auto st = controller->lockState();
-        aiServer->detach();
-        // Every card that owns an AudioSource (Mockingboard / Phasor /
-        // Echo+) must be unregistered from the audio device BEFORE the
-        // slot bus destroys it — otherwise the audio thread's next
-        // callback dereferences a freed source. The inventory covers every
-        // registered source, including the second of two coexisting
-        // Mockingboard variants that a single last-plugged alias
-        // cannot represent. Same gotcha mirrored in applyProfile's teardown.
-        unregisterAllAudioSources();
-        diskPanels.clear();
-        diskPanel        = nullptr;
-        sscCard          = nullptr;
-        sscCards.clear();
-        printerCoordinator_->resetFeedCursor();   // see pumpImageWriter()
-        fujiNetCard      = nullptr;   // owns a socket + worker thread
-        st.memory().slotBus().clear();
-        // Also drop any cached display->setChatMauveCard pointer — the
-        // next plug call will set it again.
-        display->setChatMauveCard(nullptr);
+        // Same transaction as applyProfile's — one implementation, so the two
+        // rebuild paths cannot drift on the detach order.
+        slotRebuildCoordinator_->beginLocked(st);
     }
 
     // 3-4 run under stateMutex — same rationale as applyProfile steps
@@ -1401,8 +1367,11 @@ bool MainWindow::restartEmulationFromSettings()
     //    so any handler that observed the detached null sees the new
     //    pointers atomically with respect to its own lock acquisition.
     {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
+        // Publish under the machine lock so no AI request can observe a
+        // partially rebuilt machine, and through the transaction so it
+        // cannot happen while the bus is still being repopulated.
+        auto st = controller->lockState();
+        slotRebuildCoordinator_->publishLocked(st);
     }
 
     pom2::log().info("Slots",
