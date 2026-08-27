@@ -233,8 +233,8 @@ struct Machine {
     {
         std::string err;
         for (uint16_t p = 19900; p < 19940; ++p) {
-            card->link().setTcpMode(p);
-            if (card->link().start(err)) { port = p; return; }
+            card->transportLink().setTcpMode(p);
+            if (card->transportLink().start(err)) { port = p; return; }
         }
         assert(false && "no free test port");
     }
@@ -358,7 +358,7 @@ void testBootWithPeer()
     assert(m.cpu->getXRegister() == static_cast<uint8_t>(kSlot << 4));
 
     peer.stop();
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: boots block 0 into $0800 and runs it\n");
 }
 
@@ -384,7 +384,7 @@ void testBootWithNoPeerContinuesSlotScan()
     // its way through rather than expecting the CPU to settle there.
     assert(m.runUntilPc(0xFABA));
 
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: no peer → autostart slot scan continues ($FABA)\n");
 }
 
@@ -421,7 +421,7 @@ void testSmartPortStatusCall()
     assert(m.mem.memRead(0x4002) == 0x06);
 
     peer.stop();
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: SmartPort STATUS — stack fixup, payload, A/X/Y, carry\n");
 }
 
@@ -452,7 +452,7 @@ void testSmartPortReadBlock()
                static_cast<uint8_t>((7 * 5 + i) & 0xFF));
 
     peer.stop();
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: SmartPort READ BLOCK — 512 bytes into guest RAM\n");
 }
 
@@ -486,7 +486,7 @@ void testStackWrapAtPageBoundary()
     assert(m.mem.memRead(0x0201) == 0xA5);
 
     peer.stop();
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: stack fixup wraps inside page 1 (SP = $01)\n");
 }
 
@@ -521,12 +521,12 @@ void testDeviceCountWithoutPeer()
     // speed — and it duly fired under a valgrind run of the suite, on a path
     // with nothing network about it. The link's own counters state the
     // intended property directly, and no slowdown can perturb them.
-    const auto stats = m.card->link().stats();
+    const auto stats = m.card->transportLink().stats();
     assert(stats.calls == 0);
     assert(stats.timeouts == 0);
     assert(m.card->localCount() == 1);
 
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: device-count probe answered locally, no peer needed\n");
 }
 
@@ -593,11 +593,11 @@ void testBuiltInNetworkIsInsideTheChain()
     assert((m.mem.memRead(0x4200) & 0x10) != 0);   // online, even with nothing open
 
     // None of it involved the link: no peer, no calls, no timeouts.
-    const auto stats = m.card->link().stats();
+    const auto stats = m.card->transportLink().stats();
     assert(stats.calls == 0);
     assert(stats.timeouts == 0);
 
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: built-in N: sits at unit 1 and answers a scan with no peer\n");
 }
 
@@ -627,7 +627,7 @@ void testBuiltInNetworkDoesNotShadowThePeer()
     // Unit 1 is the PEER's. Its DIB must come from the peer, not from us —
     // a network device answering a disk's block reads is ProDOS reporting an
     // I/O error on a perfectly good volume.
-    const auto before = m.card->link().stats().calls;
+    const auto before = m.card->transportLink().stats().calls;
     m.mem.memWrite(0x0310, 0x03);
     m.mem.memWrite(0x0311, 0x01);
     m.mem.memWrite(0x0312, 0x00);
@@ -637,12 +637,12 @@ void testBuiltInNetworkDoesNotShadowThePeer()
     m.run(20000);
 
     // Forwarded: the call reached the link instead of being answered here.
-    assert(m.card->link().stats().calls > before);
+    assert(m.card->transportLink().stats().calls > before);
     char name[8] = {};
     for (int i = 0; i < 7; ++i) name[i] = static_cast<char>(m.mem.memRead(0x4105 + i));
     assert(std::string(name) != "NETWORK");
 
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: built-in N: steps aside for the peer's own units\n");
 }
 
@@ -664,7 +664,7 @@ void testForwardedCallWithoutPeerIsNoDevice()
     assert(m.cpu->getAccumulator() == kSpNoDevice);          // $28
     assert((m.cpu->getStatusRegister() & M6502::Status::C) != 0);  // carry = error
 
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: no peer → $28 (no device) with carry set\n");
 }
 
@@ -698,7 +698,7 @@ void testIoPageBufferRefused()
     assert(m.mem.getDisplayState().textMode == textBefore);                 // and inert
 
     peer.stop();
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: a buffer inside $C0xx is refused, soft switches untouched\n");
 }
 
@@ -802,7 +802,7 @@ void testPrinterTap()
     assert(m.card->bytesWritten() == sizeof(job));   // unchanged
 
     peer.stop();
-    m.card->link().stop();
+    m.card->transportLink().stop();
     std::printf("  ok: printer tap spools only the printer unit's writes\n");
 }
 

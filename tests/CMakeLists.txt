@@ -5707,3 +5707,16 @@ pom2_add_headless_test(test_w5100_socket_seam
     LINK_LIBRARIES pom2_core_test
     INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# ─── FujiNet command-surface seam ───────────────────────────────────────
+# Drives FujiNetCard through an injected FujiNetLink: canned SmartPort
+# replies, no socket, no helper process, no peer. Printer-unit detection
+# depends entirely on what the far end enumerates, which a test previously
+# had no way to control without standing up a real SP-over-SLIP peer.
+if(TARGET pom2_core_test)
+pom2_add_headless_test(test_fujinet_link_seam
+    NAME fujinet_link_seam TIMEOUT 10 PORTABLE
+    SOURCES fujinet_link_seam_test.cpp
+    LINK_LIBRARIES pom2_core_test
+    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
+endif()

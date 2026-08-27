@@ -384,7 +384,7 @@ void FujiNetCard::handleSmartPortCall()
     };
     const uint16_t params = static_cast<uint16_t>(paramsWide);
 
-    const bool connected = link_.isConnected();
+    const bool connected = link().isConnected();
 
     // Trace what the GUEST asks for, not only what POM2 forwards. Without
     // this, a call served locally — or refused before it ever reached the
@@ -413,7 +413,7 @@ void FujiNetCard::handleSmartPortCall()
         // not stall for a timeout per probe.
         if (unit == 0 && code == 0x00) { answerDeviceCount(payload); return; }
 
-        const auto r = link_.status(unit, code);
+        const auto r = link().status(unit, code);
         if (!r.ok()) { finish(statusFor(r, connected)); return; }
         const std::size_t n = r.data.size();
         if (!writeGuestBlock(payload, r.data.data(), n)) { finish(kSpIoError); return; }
@@ -427,7 +427,7 @@ void FujiNetCard::handleSmartPortCall()
         const uint32_t block = static_cast<uint32_t>(readGuest(params)) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 1))) << 8) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) << 16);
-        const auto r = link_.readBlock(unit, block);
+        const auto r = link().readBlock(unit, block);
         if (!r.ok()) { finish(statusFor(r, connected)); return; }
         if (r.data.size() < kBlockBytes) { finish(kSpIoError); return; }
         if (!writeGuestBlock(payload, r.data.data(), kBlockBytes)) { finish(kSpIoError); return; }
@@ -442,13 +442,13 @@ void FujiNetCard::handleSmartPortCall()
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) << 16);
         uint8_t buf[kBlockBytes];
         if (!readGuestBlock(payload, buf, kBlockBytes)) { finish(kSpIoError); return; }
-        const auto r = link_.writeBlock(unit, block, buf, kBlockBytes);
+        const auto r = link().writeBlock(unit, block, buf, kBlockBytes);
         finish(statusFor(r, connected), 0x00, 0x02);
         return;
     }
 
     case kSpFormat: {
-        const auto r = link_.format(unit);
+        const auto r = link().format(unit);
         finish(statusFor(r, connected));
         return;
     }
@@ -485,7 +485,7 @@ void FujiNetCard::handleSmartPortCall()
         // call, including the printer's own, still goes to the peer
         // untouched. Remove it once upstream stops aborting.
         if (code == 0x00) {
-            for (const auto& d : link_.devices()) {
+            for (const auto& d : link().devices()) {
                 if (d.unit == unit && d.isPrinter()) {
                     finish(kSpOk);
                     return;
@@ -502,25 +502,25 @@ void FujiNetCard::handleSmartPortCall()
             finish(kSpIoError);
             return;
         }
-        const auto r = link_.control(unit, code, list.data(), list.size());
+        const auto r = link().control(unit, code, list.data(), list.size());
         finish(statusFor(r, connected));
         return;
     }
 
     case kSpInit: {
-        const auto r = link_.init(unit);
+        const auto r = link().init(unit);
         finish(statusFor(r, connected));
         return;
     }
 
     case kSpOpen: {
-        const auto r = link_.open(unit);
+        const auto r = link().open(unit);
         finish(statusFor(r, connected));
         return;
     }
 
     case kSpClose: {
-        const auto r = link_.close(unit);
+        const auto r = link().close(unit);
         finish(statusFor(r, connected));
         return;
     }
@@ -531,7 +531,7 @@ void FujiNetCard::handleSmartPortCall()
         const uint32_t addr  = static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 2))) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 3))) << 8) |
                                (static_cast<uint32_t>(readGuest(static_cast<uint16_t>(params + 4))) << 16);
-        const auto r = link_.read(unit, count, addr);
+        const auto r = link().read(unit, count, addr);
         if (!r.ok()) { finish(statusFor(r, connected)); return; }
         const std::size_t n = std::min<std::size_t>(r.data.size(), count);
         if (n && !writeGuestBlock(payload, r.data.data(), n)) { finish(kSpIoError); return; }
@@ -551,7 +551,7 @@ void FujiNetCard::handleSmartPortCall()
             finish(kSpIoError);
             return;
         }
-        const auto r = link_.write(unit, count, addr, data.data(), data.size());
+        const auto r = link().write(unit, count, addr, data.data(), data.size());
         // Printer tap: the peer prints its own copy, and POM2's ImageWriter
         // prints one too. Only on success — a write the FujiNet rejected did
         // not reach paper there and must not reach paper here either.
@@ -577,7 +577,7 @@ void FujiNetCard::handleSmartPortCall()
 
 bool FujiNetCard::hasPrinterUnit() const
 {
-    for (const auto& d : link_.devices())
+    for (const auto& d : link().devices())
         if (d.isPrinter()) return true;
     return false;
 }
@@ -589,7 +589,7 @@ void FujiNetCard::tapPrinterWrite(uint8_t unit, const uint8_t* p, std::size_t n)
     // KB, arriving in ~80-byte writes) and keeps the check honest if the peer
     // re-enumerates.
     bool isPrinter = false;
-    for (const auto& d : link_.devices())
+    for (const auto& d : link().devices())
         if (d.unit == unit) { isPrinter = d.isPrinter(); break; }
     if (!isPrinter) return;
 
@@ -641,7 +641,7 @@ void FujiNetCard::answerDeviceCount(uint16_t payloadAddr)
     // Status list for the unit-0 / code-0 call: device count, then reserved
     // bytes. Eight bytes total, which is what X/Y report.
     uint8_t list[8] = {};
-    std::size_t count = link_.deviceCount();
+    std::size_t count = link().deviceCount();
     // The built-in N: is a device the guest must be able to FIND. The count
     // comes from the peer's chain, and that chain is empty whenever no peer
     // is attached — so without this the guest is told "no devices", never
@@ -679,7 +679,7 @@ uint8_t FujiNetCard::builtInNetUnit() const
     // chain. Parking it at a fixed 11 made it unreachable by the very scan
     // meant to find it: with no peer, the guest probed unit 1, got nothing,
     // and never looked further.
-    for (const auto& d : link_.devices())
+    for (const auto& d : link().devices())
         if (d.name == "NETWORK" || d.type == kSpTypeNetwork) {
             const_cast<FujiNetCard*>(this)->netUnit_ = d.unit;   // override in place
             return netUnit_;
@@ -689,7 +689,7 @@ uint8_t FujiNetCard::builtInNetUnit() const
     // though — moving the unit under its feet because the peer died mid-fetch
     // would strand it mid-page.
     if (net_.isOpen() && netUnit_) return netUnit_;
-    const std::size_t next = link_.deviceCount() + 1;
+    const std::size_t next = link().deviceCount() + 1;
     const_cast<FujiNetCard*>(this)->netUnit_ =
         static_cast<uint8_t>(std::min<std::size_t>(next, 254));
     return netUnit_;
@@ -718,14 +718,14 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
     // wait rather than guess. With no peer at all there is nothing to shadow
     // and the built-in device answers immediately, which is the case it
     // exists for.
-    if (link_.isConnected() && link_.deviceCount() == 0) return false;
+    if (link().isConnected() && link().deviceCount() == 0) return false;
 
     // And never shadow a device the PEER really has at that unit. The chosen
     // unit is remembered across a peer loss, so a peer that comes back with a
     // different chain — a disk where our network device used to sit — would
     // otherwise have its blocks answered by a network device, and ProDOS
     // would report an I/O error on a perfectly good volume.
-    for (const auto& d : link_.devices())
+    for (const auto& d : link().devices())
         if (d.unit == unit && d.name != "NETWORK" && d.type != kSpTypeNetwork)
             return false;
 
@@ -872,12 +872,12 @@ void FujiNetCard::handleProDosCall()
     // SmartPort units, which is what every FujiNet configuration expects.
     const uint8_t unit = (unitByte & 0x80) ? 2 : 1;
 
-    const bool connected = link_.isConnected();
+    const bool connected = link().isConnected();
     if (!connected) { finish(kSpNoDevice); return; }
 
     switch (command) {
     case 0x00: {                                   // STATUS
-        const auto r = link_.status(unit, 0x00);
+        const auto r = link().status(unit, 0x00);
         if (!r.ok()) { finish(statusFor(r, connected)); return; }
         // General status: status byte, then a 3-byte block count. ProDOS
         // wants the low 16 bits of that count in X/Y.
@@ -888,7 +888,7 @@ void FujiNetCard::handleProDosCall()
     }
 
     case 0x01: {                                   // READ
-        const auto r = link_.readBlock(unit, block);
+        const auto r = link().readBlock(unit, block);
         if (!r.ok()) { finish(statusFor(r, connected)); return; }
         if (r.data.size() < kBlockBytes) { finish(kSpIoError); return; }
         if (!writeGuestBlock(buffer, r.data.data(), kBlockBytes)) { finish(kSpIoError); return; }
@@ -899,13 +899,13 @@ void FujiNetCard::handleProDosCall()
     case 0x02: {                                   // WRITE
         uint8_t buf[kBlockBytes];
         if (!readGuestBlock(buffer, buf, kBlockBytes)) { finish(kSpIoError); return; }
-        const auto r = link_.writeBlock(unit, block, buf, kBlockBytes);
+        const auto r = link().writeBlock(unit, block, buf, kBlockBytes);
         finish(statusFor(r, connected), 0x00, 0x02);
         return;
     }
 
     case 0x03: {                                   // FORMAT
-        const auto r = link_.format(unit);
+        const auto r = link().format(unit);
         finish(statusFor(r, connected));
         return;
     }
@@ -926,7 +926,7 @@ void FujiNetCard::onReset()
     // reset (Control code $00) so a modem drops its connection and a printer
     // ejects a partial page, and to make sure a response still in flight for
     // the pre-reset request cannot be mistaken for the next answer.
-    link_.notifyGuestReset();
+    link().notifyGuestReset();
 }
 
 void FujiNetCard::appendSnapshotState(std::vector<uint8_t>& out) const
@@ -936,7 +936,7 @@ void FujiNetCard::appendSnapshotState(std::vector<uint8_t>& out) const
     // LOADING one can resynchronise the link (see below).
     out.push_back('F'); out.push_back('N'); out.push_back('E'); out.push_back('T');
     out.push_back(0x01);
-    out.push_back(link_.isConnected() ? 1 : 0);
+    out.push_back(link().isConnected() ? 1 : 0);
 }
 
 void FujiNetCard::loadSnapshotState(const uint8_t* data, std::size_t len)
@@ -957,7 +957,7 @@ void FujiNetCard::loadSnapshotState(const uint8_t* data, std::size_t len)
     // Deliberately NOT notifyGuestReset(): the user rewound, the machine did
     // not reset, and hanging up somebody's modem because they scrubbed the
     // timeline would be wrong.
-    link_.resync();
+    link().resync();
 }
 
 } // namespace pom2
