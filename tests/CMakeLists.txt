@@ -5762,3 +5762,22 @@ pom2_add_headless_test(test_w5100_name_resolver
     SOURCES w5100_name_resolver_test.cpp
     LINK_LIBRARIES pom2_core_test)
 endif()
+
+# ─── //c IOUDIS gates the DHGR switches ─────────────────────────────────
+# vbl_ioudis_annunciator pins the VBL half of the IIc IOU decode; this pins
+# the display half. Skips when no //c ROM is present, so CI stays ROM-free.
+add_executable(test_iic_ioudis_dhgr
+    iic_ioudis_dhgr_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_ioudis_dhgr PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(APPLE)
+    target_link_libraries(test_iic_ioudis_dhgr PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_ioudis_dhgr PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME iic_ioudis_dhgr COMMAND test_iic_ioudis_dhgr)
+set_tests_properties(iic_ioudis_dhgr PROPERTIES TIMEOUT 30)

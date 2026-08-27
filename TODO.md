@@ -384,10 +384,10 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   split — so with IOUDIS clear those addresses are the IIc IOU's X0/Y0 edge
   selects and never reach DHIRES, and with it set they are SETDHIRES /
   CLRDHIRES again. Verified directly against all three //c ROMs.
-  **Not pinned by a test.** `vbl_ioudis_annunciator` covers the VBL half of
-  the same gate but not the DHGR half; an attempt to add it did not land
-  cleanly and was backed out rather than committed half-working. Worth a
-  focused case. *0.5 d.*
+  **Now pinned** by `iic_ioudis_dhgr` (2026-08-27): reads AND writes to
+  $C05E/$C05F under both IOUDIS states, across all three //c dumps, skipping
+  when none is present so CI stays ROM-free. Mutation-checked — narrowing the
+  gate to $C05D makes it fail.
 - 🟢 **II+ broadcasts `$C00C/D` on reads while IIe is write-only** — the other
   half of the 2026-07-12 Chat Mauve review, still unchecked.
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
