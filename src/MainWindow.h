@@ -49,6 +49,7 @@ namespace pom2 { class StateAccess; }
 namespace pom2 { class MouseCoordinator; }
 namespace pom2 { class PrinterCoordinator; }
 namespace pom2 { class AudioCoordinator; }
+namespace pom2 { class DevicePanelCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -342,11 +343,15 @@ private:
     /// from the live SlotBus for the mixer and the inspectors.
     std::unique_ptr<pom2::AudioCoordinator> audioCoordinator_;
 
+    /// Chat Mauve, Clock, Uthernet I/II and the Super Serial inventory:
+    /// resolves each from the live SlotBus, copies an immutable snapshot for
+    /// ImGui and applies the frame's commands after re-resolution.
+    std::unique_ptr<pom2::DevicePanelCoordinator> devicePanelCoordinator_;
+
     std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
     pom2::CffaCard*              cffaCard = nullptr;       // non-owning, owned by SlotBus
-    LeChatMauveCard*             chatMauveCard = nullptr;  // non-owning, owned by SlotBus
     // Plural alias: the //c built-in lineup ships TWO SSC-compatible
     // serial ports (printer + modem). `sscCard` is the primary alias =
     // `sscCards.empty() ? nullptr : sscCards.front()` (kept for legacy
@@ -354,7 +359,6 @@ private:
     // (menu, panel tabs, settings persistence) iterate `sscCards`.
     std::vector<SuperSerialCard*> sscCards;
     SuperSerialCard*             sscCard = nullptr;        // non-owning, owned by SlotBus
-    ClockCard*                   clockCard = nullptr;      // non-owning, owned by SlotBus
     // Both mouse implementations (MouseCard, MouseCardAppleWin) are reached
     // through `mouseCoordinator_`, never through a retained alias: a slot
     // replacement or a profile switch destroys the card, and the aliases were
@@ -375,8 +379,6 @@ private:
     // Ethernet. Both are multi-pluggable in principle but the panel and
     // settings track one of each — two NICs on one virtual network is a
     // configuration nobody asks for, and each would need its own MAC.
-    pom2::UthernetCard*          uthernetCard     = nullptr; // non-owning, owned by SlotBus
-    pom2::UthernetIICard*        uthernetIICard   = nullptr; // non-owning, owned by SlotBus
     /// FujiNet relay. Single-instance on purpose: the card holds a listening
     /// socket (or an open serial device), and a second one would just fail to
     /// bind / open the same endpoint.

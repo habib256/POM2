@@ -10,6 +10,7 @@
 // keep the storage panels there. See the file-size ratchet.
 
 #include "MainWindow.h"
+#include "DevicePanelCoordinator.h"
 #include "EmulationController.h"
 
 #include "AiControlServer.h"
@@ -43,61 +44,17 @@ void MainWindow::renderEthernetPanelWindow()
     if (!show(pom2::PanelId::Ethernet)) return;
     if (!ethernetPanel) ethernetPanel = std::make_unique<pom2::Uthernet_ImGui>();
 
-    pom2::Uthernet_ImGui::Snapshot snap;
+    // Snapshot both NICs under one lock with the cards resolved inside it,
+    // then apply whatever the frame asked for in a second one. The backend
+    // choice and the slirp availability are host-side and need no lock.
+    auto snap = devicePanelCoordinator_->captureEthernet();
     snap.slirpCompiledIn = pom2::slirpAvailable();
     snap.backendChoice   = settings->getString("ethernet_backend", "slirp");
-
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-
-        if (uthernetCard) {
-            const pom2::Cs8900aDevice& chip = uthernetCard->chip();
-            const pom2::NetworkBackend* be  = uthernetCard->backend();
-            snap.u1Plugged        = true;
-            snap.u1Slot           = uthernetCard->getSlot();
-            snap.u1Backend        = be ? std::string(be->name()) : "none";
-            snap.u1BackendValid   = be && be->isValid();
-            snap.u1Mac            = chip.macAddress();
-            snap.u1RxEnabled      = chip.receiverEnabled();
-            snap.u1TxEnabled      = chip.transmitterEnabled();
-            snap.u1Promiscuous    = chip.promiscuous();
-            snap.u1PacketPagePtr  = chip.packetPagePointer();
-            snap.u1Queued         = chip.queuedFrames();
-            snap.u1FramesSent     = chip.framesSent();
-            snap.u1FramesReceived = chip.framesReceived();
-            snap.u1FramesFiltered = chip.framesFiltered();
-        }
-
-        if (uthernetIICard) {
-            const pom2::W5100Device& chip   = uthernetIICard->chip();
-            const pom2::NetworkBackend* be  = uthernetIICard->backend();
-            snap.u2Plugged        = true;
-            snap.u2Slot           = uthernetIICard->getSlot();
-            snap.u2Backend        = be ? std::string(be->name()) : "none";
-            snap.u2BackendValid   = be && be->isValid();
-            snap.u2Mac            = chip.macAddress();
-            snap.u2Ip             = chip.localIp();
-            snap.u2VirtualDns     = chip.virtualDnsEnabled();
-            snap.u2BytesSent      = chip.bytesSent();
-            snap.u2BytesReceived  = chip.bytesReceived();
-            for (size_t i = 0; i < pom2::W5100Device::kSocketCount; ++i)
-                snap.u2Sockets[i] = chip.socketInfo(i);
-        }
-    }
 
     const auto action =
         ethernetPanel->render("Ethernet###ethernetPanel", show(pom2::PanelId::Ethernet), snap);
 
-    if (action.requestResetU1 || action.requestResetU2 ||
-        action.requestVirtualDns) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (action.requestResetU1 && uthernetCard) uthernetCard->onReset();
-        if (action.requestResetU2 && uthernetIICard) uthernetIICard->onReset();
-        if (action.requestVirtualDns && uthernetIICard) {
-            uthernetIICard->chip().setVirtualDnsEnabled(action.virtualDnsTo);
-            settings->setBool("uthernet2_virtual_dns", action.virtualDnsTo);
-        }
-    }
+    devicePanelCoordinator_->applyEthernet(action);
 }
 
 void MainWindow::renderSscPanelWindow()

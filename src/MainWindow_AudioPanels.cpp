@@ -11,6 +11,7 @@
 // anonymous-namespace helpers that keep the storage panels in MainWindow.cpp.
 
 #include "MainWindow.h"
+#include "DevicePanelCoordinator.h"
 #include "AudioCoordinator.h"
 #include "EmulationController.h"
 
@@ -304,19 +305,11 @@ void MainWindow::renderChatMauvePanelWindow()
 {
     if (!show(pom2::PanelId::ChatMauve)) return;
 
-    pom2::LeChatMauve_ImGui::Snapshot snap;
-    if (chatMauveCard) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.plugged         = true;
-        snap.slot            = chatMauveCard->getSlot();
-        snap.mode            = chatMauveCard->currentMode();
-        snap.fifoBits        = chatMauveCard->fifoBits();
-        snap.eightyCol       = chatMauveCard->eightyCol();
-        snap.an3High         = chatMauveCard->an3High();
-        snap.invertBit7      = chatMauveCard->invertBit7();
-        snap.colorTextEnable = chatMauveCard->colorTextEnabled();
-        snap.hgrDuochrome    = chatMauveCard->hgrDuochromeEnabled();
-    }
+    // One acquisition for the snapshot, one for whatever the frame asked for.
+    // This panel used to take the bare stateMutex SIX times per frame — once
+    // to build the snapshot and once per toggle — through an alias that a
+    // slot rebuild could have invalidated between any two of them.
+    const auto snap = devicePanelCoordinator_->captureChatMauve();
 
     ImGui::SetNextWindowPos (ImVec2(1095, 45),  ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(330,  500), ImGuiCond_FirstUseEver);
@@ -324,35 +317,9 @@ void MainWindow::renderChatMauvePanelWindow()
     auto result = chatMauvePanel->render("Le Chat Mauve###chatMauvePanel",
                                         show(pom2::PanelId::ChatMauve), snap);
 
-    if (chatMauveCard && result.requestOverride) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        chatMauveCard->overrideMode(result.overrideTo);
-    }
-    if (chatMauveCard && result.requestReset) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        chatMauveCard->onReset();
-    }
-    if (chatMauveCard && result.requestInvertBit7) {
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            chatMauveCard->setInvertBit7(result.invertBit7To);
-        }
-        if (settings) settings->setBool("chatmauve_invert_bit7", result.invertBit7To);
-    }
-    if (chatMauveCard && result.requestColorTextEnable) {
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            chatMauveCard->setColorTextEnabled(result.colorTextEnableTo);
-        }
-        if (settings) settings->setBool("chatmauve_color_text", result.colorTextEnableTo);
-    }
-    if (chatMauveCard && result.requestHgrDuochrome) {
-        {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            chatMauveCard->setHgrDuochromeEnabled(result.hgrDuochromeTo);
-        }
-        if (settings) settings->setBool("chatmauve_hgr_duochrome", result.hgrDuochromeTo);
-    }
+    // Re-resolves the card under the lock and applies every requested change
+    // in one critical section, then persists the toggles after unlocking.
+    devicePanelCoordinator_->applyChatMauve(result);
 }
 
 // ─── Mockingboard live state panel ───────────────────────────────────────

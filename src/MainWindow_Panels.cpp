@@ -23,6 +23,7 @@
 // the god-object does not get to grow by 250 lines of table.
 
 #include "AudioCoordinator.h"
+#include "DevicePanelCoordinator.h"
 #include "MainWindow.h"
 #include "PrinterCoordinator.h"
 
@@ -141,19 +142,24 @@ void MainWindow::registerPanels()
     // One entry covers both NICs; the panel tabs between whichever are in.
     panels_.bind(P::Ethernet, RT{
         [this] {
-            if (uthernetIICard && uthernetCard)
+            const auto inv = devicePanelCoordinator_->captureInventory();
+            const bool u1 = inv.uthernetSlot >= 0;
+            const bool u2 = inv.uthernetIISlot >= 0;
+            if (u1 && u2)
+                return "Ethernet (I slot " +
+                       std::to_string(inv.uthernetSlot) + ", II slot " +
+                       std::to_string(inv.uthernetIISlot) + ")";
+            if (u2)
+                return "Ethernet (Uthernet II slot " +
+                       std::to_string(inv.uthernetIISlot) + ")";
+            if (u1)
                 return "Ethernet (Uthernet I slot " +
-                       std::to_string(uthernetCard->getSlot()) + ", II slot " +
-                       std::to_string(uthernetIICard->getSlot()) + ")";
-            if (uthernetIICard)
-                return "Ethernet (Uthernet II, slot " +
-                       std::to_string(uthernetIICard->getSlot()) + ")";
-            if (uthernetCard)
-                return "Ethernet (Uthernet I, slot " +
-                       std::to_string(uthernetCard->getSlot()) + ")";
-            return std::string("Ethernet (no card plugged)");
+                       std::to_string(inv.uthernetSlot) + ")";
+            return std::string("Ethernet");
         },
-        [this] { return uthernetCard || uthernetIICard; } });
+        [this] {
+            return devicePanelCoordinator_->captureInventory().ethernetPlugged();
+        } });
 
 #ifdef __EMSCRIPTEN__
     // AiControlServer::start() cannot open a listening socket in the browser

@@ -58,6 +58,7 @@
 #include "MouseCard.h"
 #include "MouseCoordinator.h"
 #include "AudioCoordinator.h"
+#include "DevicePanelCoordinator.h"
 #include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
 #include "MouseGrab.h"
@@ -188,6 +189,8 @@ MainWindow::MainWindow(bool forceIIPlus)
       printerCoordinator_(std::make_unique<pom2::PrinterCoordinator>()),
       audioCoordinator_(std::make_unique<pom2::AudioCoordinator>(
           controller->audio(), *controller)),
+      devicePanelCoordinator_(std::make_unique<pom2::DevicePanelCoordinator>(
+          *controller, *settings)),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -845,13 +848,8 @@ Apple2Display&       MainWindow::displayRef() { return *display; }
 
 bool MainWindow::setChatMauveInvertBit7(bool v)
 {
-    if (!chatMauveCard) return false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        chatMauveCard->setInvertBit7(v);
-    }
-    if (settings) settings->setBool("chatmauve_invert_bit7", v);
-    return true;
+    // Resolves the card under the lock, writes, unlocks, then persists.
+    return devicePanelCoordinator_->setChatMauveInvertBit7(v);
 }
 
 MainWindow::~MainWindow()
@@ -1529,17 +1527,19 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 
     auto plugChatMauve = [&](int s) {
         auto card = std::make_unique<LeChatMauveCard>(s);
-        chatMauveCard = card.get();
+        // Local, not a retained alias: the display genuinely needs the card
+        // for its RGB decode path and is re-pointed on every rebuild.
+        LeChatMauveCard* plugged = card.get();
         if (settings) {
-            chatMauveCard->setInvertBit7(
+            plugged->setInvertBit7(
                 settings->getBool("chatmauve_invert_bit7", false));
-            chatMauveCard->setColorTextEnabled(
+            plugged->setColorTextEnabled(
                 settings->getBool("chatmauve_color_text", true));
-            chatMauveCard->setHgrDuochromeEnabled(
+            plugged->setHgrDuochromeEnabled(
                 settings->getBool("chatmauve_hgr_duochrome", false));
         }
         st.memory().slotBus().plug(s, std::move(card));
-        display->setChatMauveCard(chatMauveCard);
+        display->setChatMauveCard(plugged);
     };
 
     auto plugSsc = [&](int s) {
@@ -1582,7 +1582,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 
     auto plugClock = [&](int s) {
         auto card = std::make_unique<ClockCard>(s);
-        clockCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1640,7 +1639,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // sees a frame — which is a better failure mode than hiding it.
         auto card = std::make_unique<pom2::UthernetCard>(s);
         card->setBackend(makeEthernetBackend("Uthernet"));
-        uthernetCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1656,7 +1654,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // PTIMER == 0.
         card->chip().setVirtualDnsEnabled(
             settings->getBool("uthernet2_virtual_dns", true));
-        uthernetIICard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -2498,7 +2495,7 @@ void MainWindow::renderCommandPalette()
         pipe("disp.oecpu",    "Composite (OpenEmulator, CPU)", Apple2Display::HiResMode::ColorCompositeOECpu);
         pipe("disp.applewin", "AppleWin NTSC (TV line blur)", Apple2Display::HiResMode::ColorAppleWin);
         pipe("disp.rgb",      "RGB card - Le Chat Mauve", Apple2Display::HiResMode::ChatMauveRGB,
-             chatMauveCard != nullptr);
+             devicePanelCoordinator_->captureInventory().chatMauvePlugged());
         pipe("disp.mono",     "Monochrome white", Apple2Display::HiResMode::MonoWhite);
         pipe("disp.green",    "Monochrome green (P31)", Apple2Display::HiResMode::MonoGreen);
         pipe("disp.amber",    "Monochrome amber", Apple2Display::HiResMode::MonoAmber);
@@ -3098,7 +3095,8 @@ void MainWindow::renderMenuBar()
 
         // RGB card — clean Péritel decode, two distinct grays. Greyed out
         // when no Le Chat Mauve card is plugged in slot 7.
-        ImGui::BeginDisabled(chatMauveCard == nullptr);
+        ImGui::BeginDisabled(
+            !devicePanelCoordinator_->captureInventory().chatMauvePlugged());
         pipeItem("RGB card — Le Chat Mauve", nullptr,
                  Apple2Display::HiResMode::ChatMauveRGB);
         ImGui::EndDisabled();
@@ -5406,7 +5404,8 @@ void MainWindow::renderAbstractionPanel()
     row("mouse",   mouseInventory.mamePlugged     ? Live::Active : Live::NotPlugged);
     row("mouseaw", mouseInventory.appleWinPlugged ? Live::Active : Live::NotPlugged);
     degradable("clock", plugged("clock"),
-               clockCard && clockCard->romFromDump(), pom2::AbsLevel::H1,
+               devicePanelCoordinator_->captureInventory().clockRomFromDump,
+               pom2::AbsLevel::H1,
                "roms/thunderclock_u9_v1.3.bin absent — running the synthetic "
                "ProDOS-signature stub, so tools that pull the driver off the "
                "card find nothing.");
@@ -5433,7 +5432,8 @@ void MainWindow::renderAbstractionPanel()
             oe ? "" : "Artifact colours are read from a table; no signal is "
                       "synthesised.");
     }
-    row("chatmauve", chatMauveCard ? Live::Active : Live::NotPlugged);
+    row("chatmauve", devicePanelCoordinator_->captureInventory().chatMauvePlugged()
+                         ? Live::Active : Live::NotPlugged);
 
     // ── Audio, network, CPU ─────────────────────────────────────────────
     row("mockingboard", (plugged("mockingboard") || plugged("mockingboard_c") ||
@@ -6941,21 +6941,26 @@ void MainWindow::renderFujiNetPanelWindow()
         snap.serialDevices = fujiNetSerialDevices_;
         snap.printerTap    = fujiNetCard->hasPrinterUnit();
         snap.printerBytes  = fujiNetCard->bytesWritten();
-        // pumpImageWriter() arbitrates: parallel cards outrank the FujiNet
-        // tap, which outranks the SSC tap. Outranked iff the arbitration picked something OTHER than this
-        // tap. Asking the coordinator which source won says that directly;
-        // the old `printerCard || grapplerCard` re-stated the priority list
-        // here and would have to be edited again for every new source.
-        snap.printerOutranked =
-            snap.printerTap &&
-            printerCoordinator_->captureHost(*controller).source !=
-                pom2::PrinterCoordinator::SourceKind::FujiNet;
-        snap.hostClockCard = (clockCard != nullptr);
         snap.helperRunning  = fujiNetCard->helper().isRunning();
         snap.helperPath     = fujiNetHelperPath_;
         snap.helperExitCode = fujiNetCard->helper().lastExitCode();
         snap.helperResolved = fujiNetHelperResolved_;
     }
+
+    // Both of these take the machine lock themselves, so they MUST stay
+    // outside the guard above — stateMutex is non-recursive and asking for it
+    // twice on this thread hangs the UI and the emulator together.
+    //
+    // Outranked iff the arbitration picked something OTHER than this tap.
+    // Asking the coordinator which source won says that directly; the old
+    // `printerCard || grapplerCard` re-stated the priority list here and would
+    // have to be edited again for every new source.
+    snap.printerOutranked =
+        snap.printerTap &&
+        printerCoordinator_->captureHost(*controller).source !=
+            pom2::PrinterCoordinator::SourceKind::FujiNet;
+    snap.hostClockCard =
+        devicePanelCoordinator_->captureInventory().clockPlugged();
 
     const auto r = fujiNetPanel->render("FujiNet", show(pom2::PanelId::FujiNet), snap);
     if (!snap.plugged) return;
