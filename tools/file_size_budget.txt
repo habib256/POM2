@@ -11,5 +11,5 @@ src/DiskImage.cpp                        2824
 src/hgrpaint/HgrPaintEditor.cpp          2509
 src/ImageWriter.cpp                      2141
 src/M6502.cpp                            2159
-src/MainWindow.cpp                        8558
+src/MainWindow.cpp                        8402
 src/Memory.cpp                           2391

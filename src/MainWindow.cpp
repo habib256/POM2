@@ -61,6 +61,7 @@
 #include "DevicePanelCoordinator.h"
 #include "SlotCardFactory.h"
 #include "SlotConfigurationCoordinator.h"
+#include "SlotProvisioningCoordinator.h"
 #include "SlotRebuildCoordinator.h"
 #include "StorageCoordinator.h"
 #include "PrinterCoordinator.h"
@@ -199,6 +200,9 @@ MainWindow::MainWindow(bool forceIIPlus)
       slotCardFactory_(std::make_unique<pom2::SlotCardFactory>()),
       slotConfigCoordinator_(
           std::make_unique<pom2::SlotConfigurationCoordinator>()),
+      slotProvisioningCoordinator_(
+          std::make_unique<pom2::SlotProvisioningCoordinator>(
+              *slotCardFactory_, *storageCoordinator_)),
       // The rebuild transaction. Every hook is required — the coordinator
       // throws rather than let a half-wired teardown run — and the ORDER is
       // its contract, not this list's: gate AI requests, drop the non-owning
@@ -5806,84 +5810,28 @@ bool MainWindow::flushSlotMedia(std::string& err)
 
 int MainWindow::ensureHdvCardForBoot()
 {
-    // On //c-class only the on-board SmartPort (slot 5) is ROM-visible /
-    // bootable — cffa/hdv slot cards are masked by the forced INTCXROM, so
-    // prefer the SmartPort and never plug a (dead) ProDOSHardDiskCard here.
-    // See project_iic_smartport_boot.
-    if (activeProfile == pom2::SystemProfile::AppleIIc ||
-        activeProfile == pom2::SystemProfile::AppleIIcPlus ||
-        activeProfile == pom2::SystemProfile::AppleIIcPAL) {
-        if (primarySmartPortCard()) return primarySmartPortCard()->getSlot();
-    }
-    if (primaryCffaCard())      return primaryCffaCard()->getSlot();
-    if (primaryHdvCard())       return primaryHdvCard()->getSlot();
-    if (primarySmartPortCard()) return primarySmartPortCard()->getSlot();
-
-    // Neither an HDV nor a SmartPort card is plugged (e.g. a saved config
-    // that only has Disk II cards). Plug a ProDOSHardDiskCard into a free
-    // slot for THIS session so the CLI/kiosk launcher can still boot the
-    // named HDV. Prefer slot 7 (conventional HDV/SmartPort slot), else the
-    // highest free slot. Not persisted — the saved config is untouched.
-    int slot = -1;
-    for (int s = 7; s >= 1; --s) {
-        if (!controller->memory().slotBus().isPlugged(s)) { slot = s; break; }
-    }
-    if (slot < 0) return -1;
-
-    // Plug under the state lock (the slot is empty, so no card destructor
-    // races the worker — a held lock is enough; no stop/start needed).
-    {
-        auto st = controller->lockState();
-        auto card = std::make_unique<ProDOSHardDiskCard>(slot);
-        // Honour the user's stored write-back preference, exactly as the
-        // normal plug path does. Left at the backing default (off), a
-        // dropped .hdv accepted every ProDOS write into RAM and discarded
-        // the lot at eject/exit without a word.
-        card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
-        st.memory().slotBus().plug(slot, std::move(card));
-        // NOT recorded in the plan: this card exists for this boot only.
-        // Writing it here made a session-only auto-plug look like the user's
-        // configuration, and the Slot Config panel showed it as such.
-        storageCoordinator_->markAutoProvisionedHdv(slot);   // session-local; ~MainWindow won't persist it
-    }
-    pom2::log().info("CLI",
-        "auto-plugged ProDOS HDV card in slot " + std::to_string(slot) +
-        " (saved slot config unchanged)");
-    return slot;
+    // Preference order and the session-only marking both live in the
+    // coordinator, so the CLI, drag-and-drop and Floppy Emu paths cannot
+    // disagree about which target a boot should use.
+    //
+    // Behaviour change, deliberate: on a //c-class profile this now REFUSES
+    // when no SmartPort target exists, instead of falling through to plug an
+    // HDV card. Slot cards there are ROM-masked by the forced INTCXROM and
+    // cannot boot ($Cn00 reads internal ROM, not the card), so the old
+    // fallback conjured a card that could never be booted from and then
+    // reported success.
+    const auto r = slotProvisioningCoordinator_->ensureHdvBootTarget(
+        *controller, *settings, activeProfile);
+    if (!r && !r.error.empty()) pom2::log().warn("Slots", r.error);
+    return r.slot;
 }
 
 int MainWindow::ensureSmartPortCardForBoot()
 {
-    if (primarySmartPortCard()) return primarySmartPortCard()->getSlot();
-    // A `noPhysicalSlots` machine (//c class) has nowhere to plug one: its
-    // only SmartPort is the built-in, which would already have answered
-    // above. //c+ 3.5" media goes to the on-board Sony hub instead, so the
-    // callers special-case that profile before reaching here.
-    if (pom2::profileConfig(activeProfile).noPhysicalSlots) return -1;
-    SlotBus& bus = controller->memory().slotBus();
-    // Prefer slot 5, the conventional Liron/UniDisk slot; else highest free.
-    int slot = (!bus.isPlugged(5)) ? 5 : -1;
-    if (slot < 0)
-        for (int s = 7; s >= 1; --s)
-            if (!bus.isPlugged(s)) { slot = s; break; }
-    if (slot < 0) return -1;
-
-    // Plug under the state lock — same rationale as ensureHdvCardForBoot:
-    // the slot is empty, so no card destructor races the worker.
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        auto card = std::make_unique<pom2::SmartPortCard>(slot);
-        card->setFloppySound(&controller->floppySound35());
-        const std::string r = pom2::findResource("roms/liron.rom");
-        if (!r.empty()) card->loadLironRom(r);
-        controller->memory().slotBus().plug(slot, std::move(card));
-        // Session-only, like the HDV auto-plug above — not part of the plan.
-        storageCoordinator_->markAutoProvisionedSmartPort(slot);   // session-local; not persisted
-    }
-    pom2::log().info("Slots",
-        "auto-plugged SmartPort card in slot " + std::to_string(slot) +
-        " (saved slot config unchanged)");
-    return slot;
+    const auto r = slotProvisioningCoordinator_->ensureSmartPortBootTarget(
+        *controller, activeProfile);
+    if (!r && !r.error.empty()) pom2::log().warn("Slots", r.error);
+    return r.slot;
 }
 
 bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut)
