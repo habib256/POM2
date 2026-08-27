@@ -43,8 +43,28 @@ COORD = (
 
 # Members that deliberately take NO lock, so they are legal inside one.
 # Keep this list short and justify every entry.
+# Two shapes qualify, and nothing else:
+#   1. plain accessors/mutators over the coordinator's own fields;
+#   2. methods that take `SlotBus&` / `Settings&` DIRECTLY instead of an
+#      EmulationController — that signature IS the contract saying "the caller
+#      already holds the lock and proves it by handing me the bus".
+# Check the declaration before adding an entry: if it takes an
+# EmulationController it locks, and it does not belong here.
 LOCK_FREE = (
-    'resetFeedCursor',   # plain member reset, no machine access
+    'resetFeedCursor',               # 1. plain member reset
+    'markAutoProvisionedHdv',        # 1.
+    'markAutoProvisionedSmartPort',  # 1.
+    'autoProvisionedHdvSlot',        # 1.
+    'autoProvisionedSmartPortSlot',  # 1.
+    'clearAutoProvisioned',          # 1.
+    'captureRebuildSnapshot',        # 2. takes SlotBus&
+    'restoreRebuildSnapshot',        # 2. takes SlotBus&
+    'restoreMediaFromSettings',      # 2. takes SlotBus&
+    'persistRebuildSettings',        # 2. takes Settings& + a value snapshot
+    'persistSessionSettings',        # 2.
+    'persistDiskIIDrive',            # 2. takes SlotBus&
+    'flushAll',                      # 2. takes SlotBus&
+    'topology',                      # 2. takes SlotBus&
 )
 
 FUNC_START = re.compile(r'^[A-Za-z_][\w:<>,&*\s]*::\w+\(')

@@ -880,7 +880,7 @@ MainWindow::~MainWindow()
     // Skip persisting an HDV card that ensureHdvCardForBoot auto-plugged for
     // a one-shot `POM2 <image.hdv>` boot — it's session-local by contract.
     const bool hdvIsAutoProvisioned =
-        primaryHdvCard() && primaryHdvCard()->getSlot() == autoProvisionedHdvSlot_;
+        primaryHdvCard() && primaryHdvCard()->getSlot() == storageCoordinator_->autoProvisionedHdvSlot();
     if (!hdvIsAutoProvisioned && primaryHdvCard() && primaryHdvCard()->isImageLoaded()) {
         // Don't persist the synthesised host-folder volume — the path is
         // a sentinel, not a real file. Re-synthesis happens on click.
@@ -1014,8 +1014,8 @@ MainWindow::~MainWindow()
     {
         const auto& cfg = pom2::profileConfig(activeProfile);
         for (int s = 1; s <= 7; ++s) {
-            if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug
-            if (s == autoProvisionedSmartPortSlot_) continue;   // idem (Floppy Emu)
+            if (s == storageCoordinator_->autoProvisionedHdvSlot()) continue;   // session-local auto-plug
+            if (s == storageCoordinator_->autoProvisionedSmartPortSlot()) continue;   // idem (Floppy Emu)
             // Profile-forced slots (built-ins / noPhysicalSlots) hold the
             // profile's value, not the user's — shared guard with the Slot
             // Config Apply button (pom2::slotKeyIsUserChoice).
@@ -6100,7 +6100,7 @@ int MainWindow::ensureHdvCardForBoot()
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
         st.memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "hdv";
-        autoProvisionedHdvSlot_ = slot;   // session-local; ~MainWindow won't persist it
+        storageCoordinator_->markAutoProvisionedHdv(slot);   // session-local; ~MainWindow won't persist it
     }
     pom2::log().info("CLI",
         "auto-plugged ProDOS HDV card in slot " + std::to_string(slot) +
@@ -6134,7 +6134,7 @@ int MainWindow::ensureSmartPortCardForBoot()
         if (!r.empty()) card->loadLironRom(r);
         controller->memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "smartport35";
-        autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
+        storageCoordinator_->markAutoProvisionedSmartPort(slot);   // session-local; not persisted
     }
     pom2::log().info("Slots",
         "auto-plugged SmartPort card in slot " + std::to_string(slot) +
