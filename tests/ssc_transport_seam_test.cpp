@@ -207,6 +207,49 @@ void testReconnectResetsTelnetParser()
     std::printf("  a reconnect resets the telnet parser: OK\n");
 }
 
+
+// ── SW2-6 gates the IRQ line, independently of the ACIA ──────────────────
+//
+// On a real Super Serial Card this DIP sits between the 6551's IRQ output and
+// the slot's IRQ pin. With it OFF an interrupt-driven driver never fires
+// however the command register is programmed — the two are independent, and
+// that independence is exactly what makes the switch confusing on real
+// hardware. Modelling the source but not the gate made a card configured for
+// polling behave like one configured for interrupts. MAME `a2ssc.cpp:373`.
+void testIrqDipGatesTheSlotLine()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+    card.setRawMode(false);
+    fake->connect();
+
+    // Enable receive interrupts in the ACIA: command register with DTR set
+    // and the RX-IRQ-disable bit CLEAR.
+    card.deviceSelectWrite(kAciaCommand, 0x01);
+    assert(card.irqDipEnabled());          // shipped default: SW2-6 on
+
+    fake->deliver({ 'x' }, /*textMode=*/true);
+    // The transport raises the source off the CPU thread and marks the line
+    // dirty; advanceCycles is where the card applies it, because assertIrq
+    // mutates non-atomic SlotPeripheral state.
+    card.advanceCycles(1);
+    assert(card.slotIrqAsserted());        // the byte raised the line
+
+    // Flip the switch: the line drops at once, as it does on a powered card.
+    card.setIrqDipEnabled(false);
+    assert(!card.irqDipEnabled());
+    assert(!card.slotIrqAsserted());
+
+    // The ACIA is untouched — its own source is still pending, so flipping
+    // the switch back re-asserts without the guest doing anything.
+    card.setIrqDipEnabled(true);
+    assert(card.slotIrqAsserted());
+
+    std::printf("  SW2-6 gates the slot IRQ line, ACIA untouched: OK\n");
+}
+
 } // namespace
 
 int main()
@@ -218,6 +261,7 @@ int main()
     testOutboundIacIsVerbatimInRawMode();
     testKeyboardSinkOnlyInTextMode();
     testReconnectResetsTelnetParser();
+    testIrqDipGatesTheSlotLine();
     std::printf("OK\n");
     return 0;
 }

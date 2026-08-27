@@ -451,7 +451,8 @@ void W5100Device::connectSocket(size_t i)
             setSocketStatus(i, kW5100SnSrSynSent);
             return;
         case W5100ConnectResult::Failed:
-            log().warn("W5100", "connect() failed");
+            // The reason is logged by the socket layer, which still has errno.
+            log().warn("W5100", "connect() refused by the host");
             clearSocket(i);
             return;
     }

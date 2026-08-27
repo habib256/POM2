@@ -59,6 +59,10 @@ public:
         const int e = lastSocketError();
         if (errInProgress(e) || errWouldBlock(e))
             return W5100ConnectResult::InProgress;
+        // Report WHY here: this is the only layer that still has the errno.
+        // The device above it deliberately names no host type, so a bare
+        // "connect() failed" was all the guest's owner could see.
+        log().warn("W5100", "connect() failed: " + socketErrorText(e));
         return W5100ConnectResult::Failed;
     }
 
