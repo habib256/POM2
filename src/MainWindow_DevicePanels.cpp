@@ -606,7 +606,7 @@ void MainWindow::renderAiControlPanelWindow()
         if (ImGui::Button("Start")) {
             // Re-attach in case slot cards were rebuilt by the slot config
             // panel since the last start — pointers may have moved.
-            aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
+            aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
             aiServer->setAuthToken(aiTokenInput);
             if (!aiServer->start(static_cast<uint16_t>(aiPortInput))) {
                 tapeStatusMessage = "AI Control: bind failed (port busy?)";

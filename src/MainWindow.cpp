@@ -59,6 +59,7 @@
 #include "MouseCoordinator.h"
 #include "AudioCoordinator.h"
 #include "DevicePanelCoordinator.h"
+#include "StorageCoordinator.h"
 #include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
 #include "MouseGrab.h"
@@ -191,6 +192,7 @@ MainWindow::MainWindow(bool forceIIPlus)
           controller->audio(), *controller)),
       devicePanelCoordinator_(std::make_unique<pom2::DevicePanelCoordinator>(
           *controller, *settings)),
+      storageCoordinator_(std::make_unique<pom2::StorageCoordinator>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -704,10 +706,10 @@ MainWindow::MainWindow(bool forceIIPlus)
     // `disk_writeback_slotN` keys. The primary (lowest-slot) card also
     // honours the legacy unsuffixed `disk_path` / `disk_writeback` keys
     // so settings written before multi-instance support keep loading.
-    for (auto* c : diskCards) {
+    for (auto* c : diskIICards()) {
         if (!c) continue;
         const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-        const bool isPrimary = (c == diskCard);
+        const bool isPrimary = (c == primaryDiskII());
         const bool wb = settings->getBool(
             "disk_writeback" + slotKey,
             isPrimary ? settings->getBool("disk_writeback", false) : false);
@@ -771,7 +773,7 @@ MainWindow::MainWindow(bool forceIIPlus)
     // the last session left it on — fresh users opt in via the panel.
     aiPortInput   = settings->getInt   ("ai_control_port",   aiPortInput);
     aiTokenInput  = settings->getString("ai_control_token",  "");
-    aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
+    aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
     aiServer->setAuthToken(aiTokenInput);
     aiServer->setProfileLabel(std::string(pom2::profileConfig(activeProfile).displayName));
     if (settings->getBool("ai_control_enable", false)) {
@@ -894,11 +896,11 @@ MainWindow::~MainWindow()
     // Skip persisting an HDV card that ensureHdvCardForBoot auto-plugged for
     // a one-shot `POM2 <image.hdv>` boot — it's session-local by contract.
     const bool hdvIsAutoProvisioned =
-        hdvCard && hdvCard->getSlot() == autoProvisionedHdvSlot_;
-    if (!hdvIsAutoProvisioned && hdvCard && hdvCard->isImageLoaded()) {
+        primaryHdvCard() && primaryHdvCard()->getSlot() == autoProvisionedHdvSlot_;
+    if (!hdvIsAutoProvisioned && primaryHdvCard() && primaryHdvCard()->isImageLoaded()) {
         // Don't persist the synthesised host-folder volume — the path is
         // a sentinel, not a real file. Re-synthesis happens on click.
-        const std::string& p = hdvCard->getImagePath();
+        const std::string& p = primaryHdvCard()->getImagePath();
         if (p.rfind("[host folder] ", 0) == std::string::npos) {
             settings->setString("hdv_path", p);
         } else {
@@ -920,14 +922,15 @@ MainWindow::~MainWindow()
     // the slot cards without ejecting), but doing it here keeps it ordered
     // before the settings write and inside the same teardown the user can
     // see in the log.
-    for (auto* c : diskCards) if (c) (void)c->flushPendingWrites();
-    for (auto* c : diskCards) {
+    const auto flushList = diskIICards();
+    for (auto* c : flushList) if (c) (void)c->flushPendingWrites();
+    for (auto* c : flushList) {
         if (!c) continue;
         const std::string slotKey = "_slot" + std::to_string(c->getSlot());
         const std::string p = c->isDiskLoaded() ? c->getDiskPath() : std::string();
         settings->setString("disk_path"      + slotKey, p);
         settings->setBool  ("disk_writeback" + slotKey, c->isWriteBackEnabled());
-        if (c == diskCard) {
+        if (c == primaryDiskII()) {
             settings->setString("disk_path",      p);
             settings->setBool  ("disk_writeback", c->isWriteBackEnabled());
         }
@@ -957,12 +960,12 @@ MainWindow::~MainWindow()
     // user configured for their real HDV card. Without the guard, a single
     // dropped .hdv persisted `hdv_writeback = false` and silently disarmed
     // write-back for unrelated media on the next launch.
-    if (hdvCard && !hdvIsAutoProvisioned) {
-        settings->setBool("hdv_writeback", hdvCard->isWriteBackEnabled());
+    if (primaryHdvCard() && !hdvIsAutoProvisioned) {
+        settings->setBool("hdv_writeback", primaryHdvCard()->isWriteBackEnabled());
     }
 
     // CFFA per-slot image + write-back for EVERY plugged CFFA card. `cffa`
-    // is multi-instance, so persist each (not just the primary `cffaCard`),
+    // is multi-instance, so persist each (not just the primary `primaryCffaCard()`),
     // mirroring the DiskII loop above. (blockCards() also returns synthetic
     // HDV cards — those persist via hdv_path; skip them here.)
     for (auto* blk : blockCards()) {
@@ -1431,8 +1434,9 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // power the legacy menu paths (auto-turbo, AI control, top-
         // bar Eject). plugSlotsFromSettings iterates slots ascending,
         // so the lowest-numbered slot wins naturally.
-        diskCards.push_back(raw);
-        if (!diskCard) diskCard = raw;
+        // No alias list to append to: `diskIICards()` / `primaryDiskII()` read
+        // the bus, and plugSlotsFromSettings iterates slots ascending, so the
+        // lowest-numbered slot is the primary exactly as before.
         // Restore the persisted write-back opt-in on the freshly built card,
         // exactly as plugHdv/plugCffa do below. A rebuilt DiskII used to come
         // up with writeBackEnabled=false whatever the user had saved, and
@@ -1444,7 +1448,9 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // `disk_writeback[_slotN]` keys never reached a running machine.
         {
             const std::string slotKey = "_slot" + std::to_string(s);
-            const bool isPrimary = (raw == diskCard);
+            // First DiskII plugged this pass is the primary; nothing lower
+            // can appear later because the caller walks slots ascending.
+            const bool isPrimary = (diskPanels.empty());
             raw->setWriteBackEnabled(settings->getBool(
                 "disk_writeback" + slotKey,
                 isPrimary ? settings->getBool("disk_writeback", false)
@@ -1476,7 +1482,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
             hdvStatus = "no image mounted";
         }
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
-        if (!hdvCard) hdvCard = card.get();   // primary = lowest slot
+        // No alias to seed: primaryHdvCard() reads the bus, lowest slot first.
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1521,7 +1527,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 pom2::log().warn("CFFA", "Re-mount failed: " + card->getLastError());
         }
         card->setWriteBackEnabled(settings->getBool(key + "_writeback", false));
-        if (!cffaCard) cffaCard = card.get();   // primary = lowest slot
+        // No alias to seed: primaryCffaCard() reads the bus, lowest slot first.
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1888,7 +1894,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
             }
             card->setUnit(k, std::move(unit));
         }
-        if (!smartPortCard) smartPortCard = card.get();   // primary = lowest slot
+        // No alias to seed: primarySmartPortCard() reads the bus.
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -2798,40 +2804,40 @@ void MainWindow::renderMenuBar()
         // Disk II (slot 6) — frequent action, lifted out of the old
         // Hardware kitchen-sink. Panel still exposes its own insert/eject
         // buttons; this is the keyboard-friendly path.
-        ImGui::BeginDisabled(diskCard == nullptr);
+        ImGui::BeginDisabled(primaryDiskII() == nullptr);
         if (ImGui::MenuItem("Insert disk image (.dsk / .do / .po / .nib / .woz)...")) {
             diskPanel->insertDialogOpen = true;
             if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks_5.4/";
         }
         if (ImGui::MenuItem("Eject disk", nullptr, false,
-                            diskCard && diskCard->isDiskLoaded())) {
+                            primaryDiskII() && primaryDiskII()->isDiskLoaded())) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = diskCard->ejectDisk();
+            const bool ok = primaryDiskII()->ejectDisk();
             tapeStatusMessage = ok ? "Disk ejected"
-                                   : "Disk eject failed: " + diskCard->getLastError();
+                                   : "Disk eject failed: " + primaryDiskII()->getLastError();
             tapeStatusUntil   = lastFrameTime + 4.0;
         }
         ImGui::EndDisabled();
         ImGui::Separator();
-        ImGui::BeginDisabled(hdvCard == nullptr);
+        ImGui::BeginDisabled(primaryHdvCard() == nullptr);
         if (ImGui::MenuItem("Mount HDV image (.hdv / .2mg)...")) {
             hdvPanel->mountDialogOpen = true;
             if (hdvPanel->dialogPath.empty()) hdvPanel->dialogPath = "hdv/";
         }
         if (ImGui::MenuItem("Eject HDV", nullptr, false,
-                            hdvCard && hdvCard->isImageLoaded())) {
+                            primaryHdvCard() && primaryHdvCard()->isImageLoaded())) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = hdvCard->ejectImage();
+            const bool ok = primaryHdvCard()->ejectImage();
             if (ok) hdvStatus = "no image mounted";
             tapeStatusMessage = ok ? "HDV ejected"
-                                   : "HDV eject failed: " + hdvCard->getLastError();
+                                   : "HDV eject failed: " + primaryHdvCard()->getLastError();
             tapeStatusUntil   = lastFrameTime + 4.0;
         }
         ImGui::EndDisabled();
-        ImGui::BeginDisabled(!hdvCard || !hdvCard->isImageLoaded());
+        ImGui::BeginDisabled(!primaryHdvCard() || !primaryHdvCard()->isImageLoaded());
         // Label reflects where the user actually has the card plugged.
         const std::string bootHdvLabel = "Boot HDV (slot " +
-            std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
+            std::to_string(primaryHdvCard() ? primaryHdvCard()->getSlot() : 5) + ")";
         if (ImGui::MenuItem(bootHdvLabel.c_str())) {
             bootHdvImage();
         }
@@ -4001,8 +4007,8 @@ void MainWindow::renderKiosk()
 DiskIICard* MainWindow::kioskBootDiskCard()
 {
     // Prefer the conventional boot slot 6; fall back to the primary card.
-    for (auto* c : diskCards) if (c && c->getSlot() == 6) return c;
-    return diskCard;
+    for (auto* c : diskIICards()) if (c && c->getSlot() == 6) return c;
+    return primaryDiskII();
 }
 
 void MainWindow::openKioskStartMenu()
@@ -5371,16 +5377,16 @@ void MainWindow::renderAbstractionPanel()
     // 3.3 fine and loses every bitstream-reading protection. `usingBitLss()`
     // is the honest test — a mounted WOZ forces the L0 path even with no
     // roms/diskii_p6.rom, using the embedded default P6.
-    degradable("diskii", diskCard != nullptr,
-               diskCard && diskCard->usingBitLss(), pom2::AbsLevel::H1,
+    degradable("diskii", primaryDiskII() != nullptr,
+               primaryDiskII() && primaryDiskII()->usingBitLss(), pom2::AbsLevel::H1,
                "roms/diskii_p6.rom absent and no WOZ mounted — running the "
                "legacy 32-cycle nibble gate, which cannot decode "
                "bitstream-level copy protection.");
-    row("diskimage", diskCard ? Live::Active : Live::NotPlugged);
+    row("diskimage", primaryDiskII() ? Live::Active : Live::NotPlugged);
     row("cffa", plugged("cffa")        ? Live::Active : Live::NotPlugged);
     row("hdv",  plugged("hdv")         ? Live::Active : Live::NotPlugged);
     degradable("smartportcard", plugged("smartport35"),
-               smartPortCard && smartPortCard->isLironRomLoaded(),
+               primarySmartPortCard() && primarySmartPortCard()->isLironRomLoaded(),
                pom2::AbsLevel::H1,
                "roms/liron.rom absent — the slot page and the $C800 bank are "
                "POM2's synthetic firmware instead of the real Liron ROM.");
@@ -5664,8 +5670,12 @@ void MainWindow::renderDiskPanelWindow()
     // window state (position, size, dock). The primary (lowest-slot) card
     // gets the curated default position; subsequent cards cascade slightly
     // down/right so they don't perfectly overlap on first show.
-    for (size_t idx = 0; idx < diskCards.size() && idx < diskPanels.size(); ++idx) {
-        DiskIICard*                       card  = diskCards[idx];
+    // Hoisted: each call walks the bus, so re-reading it per iteration would
+    // make this quadratic in slot count for no gain — the topology cannot
+    // change inside one UI-thread loop.
+    const auto diskCardList = diskIICards();
+    for (size_t idx = 0; idx < diskCardList.size() && idx < diskPanels.size(); ++idx) {
+        DiskIICard*                       card  = diskCardList[idx];
         pom2::DiskController_ImGui*       panel = diskPanels[idx].get();
         if (!card || !panel) continue;
 
@@ -5801,7 +5811,7 @@ bool MainWindow::ejectMediaBay(int slot, int index, bool diskII)
                 // FromSettings` snapshots).
                 const std::string k = "_slot" + std::to_string(slot);
                 settings->setString("disk_path" + k, "");
-                if (index == 0 && d2 == diskCard) settings->setString("disk_path", "");
+                if (index == 0 && d2 == primaryDiskII()) settings->setString("disk_path", "");
             }
         } else {
             auto* media = dynamic_cast<pom2::MountableMediaCard*>(per);
@@ -5848,7 +5858,7 @@ void MainWindow::ejectAllDisks()
     // std::mutex (was crashing POM2 when Eject-All was clicked).
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskCards) if (c) c->ejectDisk();
+        for (auto* c : diskIICards()) if (c) c->ejectDisk();
         // Every block-device card (HDV + CFFA may both be plugged).
         for (auto* dev : blockCards()) dev->ejectImage();
         // Every SmartPort card, and every unit inside each.
@@ -5884,13 +5894,13 @@ bool MainWindow::routeMount35(int driveIdx, const std::string& path,
     // (block-level — the on-board IWM/Sony GCR boot is unmodelled, see
     // project_iic_smartport_boot). (Promoted from a lambda in
     // renderDiskLibraryWindow so the CLI insert+boot path shares it.)
-    if (smartPortCard) {
+    if (primarySmartPortCard()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         const size_t      idx  = static_cast<size_t>(driveIdx);
         const std::string base =
-            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+            "smartport_slot" + std::to_string(primarySmartPortCard()->getSlot()) +
             "_unit" + std::to_string(driveIdx);
-        pom2::SmartPortUnit* u = smartPortCard->unit(idx);
+        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(idx);
         bool replaced = false;
         if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
             // setUnit destroys the outgoing unit, and ~SmartPortUnit's
@@ -5904,9 +5914,9 @@ bool MainWindow::routeMount35(int driveIdx, const std::string& path,
                          " could not be written: " + u->lastError();
                 return false;
             }
-            smartPortCard->setUnit(
+            primarySmartPortCard()->setUnit(
                 idx, std::make_unique<pom2::SmartPort35Unit>());
-            u = smartPortCard->unit(idx);
+            u = primarySmartPortCard()->unit(idx);
             replaced = true;
         }
         if (!u->loadImage(path)) {
@@ -5968,12 +5978,12 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
             return true;
         }
     }
-    if (smartPortCard) {
+    if (primarySmartPortCard()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         const std::string base =
-            "smartport_slot" + std::to_string(smartPortCard->getSlot()) +
+            "smartport_slot" + std::to_string(primarySmartPortCard()->getSlot()) +
             "_unit0";
-        pom2::SmartPortUnit* u = smartPortCard->unit(0);
+        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0);
         bool replaced = false;
         if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
             // Flush before setUnit destroys it — see routeMount35 above for
@@ -5983,9 +5993,9 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
                          "written: " + u->lastError();
                 return false;
             }
-            smartPortCard->setUnit(
+            primarySmartPortCard()->setUnit(
                 0, std::make_unique<pom2::SmartPortHdvUnit>());
-            u = smartPortCard->unit(0);
+            u = primarySmartPortCard()->unit(0);
             replaced = true;
         }
         // Same two-phase mount as the dedicated HDV card above: the unit
@@ -6000,7 +6010,7 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
         settings->setString(base + "_path", path);
         if (replaced) settings->setBool(base + "_writeback", false);
         if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
-        bootSlotOut = smartPortCard->getSlot();
+        bootSlotOut = primarySmartPortCard()->getSlot();
         return true;
     }
     errOut = "no HDV or SmartPort card plugged";
@@ -6009,9 +6019,10 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
 
 pom2::ProDOSBlockCard* MainWindow::hdvDevice() const
 {
-    if (cffaCard) return static_cast<pom2::ProDOSBlockCard*>(cffaCard);
-    if (hdvCard)  return static_cast<pom2::ProDOSBlockCard*>(hdvCard);
-    return nullptr;
+    // The CFFA-outranks-HDV preference is the coordinator's rule now, so the
+    // menus, the AI server and the boot path cannot drift apart on it.
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .preferredBlock();
 }
 
 // Bus *topology* reads (which slot holds which card) are UI-thread-confined:
@@ -6026,25 +6037,45 @@ std::vector<pom2::ProDOSBlockCard*> MainWindow::blockCards() const
     // CffaCard) inherit SlotPeripheral *and* ProDOSBlockCard, so the
     // dynamic_cast side-cast succeeds for exactly those and yields nullptr
     // for everything else. Slot order is ascending, matching the "lowest
-    // slot is primary" convention used for diskCard/hdvCard.
-    std::vector<pom2::ProDOSBlockCard*> out;
-    SlotBus& bus = controller->memory().slotBus();
-    for (int s = 1; s < SlotBus::kSlotCount; ++s) {
-        if (auto* blk = dynamic_cast<pom2::ProDOSBlockCard*>(bus.peripheral(s)))
-            out.push_back(blk);
-    }
-    return out;
+    // slot is primary" convention used for primaryDiskII()/primaryHdvCard().
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .blockCards;
 }
 
 std::vector<pom2::SmartPortCard*> MainWindow::smartPortCards() const
 {
-    std::vector<pom2::SmartPortCard*> out;
-    SlotBus& bus = controller->memory().slotBus();
-    for (int s = 1; s < SlotBus::kSlotCount; ++s) {
-        if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(bus.peripheral(s)))
-            out.push_back(sp);
-    }
-    return out;
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .smartPortCards;
+}
+
+std::vector<DiskIICard*> MainWindow::diskIICards() const
+{
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .diskIICards;
+}
+
+DiskIICard* MainWindow::primaryDiskII() const
+{
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .primaryDiskII;
+}
+
+ProDOSHardDiskCard* MainWindow::primaryHdvCard() const
+{
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .primaryHdv;
+}
+
+pom2::CffaCard* MainWindow::primaryCffaCard() const
+{
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .primaryCffa;
+}
+
+pom2::SmartPortCard* MainWindow::primarySmartPortCard() const
+{
+    return storageCoordinator_->topology(controller->memory().slotBus())
+        .primarySmartPort;
 }
 
 bool MainWindow::flushSlotMedia(std::string& err)
@@ -6057,7 +6088,7 @@ bool MainWindow::flushSlotMedia(std::string& err)
         allSaved = false;
     };
     std::lock_guard<std::mutex> lk(controller->stateMutex());
-    for (auto* card : diskCards) {
+    for (auto* card : diskIICards()) {
         if (card && !card->flushPendingWrites()) {
             recordFailure("Disk II slot " + std::to_string(card->getSlot()) +
                           ": " + card->getLastError());
@@ -6094,11 +6125,11 @@ int MainWindow::ensureHdvCardForBoot()
     if (activeProfile == pom2::SystemProfile::AppleIIc ||
         activeProfile == pom2::SystemProfile::AppleIIcPlus ||
         activeProfile == pom2::SystemProfile::AppleIIcPAL) {
-        if (smartPortCard) return smartPortCard->getSlot();
+        if (primarySmartPortCard()) return primarySmartPortCard()->getSlot();
     }
-    if (cffaCard)      return cffaCard->getSlot();
-    if (hdvCard)       return hdvCard->getSlot();
-    if (smartPortCard) return smartPortCard->getSlot();
+    if (primaryCffaCard())      return primaryCffaCard()->getSlot();
+    if (primaryHdvCard())       return primaryHdvCard()->getSlot();
+    if (primarySmartPortCard()) return primarySmartPortCard()->getSlot();
 
     // Neither an HDV nor a SmartPort card is plugged (e.g. a saved config
     // that only has Disk II cards). Plug a ProDOSHardDiskCard into a free
@@ -6121,7 +6152,6 @@ int MainWindow::ensureHdvCardForBoot()
         // dropped .hdv accepted every ProDOS write into RAM and discarded
         // the lot at eject/exit without a word.
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
-        hdvCard = card.get();
         st.memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "hdv";
         autoProvisionedHdvSlot_ = slot;   // session-local; ~MainWindow won't persist it
@@ -6134,7 +6164,7 @@ int MainWindow::ensureHdvCardForBoot()
 
 int MainWindow::ensureSmartPortCardForBoot()
 {
-    if (smartPortCard) return smartPortCard->getSlot();
+    if (primarySmartPortCard()) return primarySmartPortCard()->getSlot();
     // A `noPhysicalSlots` machine (//c class) has nowhere to plug one: its
     // only SmartPort is the built-in, which would already have answered
     // above. //c+ 3.5" media goes to the on-board Sony hub instead, so the
@@ -6156,7 +6186,6 @@ int MainWindow::ensureSmartPortCardForBoot()
         card->setFloppySound(&controller->floppySound35());
         const std::string r = pom2::findResource("roms/liron.rom");
         if (!r.empty()) card->loadLironRom(r);
-        smartPortCard = card.get();
         controller->memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "smartport35";
         autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
@@ -6191,8 +6220,8 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             // hardcodes slot 6 for its loader — matters when the config has
             // Disk II in several slots (primary = lowest = e.g. slot 5).
             DiskIICard* target = nullptr;
-            for (auto* c : diskCards) if (c && c->getSlot() == 6) { target = c; break; }
-            if (!target) target = diskCard;
+            for (auto* c : diskIICards()) if (c && c->getSlot() == 6) { target = c; break; }
+            if (!target) target = primaryDiskII();
             if (!target) { errOut = "no Disk II card in the current config"; return false; }
             const bool ok = pom2::mountDiskII(*controller, *target, 0, path,
                                               errOut, /*seekTrack0=*/true);
@@ -6218,7 +6247,7 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             // failing it on the stock II+/IIe config (which ships no
             // SmartPort) made drag-and-drop refuse the single most common
             // 3.5" distribution format. Session-local, never persisted.
-            if (!smartPortCard &&
+            if (!primarySmartPortCard() &&
                 activeProfile != pom2::SystemProfile::AppleIIcPlus &&
                 ensureSmartPortCardForBoot() < 0) {
                 errOut = "no 3.5\" device in this config, and no free slot "
@@ -6228,9 +6257,9 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             if (!routeMount35(0, path, errOut)) return false;
             // SmartPort card present (incl. //c-class built-in slot 5) →
             // boot it explicitly; otherwise cold-boot (//c+ on-board hub).
-            if (smartPortCard) {
-                if (!controller->bootFromSlot(smartPortCard->getSlot())) {
-                    errOut = "slot " + std::to_string(smartPortCard->getSlot()) +
+            if (primarySmartPortCard()) {
+                if (!controller->bootFromSlot(primarySmartPortCard()->getSlot())) {
+                    errOut = "slot " + std::to_string(primarySmartPortCard()->getSlot()) +
                              " did not boot the image (cold-booted instead)";
                     return false;
                 }
@@ -6296,7 +6325,7 @@ void MainWindow::renderDiskLibraryWindow()
         // Currently-inserted Disk II images (per plugged card). The library
         // tags rows with `* ` when their path matches any of these — gives
         // the user a visual cue across all plugged cards at once.
-        for (auto* c : diskCards) {
+        for (auto* c : diskIICards()) {
             if (!c) continue;
             pom2::DiskLibrary_ImGui::CurrentlyMounted::DiskIICardInfo info;
             info.slot = c->getSlot();
@@ -6318,9 +6347,9 @@ void MainWindow::renderDiskLibraryWindow()
             ? controller->disk35Internal().path() : std::string();
         mounted.disk35External = controller->disk35External().isLoaded()
             ? controller->disk35External().path() : std::string();
-        if (smartPortCard) {
-            const pom2::SmartPortUnit* u0 = smartPortCard->unit(0);
-            const pom2::SmartPortUnit* u1 = smartPortCard->unit(1);
+        if (primarySmartPortCard()) {
+            const pom2::SmartPortUnit* u0 = primarySmartPortCard()->unit(0);
+            const pom2::SmartPortUnit* u1 = primarySmartPortCard()->unit(1);
             if (u0 && u0->isLoaded() &&
                 u0->kindKey() == pom2::SmartPort35Unit::kKindKey &&
                 mounted.disk35Internal.empty()) {
@@ -6334,10 +6363,10 @@ void MainWindow::renderDiskLibraryWindow()
         }
         if (pom2::ProDOSBlockCard* dev = hdvDevice(); dev && dev->isImageLoaded()) {
             mounted.hdv = dev->getImagePath();
-        } else if (smartPortCard) {
+        } else if (primarySmartPortCard()) {
             // SmartPort-routed HDV — show as mounted in the Library so the
             // `* ` marker matches reality regardless of which path holds it.
-            const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+            const pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0);
             if (u && u->isLoaded() &&
                 u->kindKey() == pom2::SmartPortHdvUnit::kKindKey) {
                 mounted.hdv = u->path();
@@ -6387,9 +6416,9 @@ void MainWindow::renderDiskLibraryWindow()
     // request525Slot = -1 means "primary card" (left-click default); a real
     // slot routes to that specific DiskII card. drive 0 = drive 1, 1 = drive 2.
     auto resolve525 = [&](int slot) -> DiskIICard* {
-        if (slot < 0) return diskCard;
-        for (auto* c : diskCards) if (c && c->getSlot() == slot) return c;
-        return diskCard;
+        if (slot < 0) return primaryDiskII();
+        for (auto* c : diskIICards()) if (c && c->getSlot() == slot) return c;
+        return primaryDiskII();
     };
     if (!r.request525InsertAndBoot.empty()) {
         DiskIICard* target = resolve525(r.request525Slot);
@@ -6449,8 +6478,8 @@ void MainWindow::renderDiskLibraryWindow()
             // deliberately does not model: the cold boot below restarts the
             // machine but never reaches the disk, so don't call it a boot.
             bool booted = false;
-            if (smartPortCard) {
-                booted = controller->bootFromSlot(smartPortCard->getSlot());
+            if (primarySmartPortCard()) {
+                booted = controller->bootFromSlot(primarySmartPortCard()->getSlot());
             } else {
                 controller->coldBoot();
             }
@@ -6529,8 +6558,8 @@ void MainWindow::renderDiskLibraryWindow()
         bool ok = false;
         switch (classifyDiskForSlot(path)) {
             case DiskSlotClass::Floppy525:
-                if (diskCard) {
-                    ok = pom2::mountDiskII(*controller, *diskCard, 0, path, err);
+                if (primaryDiskII()) {
+                    ok = pom2::mountDiskII(*controller, *primaryDiskII(), 0, path, err);
                 } else {
                     err = "no Disk II card in the current config";
                 }
@@ -6562,7 +6591,7 @@ void MainWindow::renderDiskLibraryWindow()
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         bool ok = true;
         std::string err;
-        for (auto* c : diskCards) {
+        for (auto* c : diskIICards()) {
             if (!c) continue;
             for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
                 if (c->isDiskLoaded(d) &&
@@ -6612,12 +6641,12 @@ void MainWindow::renderSmartPortPanelWindow()
     // Build snapshot from the currently-plugged SmartPort card. When no
     // card is plugged the panel renders a "no card" hint.
     pom2::SmartPort_ImGui::CardSnapshot snap;
-    snap.plugged = (smartPortCard != nullptr);
+    snap.plugged = (primarySmartPortCard() != nullptr);
     if (snap.plugged) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.slot = smartPortCard->getSlot();
+        snap.slot = primarySmartPortCard()->getSlot();
         for (size_t k = 0; k < snap.units.size(); ++k) {
-            const pom2::SmartPortUnit* u = smartPortCard->unit(k);
+            const pom2::SmartPortUnit* u = primarySmartPortCard()->unit(k);
             auto& us = snap.units[k];
             if (!u) {
                 us.kind.clear();
@@ -6662,7 +6691,7 @@ void MainWindow::renderSmartPortPanelWindow()
         if (a.clearType || !a.setType.empty()) {
             std::lock_guard<std::mutex> lk(controller->stateMutex());
             if (a.clearType) {
-                smartPortCard->setUnit(k, nullptr);
+                primarySmartPortCard()->setUnit(k, nullptr);
                 settings->setString(base + "_type", "");
                 settings->setString(base + "_path", "");
                 settings->setBool  (base + "_writeback", false);
@@ -6674,7 +6703,7 @@ void MainWindow::renderSmartPortPanelWindow()
                     settings->setString(base + "_type", a.setType);
                     settings->setString(base + "_path", "");
                     settings->setBool  (base + "_writeback", false);
-                    smartPortCard->setUnit(k, std::move(unit));
+                    primarySmartPortCard()->setUnit(k, std::move(unit));
                     tapeStatusMessage = "SmartPort unit " +
                         std::to_string(k) + ": type = " + a.setType;
                 } else {
@@ -6690,7 +6719,7 @@ void MainWindow::renderSmartPortPanelWindow()
             continue;
         }
 
-        pom2::SmartPortUnit* u = smartPortCard->unit(k);
+        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(k);
         if (!u) continue;
 
         if (a.writeBackChanged) {
@@ -7074,12 +7103,12 @@ void MainWindow::renderFloppyEmuWindow()
     };
     auto controllerReady = [&](Mode m) -> bool {
         switch (m) {
-            case Mode::Disk525:   return diskCard != nullptr;
+            case Mode::Disk525:   return primaryDiskII() != nullptr;
             case Mode::Disk35:
-            case Mode::Unidisk35: return smartPortCard != nullptr ||
+            case Mode::Unidisk35: return primarySmartPortCard() != nullptr ||
                                          activeProfile == pom2::SystemProfile::AppleIIcPlus;
             case Mode::SmartportHD: return hdvDevice() != nullptr ||
-                                           smartPortCard != nullptr;
+                                           primarySmartPortCard() != nullptr;
         }
         return false;
     };
@@ -7102,12 +7131,12 @@ void MainWindow::renderFloppyEmuWindow()
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         switch (m) {
             case Mode::Disk525:
-                return (diskCard && diskCard->isDiskLoaded())
-                           ? baseName(diskCard->getDiskPath()) : std::string();
+                return (primaryDiskII() && primaryDiskII()->isDiskLoaded())
+                           ? baseName(primaryDiskII()->getDiskPath()) : std::string();
             case Mode::Disk35:
             case Mode::Unidisk35:
-                if (smartPortCard) {
-                    const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+                if (primarySmartPortCard()) {
+                    const pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0);
                     return (u && u->isLoaded()) ? baseName(u->path()) : std::string();
                 }
                 return controller->disk35Internal().isLoaded()
@@ -7117,8 +7146,8 @@ void MainWindow::renderFloppyEmuWindow()
                 if (pom2::ProDOSBlockCard* dev = hdvDevice())
                     return dev->isImageLoaded() ? baseName(dev->getImagePath())
                                                 : std::string();
-                if (smartPortCard) {
-                    const pom2::SmartPortUnit* u = smartPortCard->unit(0);
+                if (primarySmartPortCard()) {
+                    const pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0);
                     return (u && u->isLoaded()) ? baseName(u->path()) : std::string();
                 }
                 return std::string();
@@ -7144,16 +7173,16 @@ void MainWindow::renderFloppyEmuWindow()
         int bootTarget = kNoMount;
         switch (m) {
             case Mode::Disk525: {
-                if (!diskCard) { floppyEmuStatus = controllerHint(m); break; }
+                if (!primaryDiskII()) { floppyEmuStatus = controllerHint(m); break; }
                 // Two-phase (MediaMount): the decode runs unlocked, and the
                 // lock is taken only to swap the track buffers the worker's
                 // LSS streams from. seekTrack0 parks the head before the boot
                 // PROM reads — the same step insertAndBootImage does.
                 std::string mountErr;
-                const bool ok = pom2::mountDiskII(*controller, *diskCard, 0,
+                const bool ok = pom2::mountDiskII(*controller, *primaryDiskII(), 0,
                                                   path, mountErr,
                                                   /*seekTrack0=*/true);
-                if (ok) bootTarget = diskCard->getSlot();
+                if (ok) bootTarget = primaryDiskII()->getSlot();
                 floppyEmuStatus = ok
                     ? ("Booting " + baseName(path))
                     : ("5.25 mount failed: " + baseName(path));
@@ -7166,7 +7195,7 @@ void MainWindow::renderFloppyEmuWindow()
                     // With a SmartPort card, boot its slot explicitly;
                     // without one the mount landed on the //c+ on-board hub,
                     // which has no slot to jump to — cold boot instead.
-                    bootTarget = smartPortCard ? smartPortCard->getSlot()
+                    bootTarget = primarySmartPortCard() ? primarySmartPortCard()->getSlot()
                                                : kColdBoot;
                     floppyEmuStatus = "Booting " + baseName(path);
                 } else {
@@ -7197,17 +7226,17 @@ void MainWindow::renderFloppyEmuWindow()
         switch (m) {
             case Mode::Disk525: {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (diskCard) {
-                    ok = diskCard->ejectDisk();
-                    if (!ok) err = diskCard->getLastError();
+                if (primaryDiskII()) {
+                    ok = primaryDiskII()->ejectDisk();
+                    if (!ok) err = primaryDiskII()->getLastError();
                 }
                 break;
             }
             case Mode::Disk35:
             case Mode::Unidisk35:
-                if (smartPortCard) {
+                if (primarySmartPortCard()) {
                     std::lock_guard<std::mutex> lk(controller->stateMutex());
-                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) {
+                    if (pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0)) {
                         ok = u->eject();
                         if (!ok) err = u->lastError();
                     }
@@ -7222,8 +7251,8 @@ void MainWindow::renderFloppyEmuWindow()
                     ok = dev->ejectImage();
                     if (!ok) err = dev->getLastError();
                 }
-                else if (smartPortCard) {
-                    if (pom2::SmartPortUnit* u = smartPortCard->unit(0)) {
+                else if (primarySmartPortCard()) {
+                    if (pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0)) {
                         ok = u->eject();
                         if (!ok) err = u->lastError();
                     }
@@ -7317,15 +7346,15 @@ void MainWindow::renderHdvPanelWindow()
     if (!show(pom2::PanelId::Hdv)) return;
 
     pom2::HdvController_ImGui::DriveSnapshot snap;
-    if (hdvCard) {
+    if (primaryHdvCard()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.imageLoaded       = hdvCard->isImageLoaded();
-        snap.imagePath         = hdvCard->getImagePath();
-        snap.blockCount        = hdvCard->getBlockCount();
-        snap.writeBackEnabled  = hdvCard->isWriteBackEnabled();
-        snap.hasUnsavedChanges = hdvCard->hasUnsavedChanges();
-        snap.supportsWriteBack = hdvCard->canWriteBack();
-        snap.isSynthVolume     = hdvCard->isSynthVolumeMounted();
+        snap.imageLoaded       = primaryHdvCard()->isImageLoaded();
+        snap.imagePath         = primaryHdvCard()->getImagePath();
+        snap.blockCount        = primaryHdvCard()->getBlockCount();
+        snap.writeBackEnabled  = primaryHdvCard()->isWriteBackEnabled();
+        snap.hasUnsavedChanges = primaryHdvCard()->hasUnsavedChanges();
+        snap.supportsWriteBack = primaryHdvCard()->canWriteBack();
+        snap.isSynthVolume     = primaryHdvCard()->isSynthVolumeMounted();
     }
 
     // Library scan — hdv/ for .hdv and .2mg, sorted alphabetically so the
@@ -7397,29 +7426,29 @@ void MainWindow::renderHdvPanelWindow()
     // Title reflects the actual slot the HDV card is plugged in.
     char hdvTitle[48];
     std::snprintf(hdvTitle, sizeof(hdvTitle), "HDV (slot %d)",
-                  hdvCard ? hdvCard->getSlot() : 5);
+                  primaryHdvCard() ? primaryHdvCard()->getSlot() : 5);
     auto result = hdvPanel->render(hdvTitle, show(pom2::PanelId::Hdv), snap);
 
-    if (result.writeBackToggleChanged && hdvCard) {
+    if (result.writeBackToggleChanged && primaryHdvCard()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        hdvCard->setWriteBackEnabled(result.writeBackNewValue);
+        primaryHdvCard()->setWriteBackEnabled(result.writeBackNewValue);
         tapeStatusMessage = result.writeBackNewValue
             ? "HDV: write-back ENABLED (saves on eject)"
             : "HDV: write-back disabled";
         tapeStatusUntil   = lastFrameTime + 4.0;
     }
-    if (result.requestEject && hdvCard) {
+    if (result.requestEject && primaryHdvCard()) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const bool ok = hdvCard->ejectImage();
+        const bool ok = primaryHdvCard()->ejectImage();
         if (ok) hdvStatus = "no image mounted";
         tapeStatusMessage = ok ? "HDV ejected"
-                               : "HDV eject failed: " + hdvCard->getLastError();
+                               : "HDV eject failed: " + primaryHdvCard()->getLastError();
         tapeStatusUntil   = lastFrameTime + 4.0;
     }
-    if (result.requestBoot && hdvCard) {
+    if (result.requestBoot && primaryHdvCard()) {
         bootHdvImage();
     }
-    if (!result.requestMountAndBoot.empty() && hdvCard) {
+    if (!result.requestMountAndBoot.empty() && primaryHdvCard()) {
         const std::string path = result.requestMountAndBoot;
         const std::string sentinel(kProDOSHostSentinel);
 
@@ -7440,7 +7469,7 @@ void MainWindow::renderHdvPanelWindow()
             bool ok = false;
             {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
-                ok = hdvCard->loadImageFromBytes(std::move(bytes),
+                ok = primaryHdvCard()->loadImageFromBytes(std::move(bytes),
                                                  std::string("[host folder] ") + hostDir,
                                                  hostDir);
                 if (ok) {
@@ -7476,7 +7505,7 @@ void MainWindow::renderHdvPanelWindow()
         bool ok = false;
         std::string err;
         {
-            ok = pom2::mountBlockCard(*controller, *hdvCard, path, err);
+            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(), path, err);
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
@@ -7485,18 +7514,18 @@ void MainWindow::renderHdvPanelWindow()
             }
         }
         if (ok) {
-            controller->bootFromSlot(hdvCard->getSlot());
+            controller->bootFromSlot(primaryHdvCard()->getSlot());
             pom2::log().info("HDV",
-                "slot " + std::to_string(hdvCard->getSlot()) +
+                "slot " + std::to_string(primaryHdvCard()->getSlot()) +
                 " library click → mount + boot: " + path);
             tapeStatusMessage = "Mounting + booting HDV (slot " +
-                std::to_string(hdvCard->getSlot()) + "): " + path;
+                std::to_string(primaryHdvCard()->getSlot()) + "): " + path;
         } else {
             tapeStatusMessage = "Boot failed: " + err;
         }
         tapeStatusUntil = lastFrameTime + 4.0;
     }
-    if (!result.requestMountOnly.empty() && hdvCard) {
+    if (!result.requestMountOnly.empty() && primaryHdvCard()) {
         // Right-click "mount only": swap the image without booting.
         // Host-folder sentinel is handled the same as mount-and-boot
         // above (it never auto-boots anyway), so funnel both branches
@@ -7516,7 +7545,7 @@ void MainWindow::renderHdvPanelWindow()
                 return;
             }
             std::lock_guard<std::mutex> lk(controller->stateMutex());
-            ok = hdvCard->loadImageFromBytes(std::move(bytes),
+            ok = primaryHdvCard()->loadImageFromBytes(std::move(bytes),
                                              std::string("[host folder] ") + hostDir,
                                              hostDir);
             if (ok) {
@@ -7527,7 +7556,7 @@ void MainWindow::renderHdvPanelWindow()
                 hdvStatus = err;
             }
         } else {
-            ok = pom2::mountBlockCard(*controller, *hdvCard, path, err);
+            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(), path, err);
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
@@ -7554,10 +7583,11 @@ void MainWindow::renderDiskFileDialog()
     // we route the eventual insertDisk() to the corresponding card.
     pom2::DiskController_ImGui* triggeredPanel = nullptr;
     DiskIICard*                 triggeredCard  = nullptr;
-    for (size_t i = 0; i < diskPanels.size() && i < diskCards.size(); ++i) {
+    const auto diskCardList = diskIICards();
+    for (size_t i = 0; i < diskPanels.size() && i < diskCardList.size(); ++i) {
         if (diskPanels[i] && diskPanels[i]->insertDialogOpen) {
             triggeredPanel = diskPanels[i].get();
-            triggeredCard  = diskCards[i];
+            triggeredCard  = diskCardList[i];
             break;
         }
     }
@@ -7565,7 +7595,7 @@ void MainWindow::renderDiskFileDialog()
     // to the primary card by convention.
     if (!triggeredPanel && diskPanel && diskPanel->insertDialogOpen) {
         triggeredPanel = diskPanel;
-        triggeredCard  = diskCard;
+        triggeredCard  = primaryDiskII();
     }
 
     if (triggeredPanel) {
@@ -7584,15 +7614,16 @@ void MainWindow::renderDiskFileDialog()
     // stable until plugSlotsFromSettings rebuilds.
     DiskIICard*                 popupCard  = nullptr;
     pom2::DiskController_ImGui* popupPanel = nullptr;
-    for (size_t i = 0; i < diskCards.size(); ++i) {
-        if (diskCards[i] && diskCards[i]->getSlot() == diskDialogTargetSlot) {
-            popupCard  = diskCards[i];
+    const auto popupCardList = diskIICards();
+    for (size_t i = 0; i < popupCardList.size(); ++i) {
+        if (popupCardList[i] && popupCardList[i]->getSlot() == diskDialogTargetSlot) {
+            popupCard  = popupCardList[i];
             popupPanel = (i < diskPanels.size()) ? diskPanels[i].get() : nullptr;
             break;
         }
     }
     if (!popupPanel) popupPanel = diskPanel;
-    if (!popupCard)  popupCard  = diskCard;
+    if (!popupCard)  popupCard  = primaryDiskII();
 
     if (popupCard) {
         ImGui::Text("Target: Disk II slot %d", popupCard->getSlot());
@@ -7694,11 +7725,11 @@ void MainWindow::renderHdvFileDialog()
     }
 
     ImGui::Separator();
-    const bool canMount = hdvCard && !hdvPanel->dialogPath.empty();
+    const bool canMount = primaryHdvCard() && !hdvPanel->dialogPath.empty();
     ImGui::BeginDisabled(!canMount);
     if (ImGui::Button("Mount", ImVec2(120, 0))) {
         std::string mountErr;
-        if (pom2::mountBlockCard(*controller, *hdvCard, hdvPanel->dialogPath,
+        if (pom2::mountBlockCard(*controller, *primaryHdvCard(), hdvPanel->dialogPath,
                                  mountErr)) {
             hdvPath   = hdvPanel->dialogPath;
             hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;
@@ -7715,7 +7746,7 @@ void MainWindow::renderHdvFileDialog()
         bool ok = false;
         {
             std::string mountErr;
-            ok = pom2::mountBlockCard(*controller, *hdvCard,
+            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(),
                                       hdvPanel->dialogPath, mountErr);
             if (ok) {
                 hdvPath   = hdvPanel->dialogPath;
@@ -7775,9 +7806,9 @@ bool MainWindow::convertWoz35ToPo(int drive, bool useSmartPort35)
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         pom2::Disk35Image* img = nullptr;
-        if (useSmartPort35 && smartPortCard) {
+        if (useSmartPort35 && primarySmartPortCard()) {
             if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                    smartPortCard->unit(static_cast<size_t>(drive))))
+                    primarySmartPortCard()->unit(static_cast<size_t>(drive))))
                 img = &u->image();
         } else {
             img = (drive == 0) ? &controller->disk35Internal()
@@ -7818,13 +7849,13 @@ bool MainWindow::convertWoz35ToPo(int drive, bool useSmartPort35)
     }
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        if (useSmartPort35 && smartPortCard) {
+        if (useSmartPort35 && primarySmartPortCard()) {
             if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                    smartPortCard->unit(static_cast<size_t>(drive)))) {
+                    primarySmartPortCard()->unit(static_cast<size_t>(drive)))) {
                 u->setWriteBackEnabled(true);
                 const std::string base =
                     "smartport_slot" +
-                    std::to_string(smartPortCard->getSlot()) +
+                    std::to_string(primarySmartPortCard()->getSlot()) +
                     "_unit" + std::to_string(drive);
                 settings->setBool(base + "_writeback", true);
             }
@@ -7854,7 +7885,7 @@ void MainWindow::renderDisk35PanelWindow()
     // which mux is talking.
     snap.supportedByProfile =
         (activeProfile == pom2::SystemProfile::AppleIIcPlus) ||
-        (smartPortCard != nullptr);
+        (primarySmartPortCard() != nullptr);
 
     // Source selection: a SmartPort slot card on any NON-//c+ profile owns
     // its 3.5" media in its own per-unit `Disk35Image` (SmartPort35Unit) —
@@ -7864,7 +7895,7 @@ void MainWindow::renderDisk35PanelWindow()
     // eject / write-back all hit the wrong object). Read + route from the
     // card's units when that's the source; keep the hub path for //c+.
     const bool useSmartPort35 =
-        (smartPortCard != nullptr &&
+        (primarySmartPortCard() != nullptr &&
          activeProfile != pom2::SystemProfile::AppleIIcPlus);
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
@@ -7872,7 +7903,7 @@ void MainWindow::renderDisk35PanelWindow()
             for (int i = 0; i < 2; ++i) {
                 auto& s = snap.drives[i];
                 auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                    smartPortCard->unit(static_cast<size_t>(i)));
+                    primarySmartPortCard()->unit(static_cast<size_t>(i)));
                 if (!u) { s = {}; continue; }  // empty or non-3.5 (HDV) unit
                 const pom2::Disk35Image& img = u->image();
                 s.diskLoaded        = u->isLoaded();
@@ -7977,9 +8008,9 @@ void MainWindow::renderDisk35PanelWindow()
     // profiles. Stable ImGui window-id per slot so the user's position/
     // size choices are remembered per-configuration.
     char disk35Title[64];
-    if (smartPortCard) {
+    if (primarySmartPortCard()) {
         std::snprintf(disk35Title, sizeof(disk35Title),
-                      "Disk 3.5\" (slot %d)", smartPortCard->getSlot());
+                      "Disk 3.5\" (slot %d)", primarySmartPortCard()->getSlot());
     } else {
         std::snprintf(disk35Title, sizeof(disk35Title),
                       "Disk 3.5\" (//c+ on-board)");
@@ -7997,12 +8028,12 @@ void MainWindow::renderDisk35PanelWindow()
             if (useSmartPort35) {
                 std::lock_guard<std::mutex> lk(controller->stateMutex());
                 if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                        smartPortCard->unit(static_cast<size_t>(d)))) {
+                        primarySmartPortCard()->unit(static_cast<size_t>(d)))) {
                     ok = u->eject();
                     if (!ok) err = u->lastError();
                     const std::string base =
                         "smartport_slot" +
-                        std::to_string(smartPortCard->getSlot()) +
+                        std::to_string(primarySmartPortCard()->getSlot()) +
                         "_unit" + std::to_string(d);
                     if (ok) {
                         settings->setString(base + "_path", "");
@@ -8029,11 +8060,11 @@ void MainWindow::renderDisk35PanelWindow()
             std::lock_guard<std::mutex> lk(controller->stateMutex());
             if (useSmartPort35) {
                 if (auto* u = dynamic_cast<pom2::SmartPort35Unit*>(
-                        smartPortCard->unit(static_cast<size_t>(d)))) {
+                        primarySmartPortCard()->unit(static_cast<size_t>(d)))) {
                     u->setWriteBackEnabled(result.newWriteBack[d]);
                     const std::string base =
                         "smartport_slot" +
-                        std::to_string(smartPortCard->getSlot()) +
+                        std::to_string(primarySmartPortCard()->getSlot()) +
                         "_unit" + std::to_string(d);
                     settings->setBool(base + "_writeback", result.newWriteBack[d]);
                     settings->save();
@@ -8088,10 +8119,10 @@ void MainWindow::renderDisk35PanelWindow()
             // back to `coldBoot()` so the ROM autostart picks up the
             // built-in SmartPort firmware.
             if (useSmartPort35) {
-                controller->bootFromSlot(smartPortCard->getSlot());
+                controller->bootFromSlot(primarySmartPortCard()->getSlot());
                 tapeStatusMessage = "3.5\" drive "
                     + std::string(d == 0 ? "1" : "2")
-                    + " booted (slot " + std::to_string(smartPortCard->getSlot())
+                    + " booted (slot " + std::to_string(primarySmartPortCard()->getSlot())
                     + "): " + result.requestInsertAndBoot;
             } else {
                 controller->coldBoot();
@@ -8721,7 +8752,7 @@ void MainWindow::render()
         tb.videoStandard      = controller->getVideoStandard();
         tb.memoryGridVisible  = show(pom2::PanelId::MemGrid);
         tb.activeProfile      = activeProfile;
-        tb.hasPrimaryDiskCard = (diskCard != nullptr);
+        tb.hasPrimaryDiskCard = (primaryDiskII() != nullptr);
         tb.charRomLocale      = charRomLocale;
         auto isMonoHiRes = [](Apple2Display::HiResMode m) {
             return m == Apple2Display::HiResMode::MonoWhite ||
@@ -8795,7 +8826,7 @@ void MainWindow::render()
             // Reuse the existing per-panel popup machinery: setting the
             // primary panel's `insertDialogOpen` flag is exactly what
             // its own "Insert .dsk…" button does. `renderDiskFileDialog`
-            // picks it up next frame and routes to `diskCard`.
+            // picks it up next frame and routes to `primaryDiskII()`.
             diskPanel->insertDialogOpen = true;
             if (diskPanel->dialogPath.empty()) diskPanel->dialogPath = "disks_5.4/";
         }

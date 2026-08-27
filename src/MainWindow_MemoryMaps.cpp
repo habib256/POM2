@@ -167,7 +167,7 @@ std::vector<MainWindow::MemRegion> MainWindow::buildMemoryRegions()
     regions.push_back({ 0xC000, 0xC07F, kIOColor,   "Soft switches / I/O" });
     regions.push_back({ 0xC080, 0xC0FF, kIOColor,   "I/O reserved" });
     regions.push_back({ 0xC100, 0xC7FF, kSlotColor, "Slot ROMs" });
-    if (diskCard != nullptr) {
+    if (primaryDiskII() != nullptr) {
         // Disk II P5A boot PROM lives at slot 6 ($C600-$C6FF) when the
         // card is plugged. Painted on top of the Slot-ROM band so the
         // user sees exactly which slot owns the bytes the boot trick
@@ -918,7 +918,7 @@ void MainWindow::renderMemoryGridWindow()
         ImGui::BulletText("$C052/$C053  Full-screen / Mixed");
         ImGui::BulletText("$C054/$C055  Page 1 / Page 2");
         ImGui::BulletText("$C056/$C057  Lo-res / Hi-res");
-        if (diskCard != nullptr) {
+        if (primaryDiskII() != nullptr) {
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.7f, 0.85f, 1.0f, 1.0f), "  Disk II (slot 6)");
             ImGui::BulletText("$C0E0-$C0E7  Phases 0-3 OFF/ON");

@@ -979,7 +979,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     std::string savedHdvPath;
     // Capture every plugged Disk II's path so multi-instance setups
     // (DiskII slot 6 + DiskII slot 4) survive the profile switch. Indexed
-    // by slot number, not by diskCards[] order, so re-plugging in the
+    // by slot number, not by diskIICards()[] order, so re-plugging in the
     // same slot picks the right path even if SettingsBackedSlots returns
     // them in a different order.
     // Pair the path with the live write-back toggle, same as savedCffaPaths
@@ -998,14 +998,14 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     std::array<std::pair<std::string, bool>, 8> savedCffaPaths{};
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskCards) {
+        for (auto* c : diskIICards()) {
             if (!c) continue;
             savedDiskPaths[static_cast<size_t>(c->getSlot())] =
                 std::make_pair(c->isDiskLoaded() ? c->getDiskPath() : std::string(),
                                c->isWriteBackEnabled());
         }
-        if (hdvCard && hdvCard->isImageLoaded()) {
-            const std::string path = hdvCard->getImagePath();
+        if (primaryHdvCard() && primaryHdvCard()->isImageLoaded()) {
+            const std::string path = primaryHdvCard()->getImagePath();
             if (path.rfind("[host folder] ", 0) == std::string::npos) {
                 savedHdvPath = path;
             }
@@ -1039,12 +1039,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // source registered against freed memory. Mirrored in
         // restartEmulationFromSettings.
         unregisterAllAudioSources();
-        diskCard         = nullptr;
-        diskCards.clear();
         diskPanels.clear();
         diskPanel        = nullptr;
-        hdvCard          = nullptr;
-        cffaCard         = nullptr;
         sscCard          = nullptr;
         sscCards.clear();
         // The printer sources are no longer aliased here. A rebuild can hand
@@ -1058,7 +1054,6 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // thread. Dropping our alias first keeps the panel from touching a
         // card that is mid-teardown.
         fujiNetCard      = nullptr;
-        smartPortCard    = nullptr;
         st.memory().slotBus().clear();
         display->setChatMauveCard(nullptr);
 
@@ -1203,7 +1198,7 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // 8. Re-mount preserved media. Iterate every newly-plugged DiskII
     //    and look up its slot in the snapshot — empty entries mean no
     //    disk was mounted there at the profile-switch time.
-    for (auto* c : diskCards) {
+    for (auto* c : diskIICards()) {
         if (!c) continue;
         const auto& saved = savedDiskPaths[static_cast<size_t>(c->getSlot())];
         if (!saved) continue;               // no DiskII here before the switch
@@ -1219,10 +1214,10 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             (void)c->insertDisk(path);
         }
     }
-    if (hdvCard && !savedHdvPath.empty()) {
+    if (primaryHdvCard() && !savedHdvPath.empty()) {
         std::error_code ec;
         if (std::filesystem::is_regular_file(savedHdvPath, ec)) {
-            (void)hdvCard->loadImage(savedHdvPath);
+            (void)primaryHdvCard()->loadImage(savedHdvPath);
         }
     }
     // CFFA: plugSlotsFromSettings already mounted whatever `cffa_slotN_path`
@@ -1294,13 +1289,13 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         (cpuIsCmos ? "65C02" : "NMOS"));
 
     // Re-bind the AI control server to the freshly rebuilt slot pointers.
-    // (Profile switch rebuilds the SlotBus; diskCard/hdvCard pointers from
+    // (Profile switch rebuilds the SlotBus; primaryDiskII()/primaryHdvCard() pointers from
     // the previous profile are stale.) Held under stateMutex so a
     // handler observing the pointers between detach() and now sees the
     // null (→ 503) rather than a torn intermediate state.
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
+        aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
     }
     aiServer->setProfileLabel(std::string(cfg.displayName));
 }
@@ -1321,16 +1316,16 @@ bool MainWindow::restartEmulationFromSettings()
     //    that string from its /disk insert + eject handlers.
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskCards) {
+        for (auto* c : diskIICards()) {
             if (!c) continue;
             const std::string slotKey = "_slot" + std::to_string(c->getSlot());
             settings->setString("disk_path" + slotKey,
                 c->isDiskLoaded() ? std::string(c->getDiskPath()) : std::string());
             settings->setBool("disk_writeback" + slotKey, c->isWriteBackEnabled());
         }
-        if (hdvCard && hdvCard->getSlot() != autoProvisionedHdvSlot_ &&
-            hdvCard->isImageLoaded()) {
-            const std::string p = hdvCard->getImagePath();
+        if (primaryHdvCard() && primaryHdvCard()->getSlot() != autoProvisionedHdvSlot_ &&
+            primaryHdvCard()->isImageLoaded()) {
+            const std::string p = primaryHdvCard()->getImagePath();
             if (p.rfind("[host folder] ", 0) == std::string::npos)
                 settings->setString("hdv_path", p);
         }
@@ -1388,17 +1383,12 @@ bool MainWindow::restartEmulationFromSettings()
         // Mockingboard variants that a single last-plugged alias
         // cannot represent. Same gotcha mirrored in applyProfile's teardown.
         unregisterAllAudioSources();
-        diskCard         = nullptr;
-        diskCards.clear();
         diskPanels.clear();
         diskPanel        = nullptr;
-        hdvCard          = nullptr;
-        cffaCard         = nullptr;
         sscCard          = nullptr;
         sscCards.clear();
         printerCoordinator_->resetFeedCursor();   // see pumpImageWriter()
         fujiNetCard      = nullptr;   // owns a socket + worker thread
-        smartPortCard    = nullptr;
         st.memory().slotBus().clear();
         // Also drop any cached display->setChatMauveCard pointer — the
         // next plug call will set it again.
@@ -1422,10 +1412,10 @@ bool MainWindow::restartEmulationFromSettings()
     //    `disk_writeback` (no slot suffix) is still read as the fallback
     //    for the primary (lowest-slot) card so settings.ini files written
     //    before option C 2026-05-15 keep working.
-    for (auto* c : diskCards) {
+    for (auto* c : diskIICards()) {
         if (!c) continue;
         const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-        const bool isPrimary = (c == diskCard);
+        const bool isPrimary = (c == primaryDiskII());
         const bool wb = settings->getBool(
             "disk_writeback" + slotKey,
             isPrimary ? settings->getBool("disk_writeback", false) : false);
@@ -1477,12 +1467,12 @@ bool MainWindow::restartEmulationFromSettings()
 
     // 6. Re-attach the AI control server with the freshly rebuilt card
     //    pointers — the slot-bus tear-down above invalidated whatever
-    //    diskCard/hdvCard the server was holding. Held under stateMutex
+    //    primaryDiskII()/primaryHdvCard() the server was holding. Held under stateMutex
     //    so any handler that observed the detached null sees the new
     //    pointers atomically with respect to its own lock acquisition.
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        aiServer->attach(controller.get(), display.get(), diskCard, hdvCard);
+        aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
     }
 
     pom2::log().info("Slots",

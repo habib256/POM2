@@ -76,16 +76,16 @@ void MainWindow::registerPanels()
     // machine itself on a //c+ — the label has to say which, or the user
     // hunts for a card that is not there.
     panels_.bind(P::Disk35, RT{ [this] {
-        return smartPortCard
-            ? "Disk 3.5\" (slot " + std::to_string(smartPortCard->getSlot()) + ")"
+        return primarySmartPortCard()
+            ? "Disk 3.5\" (slot " + std::to_string(primarySmartPortCard()->getSlot()) + ")"
             : std::string("Disk 3.5\" (//c+ on-board)");
     } });
     panels_.bind(P::Hdv, RT{ [this] {
-        return "HDV (slot " + std::to_string(hdvCard ? hdvCard->getSlot() : 5) + ")";
+        return "HDV (slot " + std::to_string(primaryHdvCard() ? primaryHdvCard()->getSlot() : 5) + ")";
     } });
     panels_.bind(P::SmartPort, RT{
-        [this] { return "SmartPort Configuration" + slotSuffix(smartPortCard); },
-        card(&smartPortCard) });
+        [this] { return "SmartPort Configuration" + slotSuffix(primarySmartPortCard()); },
+        [this] { return primarySmartPortCard() != nullptr; } });
     panels_.bind(P::FujiNet, RT{
         [this] { return "FujiNet" + slotSuffix(fujiNetCard); }, card(&fujiNetCard) });
     panels_.bind(P::Phasor, RT{

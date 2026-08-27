@@ -50,6 +50,7 @@ namespace pom2 { class MouseCoordinator; }
 namespace pom2 { class PrinterCoordinator; }
 namespace pom2 { class AudioCoordinator; }
 namespace pom2 { class DevicePanelCoordinator; }
+namespace pom2 { class StorageCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -348,10 +349,16 @@ private:
     /// ImGui and applies the frame's commands after re-resolution.
     std::unique_ptr<pom2::DevicePanelCoordinator> devicePanelCoordinator_;
 
-    std::vector<DiskIICard*>     diskCards;
-    DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
-    ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
-    pom2::CffaCard*              cffaCard = nullptr;       // non-owning, owned by SlotBus
+    /// Storage policy: discovers the slot-sorted Disk II / HDV / CFFA /
+    /// SmartPort topology on demand, owns the preferred-block-device rule and
+    /// routes every mount / eject / write-back / conversion under the machine
+    /// lock, persisting settings only after unlocking.
+    std::unique_ptr<pom2::StorageCoordinator> storageCoordinator_;
+
+    // The storage aliases are gone. `diskIICards()` / `primaryDiskII()` /
+    // `primaryHdvCard()` / `primaryCffaCard()` / `primarySmartPortCard()`
+    // resolve them from the live SlotBus, and every mutation goes through
+    // `storageCoordinator_` under the machine lock.
     // Plural alias: the //c built-in lineup ships TWO SSC-compatible
     // serial ports (printer + modem). `sscCard` is the primary alias =
     // `sscCards.empty() ? nullptr : sscCards.front()` (kept for legacy
@@ -370,7 +377,6 @@ private:
     // one slot and "mockingboard_c" = Variant::SoundII in another, which the
     // single-instance uniqueness rule does not merge), and the mixer showed
     // only one of them. `audioCoordinator_` enumerates every live instance.
-    pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     // PrinterCard / GrapplerCard / the FujiNet printer unit / the SSC printer
     // tap are the four things that can feed the ImageWriter. All four are
     // reached through `printerCoordinator_`, which resolves them under the
@@ -1109,6 +1115,16 @@ private:
     /// Enumerate ALL plugged SmartPort (Liron-class) slot cards, sorted by
     /// slot ascending. Same rationale as `blockCards()`.
     std::vector<pom2::SmartPortCard*> smartPortCards() const;
+
+    /// Live storage topology, resolved from the SlotBus on demand instead of
+    /// held as aliases. Same UI-thread-confined topology-read contract as
+    /// `blockCards()` above: every writer runs on this thread. Per-card STATE
+    /// still goes through `storageCoordinator_`, which takes the machine lock.
+    std::vector<DiskIICard*> diskIICards() const;
+    DiskIICard* primaryDiskII() const;
+    ProDOSHardDiskCard* primaryHdvCard() const;
+    pom2::CffaCard* primaryCffaCard() const;
+    pom2::SmartPortCard* primarySmartPortCard() const;
     /// Flush every slot-owned medium before a profile/slot rebuild. Returns
     /// false without destroying cards so dirty RAM remains retryable.
     bool flushSlotMedia(std::string& err);
