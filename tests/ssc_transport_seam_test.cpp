@@ -1,0 +1,207 @@
+// POM2 — Super Serial transport seam.
+//
+// Pins that SuperSerialCard's bridge behaviour can be driven with NO socket,
+// no listener and no worker thread: the test plays the far end on its own
+// thread, so the assertions are deterministic instead of racing a worker.
+//
+// This is the case the seam was worth moving a thread for. Every assertion
+// below previously required a real telnet client on loopback, and the ones
+// about ordering could only be observed by sleeping and hoping.
+
+#include "SuperSerialCard.h"
+
+#include "fakes/FakeSuperSerialTransport.h"
+
+#include <cassert>
+#include <cstdio>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace {
+
+using namespace pom2;
+
+// ACIA registers as the guest addresses them inside the slot window.
+constexpr uint8_t kAciaData    = 0x8;
+constexpr uint8_t kAciaStatus  = 0x9;
+constexpr uint8_t kAciaCommand = 0xA;
+
+// The 6551 only queues transmit data while DTR is asserted — the guest opens
+// the port through the command register before it writes a byte. Skipping
+// this makes every outbound write vanish, which is exactly what the card
+// should do for a closed port.
+void openPort(SuperSerialCard& card) { card.deviceSelectWrite(kAciaCommand, 0x01); }
+
+
+// ── Text mode: telnet IAC negotiation never reaches the guest ────────────
+//
+// A telnet client opens by negotiating, and those three-byte IAC sequences
+// are protocol, not data. Letting them through puts $FF $FB $01 into the
+// guest's receive register, which is what a terminal program reads as noise.
+void testTelnetNegotiationIsStripped()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+    card.setRawMode(false);
+
+    fake->connect();
+    assert(card.clientConnected());
+
+    // IAC WILL ECHO, then real data.
+    fake->deliver({ 0xFF, 0xFB, 0x01, 'H', 'i' }, /*textMode=*/true);
+
+    std::string got;
+    for (int i = 0; i < 8; ++i) {
+        const uint8_t status = card.deviceSelectRead(kAciaStatus);
+        if ((status & 0x08) == 0) break;             // SR_RDRF clear: drained
+        got.push_back(static_cast<char>(card.deviceSelectRead(kAciaData)));
+    }
+    assert(got == "Hi");
+
+    std::printf("  telnet IAC negotiation never reaches the guest: OK\n");
+}
+
+// ── Raw mode: the stream is untouched, including $FF ─────────────────────
+//
+// Raw mode exists for binary transfers, where a byte that happens to equal
+// IAC is data. Filtering it there corrupts the file — silently.
+void testRawModePassesIacByteThrough()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+    card.setRawMode(true);
+
+    fake->connect();
+    fake->deliver({ 0xFF, 0x00, 0x41 }, /*textMode=*/false);
+
+    std::vector<uint8_t> got;
+    for (int i = 0; i < 8; ++i) {
+        if ((card.deviceSelectRead(kAciaStatus) & 0x08) == 0) break;
+        got.push_back(card.deviceSelectRead(kAciaData));
+    }
+    assert((got == std::vector<uint8_t>{ 0xFF, 0x00, 0x41 }));
+
+    std::printf("  raw mode passes an IAC byte through untouched: OK\n");
+}
+
+// ── Outbound: a literal $FF is escaped as IAC IAC in text mode ───────────
+//
+// The mirror of the case above. A guest that prints $FF must not be read by
+// the peer as the start of a negotiation, so the escape is mandatory — and
+// it is why drainTransportTx appends to a vector rather than filling a
+// fixed buffer: escaping EXPANDS the stream.
+void testOutboundIacIsEscapedInTextMode()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+    card.setRawMode(false);
+    fake->connect();
+    openPort(card);
+
+    card.deviceSelectWrite(kAciaData, 0xFF);
+    const auto wire = fake->drain();
+    assert((wire == std::vector<uint8_t>{ 0xFF, 0xFF }));
+    // One guest byte produced two on the wire.
+    assert(fake->lastDrainTaken == 1);
+
+    std::printf("  outbound $FF is escaped as IAC IAC in text mode: OK\n");
+}
+
+void testOutboundIacIsVerbatimInRawMode()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+    card.setRawMode(true);
+    fake->connect();
+    openPort(card);
+
+    card.deviceSelectWrite(kAciaData, 0xFF);
+    assert((fake->drain() == std::vector<uint8_t>{ 0xFF }));
+
+    std::printf("  outbound $FF is verbatim in raw mode: OK\n");
+}
+
+// ── The keyboard sink is a text-mode path only ───────────────────────────
+//
+// The sink is how a telnet session types at the Apple II. A binary transfer
+// is not typing, and feeding it to the keyboard would inject the file into
+// whatever the guest is running.
+void testKeyboardSinkOnlyInTextMode()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+
+    std::string typed;
+    card.setKeyboardSink([&typed](uint8_t b) {
+        typed.push_back(static_cast<char>(b));
+    });
+
+    card.setRawMode(false);
+    fake->connect();
+    fake->deliver({ 'a' }, /*textMode=*/true);
+    assert(typed == "a");
+
+    card.setRawMode(true);
+    fake->deliver({ 'b' }, /*textMode=*/false);
+    assert(typed == "a");   // unchanged: raw bytes are not keystrokes
+
+    std::printf("  keyboard sink is a text-mode path only: OK\n");
+}
+
+// ── Connection edges reset the parser ────────────────────────────────────
+//
+// The IAC parser and the CR state persist across recv() chunks by design, so
+// a client that drops mid-sequence would otherwise poison the next session.
+void testReconnectResetsTelnetParser()
+{
+    SuperSerialCard card(2);
+    auto transport = std::make_unique<test::FakeSuperSerialTransport>(card);
+    auto* fake = transport.get();
+    card.setTransport(std::move(transport));
+    card.setRawMode(false);
+
+    fake->connect();
+    fake->deliver({ 0xFF }, /*textMode=*/true);   // half an IAC sequence
+    fake->disconnect();
+    assert(!card.clientConnected());
+
+    // A fresh client sends plain data. If the parser had kept its state it
+    // would swallow this byte as the second half of the previous sequence.
+    fake->connect();
+    fake->deliver({ 'Z' }, /*textMode=*/true);
+
+    std::string got;
+    for (int i = 0; i < 4; ++i) {
+        if ((card.deviceSelectRead(kAciaStatus) & 0x08) == 0) break;
+        got.push_back(static_cast<char>(card.deviceSelectRead(kAciaData)));
+    }
+    assert(got == "Z");
+
+    std::printf("  a reconnect resets the telnet parser: OK\n");
+}
+
+} // namespace
+
+int main()
+{
+    std::printf("Super Serial transport seam\n");
+    testTelnetNegotiationIsStripped();
+    testRawModePassesIacByteThrough();
+    testOutboundIacIsEscapedInTextMode();
+    testOutboundIacIsVerbatimInRawMode();
+    testKeyboardSinkOnlyInTextMode();
+    testReconnectResetsTelnetParser();
+    std::printf("OK\n");
+    return 0;
+}

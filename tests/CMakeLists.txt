@@ -3432,6 +3432,7 @@ add_executable(test_slot_config
     ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
     ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
     ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SuperSerialTcpTransport.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_slot_config PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4039,6 +4040,7 @@ set_tests_properties(mockingboard_iie_irq_smoke PROPERTIES TIMEOUT 10)
 add_executable(test_ssc_acia
     ssc_acia_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SuperSerialTcpTransport.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_ssc_acia PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4781,6 +4783,7 @@ set_tests_properties(iic_diskii_no_iwm_conflict PROPERTIES TIMEOUT 10)
 add_executable(test_iic_printer_port
     iic_printer_port_test.cpp
     ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SuperSerialTcpTransport.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
@@ -4874,6 +4877,7 @@ add_executable(test_card_snapshot_state
     ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
     ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
     ${CMAKE_SOURCE_DIR}/src/SuperSerialCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SuperSerialTcpTransport.cpp
     ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
     ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
     ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
@@ -5717,6 +5721,19 @@ if(TARGET pom2_core_test)
 pom2_add_headless_test(test_fujinet_link_seam
     NAME fujinet_link_seam TIMEOUT 10 PORTABLE
     SOURCES fujinet_link_seam_test.cpp
+    LINK_LIBRARIES pom2_core_test
+    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
+# ─── Super Serial transport seam ────────────────────────────────────────
+# Drives the card's bridge behaviour with NO socket, listener or worker
+# thread: the test plays the far end on its own thread, so the ordering
+# assertions are deterministic instead of racing a worker. Every case here
+# previously needed a real telnet client on loopback.
+if(TARGET pom2_core_test)
+pom2_add_headless_test(test_ssc_transport_seam
+    NAME ssc_transport_seam TIMEOUT 10 PORTABLE
+    SOURCES ssc_transport_seam_test.cpp
     LINK_LIBRARIES pom2_core_test
     INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
