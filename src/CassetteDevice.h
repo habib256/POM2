@@ -47,7 +47,7 @@
 #ifndef POM2_CASSETTE_DEVICE_H
 #define POM2_CASSETTE_DEVICE_H
 
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "CpuClock.h"
 #include "third_party/miniaudio.h"
 

@@ -38,6 +38,8 @@
 #ifndef POM2_W5100_NAME_RESOLVER_H
 #define POM2_W5100_NAME_RESOLVER_H
 
+#include "W5100Resolver.h"
+
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -48,7 +50,7 @@
 
 namespace pom2 {
 
-class W5100NameResolver
+class W5100NameResolver final : public W5100Resolver
 {
 public:
     /// Blocking host lookup, returning an address in network byte order or 0.
@@ -61,26 +63,17 @@ public:
     W5100NameResolver(const W5100NameResolver&) = delete;
     W5100NameResolver& operator=(const W5100NameResolver&) = delete;
 
-    enum class Status : std::uint8_t {
-        Resolved,   ///< `address` is usable now (cached, or answered in time)
-        Pending,    ///< timed out; the answer may arrive via poll() later
-        Refused,    ///< too many lookups already in flight
-        Failed,     ///< the resolver answered, and the answer was "no"
-    };
-
-    struct Result {
-        Status   status  = Status::Failed;
-        uint32_t address = 0;   ///< network byte order
-    };
+    // Status and Result are inherited from W5100Resolver: they are the
+    // question's vocabulary, not this implementation's.
 
     /// Resolve within `waitMs`. Answers from the cache without waiting.
-    Result resolve(const std::string& name, int waitMs);
+    Result resolve(const std::string& name, int waitMs) override;
 
     /// Fold any late answers into the cache. CPU thread only — that is what
     /// keeps the cache free of a lock.
-    void poll();
+    void poll() override;
 
-    void clearCache();
+    void clearCache() override;
 
     std::size_t cacheSize() const { return cache_.size(); }
 

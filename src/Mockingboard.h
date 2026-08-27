@@ -84,7 +84,7 @@
 #define POM2_MOCKINGBOARD_H
 
 #include "Ay3_8910.h"
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "SlotPeripheral.h"
 #include "Ssi263.h"
 #include "Via6522.h"

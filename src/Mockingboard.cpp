@@ -120,7 +120,7 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
 
     MockingboardCard* parent;
 
-    std::atomic<uint32_t> sampleRate { AudioDevice::kSampleRate };
+    std::atomic<uint32_t> sampleRate { kAudioSampleRate };
     std::atomic<float>    volume     { 0.5f };       // pre-mix gain
     std::atomic<bool>     muted      { false };
     /// Emulated CPU clock for the emuCycles replay cursor — retuned by
@@ -137,7 +137,7 @@ struct MockingboardCard::AudioSrc : public AudioSource, public RateAware
     /// this AudioSrc up (see MainWindow plugMockingboard).
     void setSampleRate(uint32_t hz) override
     {
-        if (hz == 0) hz = AudioDevice::kSampleRate;
+        if (hz == 0) hz = kAudioSampleRate;
         sampleRate.store(hz, std::memory_order_relaxed);
     }
 
@@ -780,7 +780,7 @@ AudioSource* MockingboardCard::audioSource()
 
 void MockingboardCard::setSampleRate(uint32_t hz)
 {
-    if (hz == 0) hz = AudioDevice::kSampleRate;
+    if (hz == 0) hz = kAudioSampleRate;
     audio_->sampleRate.store(hz, std::memory_order_relaxed);
 }
 

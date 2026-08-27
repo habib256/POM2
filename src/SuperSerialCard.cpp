@@ -16,12 +16,9 @@
 
 #include "SuperSerialCard.h"
 
-#include "SuperSerialTcpTransport.h"
 #include "SuperSerialTransport.h"
 #include "Pom2Build.h"
 #include "Logger.h"
-#include "ThreadGuard.h"
-#include "SocketUtil.h"
 #include "M6502.h"
 
 #include <cerrno>
@@ -35,7 +32,6 @@
 // host-side TCP plumbing is dropped.
 // Host socket stack for both families — POSIX and Winsock. SocketUtil.h
 // (included above) is built on it and carries the accept/SIGPIPE idioms.
-#include "SocketCompat.h"
 #endif
 
 namespace {
@@ -180,9 +176,16 @@ SuperSerialCard::~SuperSerialCard()
 
 bool SuperSerialCard::startListening(uint16_t newPort)
 {
-    // The listener, its worker thread and both sockets live in the transport.
-    // Created lazily so a card that never bridges never acquires a thread.
-    if (!transport_) transport_ = pom2::makeSuperSerialTcpTransport(*this, slot);
+    // The card does not know how to MAKE a transport — that would be a device
+    // reaching into the runtime for a socket and a thread, which the
+    // configure-time layer guard rejects. Whoever plugs the card gives it one
+    // (MainWindow, pom2_headless), and a card with none simply has nothing on
+    // the far end: the ACIA still works, PR#n output still fills the TX
+    // counter, there is just no peer.
+    if (!transport_) {
+        port = newPort;
+        return false;
+    }
     const bool ok = transport_->start(newPort);
     port = transport_->port();
     listening = transport_->isListening();

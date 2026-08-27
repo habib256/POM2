@@ -38,6 +38,8 @@
 #include "SlirpNetworkBackend.h"
 #include "UthernetCard.h"
 #include "UthernetIICard.h"
+#include "W5100HostSockets.h"
+#include "W5100NameResolver.h"
 #include "FujiNetCard.h"
 #include "Uthernet_ImGui.h"
 #include "ImageWriter.h"
@@ -102,6 +104,8 @@
 #include "FujiNet_ImGui.h"
 #include "SpeakerDevice.h"
 #include "SuperSerialCard.h"
+#include "SuperSerialTcpTransport.h"
+#include "SuperSerialTransport.h"
 #include "SystemProfile.h"
 #include "Toolbar_ImGui.h"
 #include "CommandPalette_ImGui.h"
@@ -1431,6 +1435,13 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 ? settings->getInt("ssc_port", SuperSerialCard::kDefaultPort)
                 : SuperSerialCard::kDefaultPort;
             const int p = settings->getInt("ssc_port" + sk, portDefault);
+
+            // Give the card its host transport at plug time. The card cannot build
+
+            // one itself — that would be a device reaching into the runtime.
+
+            raw->setTransport(pom2::makeSuperSerialTcpTransport(*raw, s));
+
             raw->startListening(static_cast<uint16_t>(p));
         }
     };
@@ -1502,6 +1513,11 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // UDP sockets are host sockets, so this card is fully functional
         // with no backend at all; the backend only serves MACRAW/IPRAW.
         auto card = std::make_unique<pom2::UthernetIICard>(s);
+        // Inject the host socket factory: the W5100 cannot build one itself,
+        // and without it its TCP/UDP modes stay CLOSED.
+        card->chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
+        card->chip().setNameResolver(
+            std::make_unique<pom2::W5100NameResolver>());
         card->setBackend(makeEthernetBackend("UthernetII"));
         // Virtual DNS is an emulator extension (not on real silicon) that
         // lets a guest connect by hostname without carrying a resolver.

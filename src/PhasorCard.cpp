@@ -80,13 +80,13 @@ struct PhasorCard::AudioSrc : public AudioSource, public RateAware
 
     PhasorCard* parent;
 
-    std::atomic<uint32_t> sampleRate { AudioDevice::kSampleRate };
+    std::atomic<uint32_t> sampleRate { kAudioSampleRate };
     std::atomic<float>    volume     { 0.5f };
     std::atomic<bool>     muted      { false };
 
     void setSampleRate(uint32_t hz) override
     {
-        if (hz == 0) hz = AudioDevice::kSampleRate;
+        if (hz == 0) hz = kAudioSampleRate;
         sampleRate.store(hz, std::memory_order_relaxed);
     }
 
@@ -332,7 +332,7 @@ AudioSource* PhasorCard::audioSource() { return audio_.get(); }
 
 void PhasorCard::setSampleRate(uint32_t hz)
 {
-    if (hz == 0) hz = AudioDevice::kSampleRate;
+    if (hz == 0) hz = kAudioSampleRate;
     audio_->sampleRate.store(hz, std::memory_order_relaxed);
 }
 

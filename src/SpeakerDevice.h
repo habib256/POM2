@@ -40,7 +40,7 @@
 #ifndef POM2_SPEAKER_DEVICE_H
 #define POM2_SPEAKER_DEVICE_H
 
-#include "AudioDevice.h"
+#include "AudioSource.h"
 #include "CpuClock.h"
 
 #include <array>
@@ -137,7 +137,7 @@ private:
 
     std::atomic<float>    volume{1.0f};
     std::atomic<bool>     muted{false};
-    std::atomic<uint32_t> outputSampleRate{AudioDevice::kSampleRate};
+    std::atomic<uint32_t> outputSampleRate{kAudioSampleRate};
 
     void buildSincKernel();
 };

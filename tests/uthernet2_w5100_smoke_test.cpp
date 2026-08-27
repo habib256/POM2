@@ -50,6 +50,7 @@
 
 #include "NetworkBackend.h"
 #include "UthernetIICard.h"
+#include "W5100HostSockets.h"
 #include "W5100Device.h"
 
 #include <arpa/inet.h>
@@ -206,7 +207,9 @@ void pumpCard(UthernetIICard& card, int tries = 200)
 void testPowerOnDefaults()
 {
     UthernetIICard card(3);
-
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     // Retry time 0x07D0 (200 ms) and retry count 8 — datasheet defaults.
     assert(readAt(card, pom2::kW5100Rtr0) == 0x07);
     assert(readAt(card, pom2::kW5100Rtr1) == 0xD0);
@@ -236,7 +239,9 @@ void testPowerOnDefaults()
 void testIndirectWindowDecode()
 {
     UthernetIICard card(3);
-
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     // Only A0/A1 are decoded: $C0n0 aliases MODE, $C0n1 aliases ADDR_HI,
     // and so on (`W5100.h:6`).
     card.deviceSelectWrite(0x0, pom2::kW5100MrAi);
@@ -269,7 +274,9 @@ void testIndirectWindowDecode()
 void testSoftResetPreservesAddress()
 {
     UthernetIICard card(3);
-
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     writeAt(card, pom2::kW5100Sipr0, 192);
     setAddress(card, 0x4321);
     card.deviceSelectWrite(kMode, pom2::kW5100MrRst);
@@ -279,6 +286,9 @@ void testSoftResetPreservesAddress()
     // ...but the indirect data address survives, per the manual. (readAt
     // above moved it, so check the chip directly after a fresh set.)
     UthernetIICard card2(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card2.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     setAddress(card2, 0x4321);
     card2.deviceSelectWrite(kMode, pom2::kW5100MrRst);
     assert(card2.chip().dataAddress() == 0x4321);
@@ -289,7 +299,9 @@ void testSoftResetPreservesAddress()
 void testBufferCarve()
 {
     UthernetIICard card(3);
-
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     // 0x00 = 1 KB to every socket; the top 4 KB of each region is unused.
     writeAt(card, pom2::kW5100Rmsr, 0x00);
     writeAt(card, pom2::kW5100Tmsr, 0x00);
@@ -313,6 +325,9 @@ void testTcpSession()
 {
     LocalListener listener;
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     // Deliberately no NetworkBackend: TCP must work without one.
     assert(card.backend() == nullptr);
 
@@ -414,6 +429,9 @@ void testTcpSession()
 void testMacRaw()
 {
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     auto backend = std::make_unique<pom2::LoopbackNetworkBackend>();
     auto* raw = backend.get();
     card.setBackend(std::move(backend));
@@ -465,7 +483,9 @@ void testSnapshotRoundTrip()
 {
     LocalListener listener;
     UthernetIICard card(3);
-
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     constexpr size_t kSock = 1;
     const uint16_t base = socketBase(kSock);
 
@@ -493,6 +513,12 @@ void testSnapshotRoundTrip()
     assert(!blob.empty());
 
     UthernetIICard restored(3);
+
+    // The W5100 no longer builds its own host sockets — whoever plugs
+
+    // the card injects them, as MainWindow does at plug time.
+
+    restored.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     restored.loadSnapshotState(blob.data(), blob.size());
 
     // Registers and buffer geometry come back...
@@ -508,6 +534,9 @@ void testSnapshotRoundTrip()
     // A foreign blob in this slot must be ignored, not misparsed.
     std::vector<uint8_t> foreign(blob.size(), 0xAB);
     UthernetIICard untouched(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    untouched.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     untouched.loadSnapshotState(foreign.data(), foreign.size());
     assert(readAt(untouched, pom2::kW5100Sipr0) == 0);
 
@@ -553,6 +582,9 @@ void testSendAfterPeerResetSurvives()
 {
     LocalListener listener;
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     const uint16_t base = connectSocket0(card, listener);
 
     listener.closeAbruptly();
@@ -588,6 +620,9 @@ void testHalfCloseWait()
 {
     LocalListener listener;
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     const uint16_t base = connectSocket0(card, listener);
 
     listener.shutdownWrite();
@@ -627,6 +662,9 @@ void testRmsrShrinkUnderStagedData()
 {
     LocalListener listener;
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     const uint16_t base = connectSocket0(card, listener);
 
     const std::string bulk(1500, 'x');
@@ -652,6 +690,9 @@ void testRmsrShrinkUnderStagedData()
 void testConnectGating()
 {
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     const uint16_t base = socketBase(0);
 
     writeAt(card, static_cast<uint16_t>(base + pom2::kW5100SnMr), pom2::kW5100SnMrUdp);
@@ -688,6 +729,9 @@ void testConnectGating()
 void testMirrorWriteSymmetry()
 {
     UthernetIICard card(3);
+    // The W5100 no longer builds its own host sockets — whoever plugs
+    // the card injects them, as MainWindow does at plug time.
+    card.chip().setSocketFactory(pom2::makeHostW5100SocketFactory());
     writeAt(card, static_cast<uint16_t>(0x8000 + pom2::kW5100TxBase + 0x123), 0xAB);
     assert(readAt(card, static_cast<uint16_t>(pom2::kW5100TxBase + 0x123)) == 0xAB);
     std::printf("  >= $8000 mirror write OK\n");
