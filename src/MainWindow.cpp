@@ -60,6 +60,7 @@
 #include "AudioCoordinator.h"
 #include "DevicePanelCoordinator.h"
 #include "SlotCardFactory.h"
+#include "SlotConfigurationCoordinator.h"
 #include "SlotRebuildCoordinator.h"
 #include "StorageCoordinator.h"
 #include "PrinterCoordinator.h"
@@ -196,6 +197,8 @@ MainWindow::MainWindow(bool forceIIPlus)
           *controller, *settings)),
       storageCoordinator_(std::make_unique<pom2::StorageCoordinator>()),
       slotCardFactory_(std::make_unique<pom2::SlotCardFactory>()),
+      slotConfigCoordinator_(
+          std::make_unique<pom2::SlotConfigurationCoordinator>()),
       // The rebuild transaction. Every hook is required — the coordinator
       // throws rather than let a half-wired teardown run — and the ORDER is
       // its contract, not this list's: gate AI requests, drop the non-owning
@@ -1261,139 +1264,24 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 {
     namespace fs = std::filesystem;
 
-    // Default mapping when no `slot_N_card` keys are present — the machine a
-    // fresh install boots into, alongside the //e Enhanced PAL default
-    // profile. A period-plausible European //e: printer, mouse, sound, and
-    // both disk sizes.
-    //
-    // Slot 3 stays EMPTY on purpose. The //e's 80-column card is not a slot
-    // card in POM2: the 80-col firmware is internal ROM at $C300 and the
-    // Extended 80-Column Text Card lives on the AUX connector, both of which
-    // come with `iieMode` (Memory owns the aux 64 KB + the paging switches).
-    // Putting anything in slot 3 on a //e also fights the SLOTC3ROM switch.
-    static const char* kDefaults[8] = {
-        "",             // slot 0 (Language Card — owned by Memory, not us)
-        "grappler",     // slot 1 — Grappler+ parallel printer
-        "mouseaw",      // slot 2 — Mouse, AppleWin HLE (no MC68705 ROMs needed)
-        "",             // slot 3 — see above: 80-col is internal, not a card
-        "mockingboard", // slot 4 — Mockingboard A/C
-        "smartport35",  // slot 5 — SmartPort 3.5"
-        "diskii",       // slot 6 — Disk II
-        "chatmauve"     // slot 7 — Le Chat Mauve RGB (unchanged)
-    };
+    // The fresh-install default map (grappler / mouseaw / — / mockingboard /
+    // smartport35 / diskii / chatmauve, slot 3 deliberately empty because the
+    // //e's 80 columns are internal $C300 ROM + the AUX connector, not a slot
+    // card) now lives in SlotConfigurationCoordinator, next to the settings
+    // lookup that falls back to it. CLAUDE.md documents the map itself.
 
-    // Resolve each slot from settings, with the legacy `clock_card_enable`
-    // flag as a one-shot fallback: if the user has clock_card_enable=false
-    // AND no slot_4_card key, slot 4 stays empty. Once any slot_N_card key
-    // is set in the file, that key is the source of truth. (Inert since
-    // slot 4 stopped defaulting to the clock card — it now only fires for a
-    // settings file that pairs the old flag with an explicit clock in 4.)
-    for (int s = 1; s <= 7; ++s) {
-        const std::string key = "slot_" + std::to_string(s) + "_card";
-        slotCards[s] = settings->getString(key, kDefaults[s]);
-    }
-    if (!settings->getBool("clock_card_enable", true)) {
-        // Legacy opt-out: only respect when no explicit slot_N_card key
-        // was set (settings->getString returned the default for slot 4).
-        if (settings->getString("slot_4_card", "__missing__") == "__missing__"
-            && slotCards[4] == "clock") {
-            slotCards[4] = "";
-        }
-    }
 
-    // Profile-defined built-in slots override anything the user persisted.
-    // Real //c / //c+ have no physical expansion bus; their on-board cards
-    // (serial, mouse, Disk II, SmartPort) live at fixed virtual slot IDs
-    // and CANNOT be unplugged (D-6-1, E-6-1). Keep the settings file's
-    // value out of harm's way so toggling profiles back and forth doesn't
-    // produce a wedged machine.
+    // The effective plan: settings defaults, the legacy `clock_card_enable`
+    // opt-out, profile-forced built-in slots, the //c-class no-physical-slots
+    // rule and the single-instance policy, resolved in one place.
     //
-    // When the profile declares `noPhysicalSlots` (//c, //c+), the
-    // remaining "free" slots (sl3 = AUX, sl7) are FORCED EMPTY too —
-    // there's no physical connector on real //c hardware, so plugging
-    // anything there is meaningless. The user's saved key is left
-    // untouched in settings (so switching back to //e restores it) but
-    // ignored for this run.
-    {
-        const auto& cfg = pom2::profileConfig(activeProfile);
-        // Does the profile already carry a built-in Le Chat Mauve (//c PAL)?
-        // If so, a user-configured chatmauve elsewhere must NOT plug a second
-        // card — the rear connector is already taken by the on-board adapter.
-        bool builtinRgb = false;
-        for (int s = 1; s <= 7; ++s)
-            if (cfg.builtInSlots[s].has_value() &&
-                cfg.builtInSlots[s]->cardKey == "chatmauve")
-                builtinRgb = true;
-        for (int s = 1; s <= 7; ++s) {
-            if (cfg.builtInSlots[s].has_value()) {
-                const std::string& forced = cfg.builtInSlots[s]->cardKey;
-                if (slotCards[s] != forced) {
-                    pom2::log().info("Slots",
-                        "Slot " + std::to_string(s) + " forced to '" +
-                        forced + "' (built-in on " +
-                        std::string(cfg.displayName) +
-                        "); user setting '" + slotCards[s] + "' ignored");
-                    slotCards[s] = forced;
-                }
-            } else if (cfg.noPhysicalSlots && !slotCards[s].empty()) {
-                // Exception: the Le Chat Mauve RGB card is NOT a peripheral-
-                // slot card — on a //c it ships as the "Adaptateur IIc" that
-                // plugs into the rear DB-15 video-expansion connector, which
-                // the //c/+ DOES have. So honour a user-configured `chatmauve`
-                // even on a no-physical-slots model (the European //c is the
-                // very machine that took this adapter — see § System profiles)
-                // — unless the profile already wires one on-board (//c PAL).
-                if (slotCards[s] == "chatmauve" && !builtinRgb) {
-                    pom2::log().info("Slots",
-                        "Slot " + std::to_string(s) + " = Le Chat Mauve RGB "
-                        "(rear video-connector adapter) on " +
-                        std::string(cfg.displayName));
-                } else {
-                    pom2::log().info("Slots",
-                        "Slot " + std::to_string(s) + " left empty on " +
-                        std::string(cfg.displayName) +
-                        " (no physical slot connector on this model); "
-                        "user setting '" + slotCards[s] + "' ignored");
-                    slotCards[s] = "";
-                }
-            }
-        }
-    }
-
-    // Validate uniqueness — each card type plugs into at most one slot.
-    // Exceptions (multi-instance): "diskii" (option C 2026-05-15: //e configs
-    // carried DiskII slot 6 + slot 4 for 4 drives), and — since the Slot
-    // Manager can drive several of each — "cffa" and "smartport35", whose
-    // persistence is already per-slot (cffa_slotN_*, smartport_slotN_*). The
-    // rest stay single-instance because their driver / ROM signature / global
-    // settings keys assume exclusivity ("hdv" uses the global hdv_path key).
-    //
-    // Built-in slots are ALWAYS exempt: when a profile forces the same card
-    // type into multiple slots (e.g. //c has two SSC-compatible serial ports
-    // at sl1+sl2), the uniqueness rule would otherwise eject the second one.
-    // Profile authors are trusted to declare hardware that actually shipped.
-    auto multiInstance = [](const std::string& k) -> bool {
-        return k == "diskii" || k == "cffa" || k == "smartport35";
-    };
-    const auto& uniqCfg = pom2::profileConfig(activeProfile);
-    auto firstOccurrence = [&](const std::string& type) -> int {
-        for (int s = 1; s <= 7; ++s) if (slotCards[s] == type) return s;
-        return -1;
-    };
-    for (int s = 1; s <= 7; ++s) {
-        if (slotCards[s].empty())  continue;
-        if (multiInstance(slotCards[s])) continue;    // multi-instance OK
-        if (uniqCfg.builtInSlots[s].has_value())          // forced by profile
-            continue;
-        const int first = firstOccurrence(slotCards[s]);
-        if (first != s) {
-            pom2::log().warn("Slots",
-                "Slot " + std::to_string(s) + " requested '" + slotCards[s] +
-                "' but that card is already in slot " + std::to_string(first) +
-                " — leaving slot " + std::to_string(s) + " empty");
-            slotCards[s] = "";
-        }
-    }
+    // What it is NOT is a record of what ended up plugged. The plan holds what
+    // the user asked for; a missing ROM or a session-only auto-provisioned
+    // card does not rewrite it, so a CFFA whose firmware is absent today is
+    // still a CFFA in the config tomorrow. The live SlotBus is the authority
+    // on what is actually there, and the panel reads it separately.
+    const auto& plan = slotConfigCoordinator_->resolve(*settings, activeProfile);
+    for (int s = 1; s <= 7; ++s) slotCards[s] = plan[s];
 
     // ── Per-card construction helpers. Each one populates the matching
     //    raw `*Card` member pointer (non-owning) for the rest of MainWindow
@@ -1463,7 +1351,10 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         if (!made) {
             if (!made.warning.empty())
                 pom2::log().warn(made.warningCategory.c_str(), made.warning);
-            slotCards[s] = "";
+            // The slot stays empty, but the PLAN keeps the user's request.
+            // Clearing it here meant a CFFA whose ROM was missing today was
+            // silently deleted from the config and gone tomorrow; the panel
+            // now reports plan-vs-live divergence instead.
             return;
         }
         // Empty hardware only — the per-slot image and write-back arrive in
@@ -1834,7 +1725,10 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
             if (!made.warning.empty())
                 pom2::log().warn(made.warningCategory.c_str(), made.warning);
             if (!made) continue;
-            if (made.fallback) slotCards[s] = made.actualKey;
+            // A fallback is a LIVE fact, not a configuration change: the
+            // user still asked for "mouseaw", and the ROM may be there next
+            // launch. The panel reads the live snapshot to show what is
+            // actually plugged.
             st.memory().slotBus().plug(s, std::move(made.card));
         }
         else if (kind == "mockingboard")   plugMockingboard(s, MockingboardCard::Variant::AC);
@@ -1851,7 +1745,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
             pom2::log().warn("Slots",
                 "Slot " + std::to_string(s) + " has unknown card type '" +
                 kind + "' — leaving empty");
-            slotCards[s] = "";
         }
     }
 
@@ -5948,7 +5841,9 @@ int MainWindow::ensureHdvCardForBoot()
         // the lot at eject/exit without a word.
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
         st.memory().slotBus().plug(slot, std::move(card));
-        slotCards[slot] = "hdv";
+        // NOT recorded in the plan: this card exists for this boot only.
+        // Writing it here made a session-only auto-plug look like the user's
+        // configuration, and the Slot Config panel showed it as such.
         storageCoordinator_->markAutoProvisionedHdv(slot);   // session-local; ~MainWindow won't persist it
     }
     pom2::log().info("CLI",
@@ -5982,7 +5877,7 @@ int MainWindow::ensureSmartPortCardForBoot()
         const std::string r = pom2::findResource("roms/liron.rom");
         if (!r.empty()) card->loadLironRom(r);
         controller->memory().slotBus().plug(slot, std::move(card));
-        slotCards[slot] = "smartport35";
+        // Session-only, like the HDV auto-plug above — not part of the plan.
         storageCoordinator_->markAutoProvisionedSmartPort(slot);   // session-local; not persisted
     }
     pom2::log().info("Slots",
@@ -6543,7 +6438,8 @@ bool MainWindow::plugFujiNetUnlocked(const pom2::StateAccess& st,
 
     fujiNetCard = card.get();
     bus.plug(slot, std::move(card));
-    slotCards[static_cast<size_t>(slot)] = "fujinet";
+    // Session-only (CLI --fujinet / drag-and-drop): the live bus shows it,
+    // the plan does not claim it.
     return true;
 }
 

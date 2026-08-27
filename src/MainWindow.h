@@ -53,6 +53,7 @@ namespace pom2 { class DevicePanelCoordinator; }
 namespace pom2 { class StorageCoordinator; }
 namespace pom2 { class SlotCardFactory; }
 namespace pom2 { class SlotRebuildCoordinator; }
+namespace pom2 { class SlotConfigurationCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -367,6 +368,12 @@ private:
     /// stable. Only a successful media flush may prepare it, and it owns the
     /// order in which consumers detach before SlotBus is cleared.
     std::unique_ptr<pom2::SlotRebuildCoordinator> slotRebuildCoordinator_;
+
+    /// The three slot maps kept apart: the effective plan resolved from
+    /// settings + profile, the staged Slot Config draft, and an immutable
+    /// snapshot copied from the live SlotBus. `slotCards[]` used to be all
+    /// three at once.
+    std::unique_ptr<pom2::SlotConfigurationCoordinator> slotConfigCoordinator_;
 
     // The storage aliases are gone. `diskIICards()` / `primaryDiskII()` /
     // `primaryHdvCard()` / `primaryCffaCard()` / `primarySmartPortCard()`

@@ -65,6 +65,11 @@ LOCK_FREE = (
     'persistDiskIIDrive',            # 2. takes SlotBus&
     'flushAll',                      # 2. takes SlotBus&
     'topology',                      # 2. takes SlotBus&
+    'captureLive',                   # 2. takes SlotBus&
+    'resolve',                       # 1. plan resolution over Settings
+    'effectivePlan',                 # 1.
+    'draft',                         # 1.
+    'resetDraft',                    # 1.
     # 3. A third shape, and the clearest: the name ends in `Locked` and the
     #    method takes a `const StateAccess&` — a token that exists only
     #    because the caller took the lock. These MUST be called inside one,
