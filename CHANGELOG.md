@@ -5,6 +5,55 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-27 (later) — Every alias gone, every coordinator wired
+
+The campaign that started with an unmergeable branch finishes here. All
+eighteen non-owning card aliases are gone from `MainWindow`, and all eleven
+coordinators are in use. `MainWindow.cpp` went 8 913 → 8 289 lines, but the
+line count is the least of it: what changed is that no UI path holds a pointer
+to something `SlotBus` can destroy underneath it.
+
+**The three device seams were re-derived, not merged.** Each one on the branch
+predated a fix main had shipped, so merging would have quietly reverted it:
+- `W5100Socket` — the branch's host implementation has no `disableSigpipe` and
+  no `MSG_NOSIGNAL` send, because main's SIGPIPE work landed 2026-08-22, after
+  the fork. Merging it would have restored a defect that kills the whole
+  process when a TCP peer vanishes. Every hardening step was moved with the
+  comment recording the failure it prevents. Its `send()` also had to gain a
+  mode: main's TX path calls `sendto` and plain `send` against one socket, and
+  `flushPendingTx` continues an already-accepted tail that must not be
+  re-addressed.
+- `FujiNetLink` — needed no code moved at all. `SpOverSlipLink` already
+  implemented every method with matching signatures; it was simply never named
+  as an interface. The card's accessor split into `link()` (commands) and
+  `transportLink()` (lifecycle the UI configures), which is what made the
+  interface possible.
+- `SuperSerialTransport` — the only one that moves a thread. `guardedThread`
+  and the join-before-reassign fix (a worker that exited on its own leaves a
+  joinable thread, and assigning over it calls `std::terminate`) were ported
+  INTO the transport.
+
+Each seam has a fake and a test that opens no socket, and the assertions that
+matter are mutation-checked rather than assumed green.
+
+**The FujiNet panel was the worst alias of the eighteen.** It bound
+`auto& link = card->transportLink()` outside any lock and wrote through that
+reference in six separate critical sections, applying the timeout change with
+no lock at all — against a card that owns a listening socket, an open serial
+device and a worker thread.
+
+**And one deadlock, introduced and caught during the work.** Wiring
+`PrinterCoordinator` into `renderFujiNetPanelWindow` put a locking call inside
+an existing `lock_guard(stateMutex())`. `stateMutex` is non-recursive, so
+opening that panel would have hung the UI thread and the emulator together —
+while the full suite stayed green, because nothing drives the ImGui panels.
+`tools/check_coordinator_locks.sh` is the answer, and it earned its keep three
+more times after that: a genuine blind spot (a function that RECEIVES a
+`StateAccess` is locked for its whole body and has no `lockState()` call to
+find), a false positive worth fixing (`} else {` nets zero braces, so a
+per-line counter thought a closed scope was open), and a third finding class
+(`…Locked` methods taking a `StateAccess` MUST be inside the lock).
+
 ## 2026-08-27 — Wiring the coordinators, and what the aliases were hiding
 
 Five of the landed coordinators are now wired into `MainWindow`:
