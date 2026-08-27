@@ -709,22 +709,35 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   so a FujiNet-only setup showed an unconnected printer, and a spool read with
   no lock under a comment claiming the opposite.
 
+  **`StorageCoordinator` is wired for topology + the panel/menu commands**
+  (2026-08-27, three commits). All five aliases (`diskCards` `diskCard`
+  `hdvCard` `cffaCard` `smartPortCard`) are gone — `diskIICards()` /
+  `primaryDiskII()` / `primaryHdvCard()` / `primaryCffaCard()` /
+  `primarySmartPortCard()` resolve from the live bus instead. Four persistence
+  defects fixed on the way, all the same shape (mutate the card, forget the
+  key): Machine ▸ Eject disk and Eject HDV left `disk_path_slotN` / `hdv_path`
+  set so the next launch re-mounted what had just been ejected, and the Disk II
+  and HDV write-back toggles never wrote their keys — which matters because
+  `isWriteProtected()` is `fileWriteProtected || !writeBack`, so the setting
+  coming back off means the guest sees WRITE PROTECTED again. Eject-all also
+  only ever ejected drive 1 and reported success over a failed write-back.
+
   **Left, in the order to do them:**
 
-  | Coordinator | Aliases | Sites | Note |
-  |---|---|---|---|
-  | `StorageCoordinator` | `diskCards` `diskCard` `hdvCard` `cffaCard` `smartPortCard` | ~200 | biggest by far; do it alone |
-  | `SlotCardFactory` + `SlotConfiguration` + `SlotProvisioning` + `SlotRebuild` | `slotCards[]` draft/live | — | slot composition + teardown transaction |
-  | `DebugCoordinator` | — | few | needs Dear ImGui, so it is frontend-only |
-  | `NetworkCoordinator` | `sscCards` `sscCard` `fujiNetCard` | ~29 | **blocked** on the device seams below |
+  | Piece | Note |
+  |---|---|
+  | plug-time media restore | ~12 sites: `plugDiskII`/`plugHdv`/`plugCffa`/SmartPort units still `loadImage` + `setWriteBackEnabled` inline while building the card. The coordinator's `restoreMediaFromSettings()` is the replacement, but it wants the branch's two-phase shape (construct empty hardware, then restore against the finished topology) — a structural change, not a substitution. |
+  | `captureRebuildSnapshot` / `restoreRebuildSnapshot` | profile switch + Slot Config Apply still keep their own path/write-back arrays in `MainWindow_Slots.cpp`. Landing these is what makes drive 2 survive a profile switch. |
+  | `captureSmartPortPanel` / `applySmartPortPanel` | the SmartPort panel still walks units directly (`u->setWriteBackEnabled`, `u->loadImage`). |
+  | `captureDisk35` + the 3.5" routing | `routeMount35` and the Floppy Emu paths. `convertDisk35WozToPo` is already in the coordinator and unused. |
+  | `SlotCardFactory` + `SlotConfiguration` + `SlotProvisioning` + `SlotRebuild` | slot composition and the teardown transaction |
+  | `DebugCoordinator` | needs Dear ImGui, so it is frontend-only |
+  | `NetworkCoordinator` (`sscCards` `sscCard` `fujiNetCard`, ~29 sites) | **blocked** on the device seams below |
 
-  `StorageCoordinator` is the one to be careful with: unlike the four already
-  done, a mistake there costs disk images rather than a hang — it owns mount,
-  eject, write-back and the WOZ→PO conversion. Its own tests
-  (`storage_coordinator`, 596 lines) already pin per-slot restoration, a moved
-  primary HDV, CFFA policy and the session-only HDV persistence guard, so wire
-  it against those rather than by inspection.
-  → `CHANGELOG.md` 2026-08-26/27. *2-4 d left.*
+  `storage_coordinator` (596 lines) already pins per-slot restoration, a moved
+  primary HDV, CFFA policy, the session-only HDV guard and both Disk II drives
+  — wire the remaining pieces against those rather than by inspection.
+  → `CHANGELOG.md` 2026-08-26/27. *1-3 d left.*
 
 - 🟠 **No test drives the ImGui panels, so a UI-thread deadlock fails nothing**
   *(found the hard way 2026-08-27)* — wiring `PrinterCoordinator` into

@@ -708,7 +708,7 @@ void MainWindow::updateAutoTurbo()
     // Called every frame from render() (NOT from renderDiskPanelWindow, which
     // early-returns when its window is hidden — the default).
     bool anyMotorOn = false;
-    for (auto* c : diskCards) {
+    for (auto* c : diskIICards()) {
         if (c && c->isMotorOn()) { anyMotorOn = true; break; }
     }
     // Decay + poll EVERY block card (HDV + CFFA can coexist) so a load on
@@ -739,7 +739,7 @@ void MainWindow::updateAutoTurbo()
     const bool anyBusy       = anyMotorOn || hdvBusy;
     const bool turboEligible =
         diskTurboWhileMotor &&
-        (!diskCards.empty() || !blocks.empty() || !smartPorts.empty());
+        (!diskIICards().empty() || !blocks.empty() || !smartPorts.empty());
     if (turboEligible) {
         if (anyBusy && !diskTurboActive) {
             diskSavedCyclesPerFrame = controller->getCyclesPerFrame();
