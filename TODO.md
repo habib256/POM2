@@ -709,29 +709,51 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   so a FujiNet-only setup showed an unconnected printer, and a spool read with
   no lock under a comment claiming the opposite.
 
-  **`StorageCoordinator` is done** (2026-08-27, seven commits). All five
-  aliases gone; topology, media commands, the two-phase construct-then-restore,
-  both rebuild paths, the SmartPort panel and the 3.5" routing all go through
-  it. Nine defects fixed on the way, seven of them the same shape — a default
-  argument that meant "drive 1 only", or a mutation that never wrote the key
-  recording it:
+  **`StorageCoordinator` is wired** (2026-08-27, nine commits). All five
+  aliases gone; topology, media commands, two-phase construct-then-restore,
+  both rebuild paths, the SmartPort panel, the 3.5" panel and routing, the
+  flush and the shutdown persistence all go through it. Eleven defects fixed on
+  the way, most of them two shapes — a drive parameter defaulting to 0, or a
+  mutation that never wrote the key recording it:
 
   | Defect | Was |
   |---|---|
   | drive 2 never restored at startup | ctor's own restore loop, `insertDisk(path)` |
   | drive 2 lost on every profile switch | `isDiskLoaded()` / `getDiskPath()` in the snapshot |
   | drive 2 dropped by Slot Config Apply | same, in the settings sync |
+  | drive 2 never persisted on exit | same, in the shutdown loop |
   | eject-all left drive 2 mounted | `ejectDisk()` |
   | eject-all reported success over a failed write-back | return value ignored |
   | Eject disk / Eject HDV re-mounted next launch | key never cleared |
   | Disk II + HDV write-back toggles forgotten | key never written |
-  | Library 3.5" eject did nothing under a SmartPort card | `eject35()` unconditionally |
+  | 3.5" on-board eject + write-back not persisted | only the SmartPort branch wrote keys |
+  | //c+ 3.5" panel showed the wrong drives | panel excluded //c+, mount did not |
   | SmartPort unit reused across ~5 lock acquisitions | one `SmartPortUnit*` per frame |
 
-  Also removed a double restore: the ctor's loop ran AFTER the plug pass, so
-  every image was opened twice at startup.
+  Also removed a double restore (the ctor's loop ran after the plug pass, so
+  every image opened twice at startup), and made the coordinator's
+  `mountDiskII` two-phase — as written it read the file under `lockState()`,
+  which would have undone v0.8.5's fix.
 
-  **Left:**
+  **Left in `StorageCoordinator` — one item, and it is an interface change:**
+
+- 🟡 **Three coordinator mounts still read the file under the machine lock**
+  *(2026-08-27)* — `mountMediaBay`, `mountBlockBytes` and `mountHdv` do their
+  read inside `lockState()`, the one-phase form `MediaMount.h` exists to
+  prevent. The HDV case is the one measured at **25.8 ms under the lock**
+  before v0.8.5 split it, against a 20 ms PAL frame. They are therefore **not
+  wired**: `MainWindow` still calls `pom2::mountBlockCard`, which is already
+  two-phase and correct, so nothing is broken — but the coordinator's own
+  versions are a trap for whoever wires them next.
+  Fixing them is not a substitution. `MountableMediaCard::mountBay` is a
+  virtual that hides whether the target has block backing at all (the 3.5"
+  SmartPort unit does not, which is why `MediaMount.cpp`'s `mountBlockLike`
+  carries an inline-`loadImage` fallback), so the interface needs a two-phase
+  pair — prepare-unlocked / adopt-locked — before the coordinator can offer
+  one. `StorageCoordinator::mountDiskII` shows the target shape.
+  *1 d.*
+
+  **Left elsewhere:**
 
   | Coordinator | Aliases | Note |
   |---|---|---|
