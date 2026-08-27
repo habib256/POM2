@@ -737,27 +737,12 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
   **Left in `StorageCoordinator` — one item, and it is an interface change:**
 
-- 🟡 **Three coordinator mounts still read the file under the machine lock**
-  *(2026-08-27)* — `mountMediaBay`, `mountBlockBytes` and `mountHdv` do their
-  read inside `lockState()`, the one-phase form `MediaMount.h` exists to
-  prevent. The HDV case is the one measured at **25.8 ms under the lock**
-  before v0.8.5 split it, against a 20 ms PAL frame. They are therefore **not
-  wired**: `MainWindow` still calls `pom2::mountBlockCard`, which is already
-  two-phase and correct, so nothing is broken — but the coordinator's own
-  versions are a trap for whoever wires them next.
-  Fixing them is not a substitution. `MountableMediaCard::mountBay` is a
-  virtual that hides whether the target has block backing at all (the 3.5"
-  SmartPort unit does not, which is why `MediaMount.cpp`'s `mountBlockLike`
-  carries an inline-`loadImage` fallback), so the interface needs a two-phase
-  pair — prepare-unlocked / adopt-locked — before the coordinator can offer
-  one. `StorageCoordinator::mountDiskII` shows the target shape.
-  *1 d.*
-
   **Left elsewhere:**
 
   | Coordinator | Aliases | Note |
   |---|---|---|
-  | `SlotCardFactory` + `SlotConfiguration` + `SlotProvisioning` + `SlotRebuild` | `slotCards[]` draft/live | slot composition + teardown transaction |
+  | ~~`SlotCardFactory`~~ ✅ 2026-08-27 | — | seven keys' construction + ROM policy left MainWindow |
+  | `SlotConfigurationCoordinator` + `SlotProvisioningCoordinator` + `SlotRebuildCoordinator` | `slotCards[]` draft/live | the effective-plan/draft/live split, session-only boot provisioning, and the `stable → prepared → rebuilding → stable` teardown transaction |
   | `DebugCoordinator` | — | needs Dear ImGui, so frontend-only |
   | `NetworkCoordinator` | `sscCards` `sscCard` `fujiNetCard` (~29 sites) | **blocked** on the device seams below |
 
