@@ -1048,10 +1048,6 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         sscCard          = nullptr;
         sscCards.clear();
         clockCard        = nullptr;
-        mockingboardCard = nullptr;
-        phasorCard       = nullptr;
-        echoPlusCard     = nullptr;
-        echoPlusTmsCard  = nullptr;
         // The printer sources are no longer aliased here. A rebuild can hand
         // a replacement card the same allocator address, so the feed cursor's
         // identity must be invalidated explicitly or the new card's spool is
@@ -1391,7 +1387,7 @@ bool MainWindow::restartEmulationFromSettings()
         // slot bus destroys it — otherwise the audio thread's next
         // callback dereferences a freed source. The inventory covers every
         // registered source, including the second of two coexisting
-        // Mockingboard variants that the single `mockingboardCard` alias
+        // Mockingboard variants that a single last-plugged alias
         // cannot represent. Same gotcha mirrored in applyProfile's teardown.
         unregisterAllAudioSources();
         diskCard         = nullptr;
@@ -1404,10 +1400,6 @@ bool MainWindow::restartEmulationFromSettings()
         sscCard          = nullptr;
         sscCards.clear();
         clockCard        = nullptr;
-        mockingboardCard = nullptr;
-        phasorCard       = nullptr;
-        echoPlusCard     = nullptr;
-        echoPlusTmsCard  = nullptr;
         printerCoordinator_->resetFeedCursor();   // see pumpImageWriter()
         uthernetCard     = nullptr;   // see the Ethernet panel — non-owning
         uthernetIICard   = nullptr;

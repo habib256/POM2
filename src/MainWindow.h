@@ -48,6 +48,7 @@ class EmulationController;
 namespace pom2 { class StateAccess; }
 namespace pom2 { class MouseCoordinator; }
 namespace pom2 { class PrinterCoordinator; }
+namespace pom2 { class AudioCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -336,6 +337,11 @@ private:
     /// batch out after unlocking. Owns no card pointer.
     std::unique_ptr<pom2::PrinterCoordinator> printerCoordinator_;
 
+    /// Audio bus policy: owns the authoritative registration inventory used
+    /// for teardown, and resolves every Mockingboard / Phasor / Echo variant
+    /// from the live SlotBus for the mixer and the inspectors.
+    std::unique_ptr<pom2::AudioCoordinator> audioCoordinator_;
+
     std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
@@ -354,16 +360,12 @@ private:
     // replacement or a profile switch destroys the card, and the aliases were
     // read from GLFW callbacks that hold no lock. The coordinator re-resolves
     // from the live SlotBus under lockState() on every capture and route.
-    // These three are "last one plugged wins" aliases used by the mixer /
-    // panels. They are NOT a complete inventory: several of these card
-    // types are distinct catalog keys that can coexist (e.g. "mockingboard"
-    // = Variant::AC in one slot AND "mockingboard_c" = Variant::SoundII in
-    // another, which the single-instance uniqueness rule does not merge).
-    // Never drive AudioDevice teardown off them — see registeredAudioSources_.
-    MockingboardCard*            mockingboardCard = nullptr; // non-owning, owned by SlotBus
-    PhasorCard*                  phasorCard       = nullptr; // non-owning, owned by SlotBus
-    EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
-    EchoPlusTMS5220Card*         echoPlusTmsCard  = nullptr; // non-owning, owned by SlotBus
+    // The four audio-card aliases are gone. They were "last one plugged wins"
+    // and so were never a complete inventory: several of these types are
+    // distinct catalog keys that CAN coexist ("mockingboard" = Variant::AC in
+    // one slot and "mockingboard_c" = Variant::SoundII in another, which the
+    // single-instance uniqueness rule does not merge), and the mixer showed
+    // only one of them. `audioCoordinator_` enumerates every live instance.
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
     // PrinterCard / GrapplerCard / the FujiNet printer unit / the SSC printer
     // tap are the four things that can feed the ImageWriter. All four are
@@ -1073,7 +1075,10 @@ private:
     /// Remove every source added via registerAudioSource(). MUST run before
     /// `slotBus().clear()` destroys the owning cards.
     void unregisterAllAudioSources();
-    std::vector<AudioSource*> registeredAudioSources_;
+    // The registration inventory moved into `audioCoordinator_`: it is one
+    // invariant with the add/remove calls that maintain it, and teardown must
+    // drive off it rather than off the card aliases (a card can be destroyed
+    // while still registered).
 
     // ── Disk insert+boot routing (shared by Disk Library UI + CLI) ───────
     // Promoted from file-local lambdas in renderDiskLibraryWindow so

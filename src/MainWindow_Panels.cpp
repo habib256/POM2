@@ -22,6 +22,7 @@
 // It lives outside MainWindow.cpp for the reason the file-size ratchet exists:
 // the god-object does not get to grow by 250 lines of table.
 
+#include "AudioCoordinator.h"
 #include "MainWindow.h"
 #include "PrinterCoordinator.h"
 
@@ -87,9 +88,25 @@ void MainWindow::registerPanels()
     panels_.bind(P::FujiNet, RT{
         [this] { return "FujiNet" + slotSuffix(fujiNetCard); }, card(&fujiNetCard) });
     panels_.bind(P::Phasor, RT{
-        [this] { return "Phasor" + slotSuffix(phasorCard); }, card(&phasorCard) });
+        [this] {
+            const auto slots = audioCoordinator_->captureInventory().phasorSlots;
+            return slots.empty()
+                ? std::string("Phasor")
+                : "Phasor (slot " + std::to_string(slots.back()) + ")";
+        },
+        [this] {
+            return !audioCoordinator_->captureInventory().phasorSlots.empty();
+        } });
     panels_.bind(P::EchoPlus, RT{
-        [this] { return "Echo+" + slotSuffix(echoPlusCard); }, card(&echoPlusCard) });
+        [this] {
+            const auto slots = audioCoordinator_->captureInventory().echoPlusSlots;
+            return slots.empty()
+                ? std::string("Echo+")
+                : "Echo+ (slot " + std::to_string(slots.back()) + ")";
+        },
+        [this] {
+            return !audioCoordinator_->captureInventory().echoPlusSlots.empty();
+        } });
     // Availability and label both come from the coordinator's snapshot: there
     // is no PrinterCard alias to test the address of any more.
     panels_.bind(P::Printer, RT{

@@ -57,6 +57,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCoordinator.h"
+#include "AudioCoordinator.h"
 #include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
 #include "MouseGrab.h"
@@ -185,6 +186,8 @@ MainWindow::MainWindow(bool forceIIPlus)
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
       mouseCoordinator_(std::make_unique<pom2::MouseCoordinator>(*controller)),
       printerCoordinator_(std::make_unique<pom2::PrinterCoordinator>()),
+      audioCoordinator_(std::make_unique<pom2::AudioCoordinator>(
+          controller->audio(), *controller)),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -1084,8 +1087,6 @@ MainWindow::~MainWindow()
     settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
     settings->setInt   ("imagewriter_model",
                         static_cast<int>(imageWriter->model()));
-    settings->setFloat ("printer_sound_volume", printerSound->volume());
-    settings->setBool  ("printer_sound_muted",  printerSound->muted());
     settings->setBool  ("imagewriter_backpressure", printerBackPressure);
     settings->setInt   ("imagewriter_ribbon",
                         static_cast<int>(imageWriter->ribbon()));
@@ -1135,27 +1136,20 @@ MainWindow::~MainWindow()
     settings->setString("library_recents",    joinPaths(libraryRecents_));
     settings->setBool  ("library_hide_sizedate", libraryHideSizeDate_);
     settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
-    settings->setFloat ("speaker_volume",  controller->speaker().getVolume());
-    settings->setBool  ("speaker_muted",   controller->speaker().isMuted());
-    settings->setFloat ("cassette_volume", controller->cassette().getVolume());
-    settings->setBool  ("cassette_auto_rewind",
-                        controller->cassette().isAutoRewindEnabled());
-    settings->setFloat ("floppy_sound_volume",    controller->floppySound525().getVolume());
-    settings->setBool  ("floppy_sound_muted",     controller->floppySound525().isMuted());
-    settings->setFloat ("floppy_sound_volume_35", controller->floppySound35().getVolume());
-    settings->setBool  ("floppy_sound_muted_35",  controller->floppySound35().isMuted());
-    settings->setFloat ("master_volume",          controller->audio().getMasterVolume());
-    settings->setBool  ("master_muted",           controller->audio().isMasterMuted());
-    settings->setBool  ("audio_mono_downmix",     controller->audio().isMonoDownmix());
-    settings->setFloat ("speaker_pan",            controller->speaker().pan.load());
-    settings->setFloat ("cassette_pan",           controller->cassette().pan.load());
-    settings->setFloat ("floppy_sound_pan",       controller->floppySound525().pan.load());
-    settings->setFloat ("floppy_sound_pan_35",    controller->floppySound35().pan.load());
+    // One call for the whole audio block, host controls and slot cards alike.
+    // The slot-card half is why it matters: the old code persisted a single
+    // `mockingboard_volume` read through the last-plugged alias, so with two
+    // Mockingboard variants on the bus one of them silently inherited the
+    // other's level on the next launch. Each live card now gets its own
+    // per-slot key, and the highest slot of each type still writes the legacy
+    // type-wide key so existing state.cfg files keep working.
+    audioCoordinator_->persist(*settings,
+                               controller->speaker(),
+                               controller->cassette(),
+                               controller->floppySound525(),
+                               controller->floppySound35(),
+                               *printerSound);
     settings->setString("char_rom_locale",        pom2::charRomLocaleKey(charRomLocale));
-    if (mockingboardCard) {
-        settings->setFloat("mockingboard_volume", mockingboardCard->getVolume());
-        settings->setBool ("mockingboard_muted",  mockingboardCard->isMuted());
-    }
 
     // Kiosk is a read-only launcher: don't write state.cfg, so the disk it
     // booted (and any HDV card auto-plugged for it by ensureHdvCardForBoot)
@@ -1222,24 +1216,15 @@ MainWindow::~MainWindow()
 
 void MainWindow::registerAudioSource(AudioSource* src)
 {
-    if (!src) return;
-    if (!controller->audio().isAvailable()) return;
-    // Idempotent: the printer sound is re-registered from every
-    // plugSlotsFromSettings() pass, and a double entry would mix the source
-    // twice and then leave a dangling pointer behind after one removeSource().
-    for (AudioSource* s : registeredAudioSources_)
-        if (s == src) return;
-    controller->audio().addSource(src);
-    registeredAudioSources_.push_back(src);
+    // Idempotent, and it stays idempotent: the printer sound is re-registered
+    // from every plugSlotsFromSettings() pass, and a double entry would mix
+    // the source twice and then dangle after a single removeSource().
+    audioCoordinator_->registerSource(src);
 }
 
 void MainWindow::unregisterAllAudioSources()
 {
-    if (controller->audio().isAvailable()) {
-        for (AudioSource* src : registeredAudioSources_)
-            controller->audio().removeSource(src);
-    }
-    registeredAudioSources_.clear();
+    audioCoordinator_->unregisterAll();
 }
 
 void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
@@ -1741,7 +1726,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setVolume(settings->getFloat("phasor_volume", 0.5f));
         card->setMuted (settings->getBool ("phasor_muted",  false));
         registerAudioSource(card->audioSource());
-        phasorCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1756,7 +1740,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setVolume(settings->getFloat("echoplus_volume", 0.7f));
         card->setMuted (settings->getBool ("echoplus_muted",  false));
         registerAudioSource(card->audioSource());
-        echoPlusCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1767,7 +1750,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // Audio is silent. See EchoPlusTMS5220Card.h for the chipset
         // sourcing notes.
         auto card = std::make_unique<EchoPlusTMS5220Card>(s);
-        echoPlusTmsCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1836,7 +1818,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setVolume(settings->getFloat("mockingboard_volume", 0.5f));
         card->setMuted(settings->getBool ("mockingboard_muted",  false));
         registerAudioSource(card->audioSource());
-        mockingboardCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
