@@ -4719,6 +4719,7 @@ add_executable(test_uthernet2_w5100
     uthernet2_w5100_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/UthernetIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
+    ${CMAKE_SOURCE_DIR}/src/W5100HostSockets.cpp
     ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
 target_include_directories(test_uthernet2_w5100 PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -5008,6 +5009,7 @@ set_tests_properties(disk35_atomic_save PROPERTIES TIMEOUT 20)
 add_executable(test_w5100_udp_recv
     w5100_udp_recv_test.cpp
     ${CMAKE_SOURCE_DIR}/src/W5100Device.cpp
+    ${CMAKE_SOURCE_DIR}/src/W5100HostSockets.cpp
 )
 target_include_directories(test_w5100_udp_recv PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)
@@ -5690,4 +5692,18 @@ pom2_add_headless_test(test_pom2_core_api
     LINK_LIBRARIES pom2_core_test
     INCLUDE_DIRECTORIES ${CMAKE_SOURCE_DIR}/include
     COMPILE_DEFINITIONS POM2_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()
+
+# ─── W5100 host-socket seam ─────────────────────────────────────────────
+# Drives W5100Device with an injected socket factory, so TCP connect
+# behaviour is exercised with NO host socket opened — nothing to bind, and
+# nothing for a sandboxed or parallel CI run to collide with. The SYN_SENT
+# cases in particular were previously reachable only against a real
+# unreachable peer, i.e. timing-dependent.
+if(TARGET pom2_core_test)
+pom2_add_headless_test(test_w5100_socket_seam
+    NAME w5100_socket_seam TIMEOUT 10 PORTABLE
+    SOURCES w5100_socket_seam_test.cpp
+    LINK_LIBRARIES pom2_core_test
+    INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

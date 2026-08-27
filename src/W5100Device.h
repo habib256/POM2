@@ -63,7 +63,8 @@
 #define POM2_W5100_DEVICE_H
 
 #include "NetworkBackend.h"
-#include "SocketCompat.h"   // socket_t / kInvalidSocket for Socket::fd
+#include "SocketCompat.h"
+#include "W5100Socket.h"   // socket_t / kInvalidSocket for Socket::fd
 
 #include <array>
 #include <cstddef>
@@ -181,6 +182,11 @@ public:
     /// a plain blocking getaddrinfo() could stall emulation for seconds.
     static constexpr int kDnsWaitMs = 120;
 
+    /// Swap the socket factory. Nothing injected → the production host
+    /// factory, installed lazily on first use so existing construction sites
+    /// are unchanged. Tests inject before any socket is opened.
+    void setSocketFactory(std::unique_ptr<W5100SocketFactory> factory);
+
     W5100Device();
     ~W5100Device();
 
@@ -252,6 +258,8 @@ public:
     void loadSnapshotState(const uint8_t* data, std::size_t len);
 
 private:
+    /// Lazily initialised to the production host factory.
+    std::unique_ptr<W5100SocketFactory> socketFactory_;
     /// One of the chip's four sockets. `fd` is a host socket in TCP/UDP
     /// mode and `kInvalidSocket` otherwise; the raw modes need no host
     /// socket because they go out through the NetworkBackend.
@@ -273,7 +281,10 @@ private:
         /// Bytes currently staged in the RX ring (SN_RX_RSR).
         uint16_t rxSize  = 0;
 
-        socket_t fd        = kInvalidSocket;
+        /// The host socket, or null when this W5100 socket is closed. An
+        /// owning handle rather than a raw fd: the interface is what a test
+        /// substitutes to drive device behaviour without opening anything.
+        std::unique_ptr<W5100HostSocket> host;
         uint8_t status     = kW5100SnSrClosed;
         /// Per-protocol header the chip prepends to received data in the
         /// RX ring (`Uthernet2.cpp:212-234`): none for TCP, IP+port+len
@@ -289,7 +300,7 @@ private:
 
         bool isOpen() const
         {
-            return isValidSocket(fd) &&
+            return host != nullptr &&
                    (status == kW5100SnSrEstablished ||
                     status == kW5100SnSrCloseWait ||
                     status == kW5100SnSrUdp);
