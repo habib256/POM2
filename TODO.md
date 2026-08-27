@@ -388,8 +388,20 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   $C05E/$C05F under both IOUDIS states, across all three //c dumps, skipping
   when none is present so CI stays ROM-free. Mutation-checked — narrowing the
   gate to $C05D makes it fail.
-- 🟢 **II+ broadcasts `$C00C/D` on reads while IIe is write-only** — the other
-  half of the 2026-07-12 Chat Mauve review, still unchecked.
+- 🟢 **II+ `$C00C/D` on reads is CORRECT, and now pinned** (checked
+  2026-08-27, the other half of the 2026-07-12 Chat Mauve review). The
+  asymmetry is deliberate: a IIe's 80COL switch is genuinely write-only (a
+  read of `$C000-$C00F` returns the keyboard latch and never reaches the IOU),
+  while a II+ has no IOU and no 80COL signal at all — so POM2 synthesises the
+  RGB card's FIFO data line from the bus access itself, which is the only way
+  a Le Chat Mauve / Video-7 class card is usable there. The `display.eightyCol`
+  it sets is inert for rendering on a II+: every consumer in `Apple2Display`
+  gates on `mem.isIIE()`.
+  Pinned by `iiplus_rgb_data_line`, which checks both halves — the card sees
+  the data line and clocks its FIFO to COL140, AND `width()` stays 280 on the
+  II+ while a IIe with the same flag goes to 560. Mutation-checked both ways:
+  making the II+ branch write-only, or dropping the `isIIE()` gate in the
+  renderer, each make it fail.
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
   $Cs00-$Cs0F, enough for detection (`EchoPlusTMS5220Card.h:15-17`).
