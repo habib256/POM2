@@ -291,6 +291,7 @@ set(SOURCES
     src/SnapshotIO.cpp
     src/SpeakerDevice.cpp
     src/SuperSerialCard.cpp
+    src/SuperSerialTcpTransport.cpp
     src/SystemProfile.cpp
     src/CommandPalette_ImGui.cpp
     src/Pom2Theme.cpp
@@ -807,6 +808,7 @@ add_library(pom2_core_test STATIC
     src/SnapshotIO.cpp
     src/SpeakerDevice.cpp
     src/SuperSerialCard.cpp
+    src/SuperSerialTcpTransport.cpp
     src/SystemProfile.cpp
     src/AppleIIeKeyboardLayout.cpp
 )
@@ -879,6 +881,7 @@ add_executable(pom2_headless
     src/Ssi263.cpp
     src/Ssi263PhonemeData.cpp
     src/SuperSerialCard.cpp
+    src/SuperSerialTcpTransport.cpp
     src/SystemProfile.cpp
 )
 target_include_directories(pom2_headless PRIVATE

@@ -51,11 +51,14 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+
+namespace pom2 { class SuperSerialTransport; }
 
 class SuperSerialCard : public SlotPeripheral
 {
@@ -80,6 +83,11 @@ public:
     /// Tear down the listener and any active connection. Safe to call from
     /// the UI thread; the worker is joined before returning.
     void stopListening();
+
+    /// Replace the host transport. A card constructed without one creates the
+    /// loopback TCP transport on first startListening(); a test injects a
+    /// transport that opens no socket and starts no thread.
+    void setTransport(std::unique_ptr<pom2::SuperSerialTransport> transport);
 
     /// Optional "telnet → keyboard" bridge. When set, every byte the
     /// SSC receives over TCP in telnet TEXT mode is *also* forwarded to
@@ -119,6 +127,39 @@ public:
     /// TX queue. Test-only public entry point — production code uses the
     /// worker thread which calls the same method internally.
     void deliverRxBytes(const uint8_t* data, size_t n);
+
+    // ── Transport hooks ──────────────────────────────────────────────────
+    // The three calls a host transport makes into the card. They exchange
+    // BYTES and connection edges only: the transport owns its socket and its
+    // thread, the card owns the rings, the telnet parser and the pacing.
+    //
+    // Everything a transport needs is here, which is the test that the split
+    // is in the right place — a transport that opens no socket at all (a
+    // fake, driving the card directly) needs nothing else.
+
+    /// Text-mode inbound filtering: strip telnet IAC negotiation, then
+    /// normalise line endings. Returns the surviving byte count, in place.
+    /// Raw mode skips this entirely — the point of raw mode is that nothing
+    /// touches the stream.
+    size_t processTransportTextRx(uint8_t* data, size_t n);
+
+    /// Hand received bytes to the card: into the RX ring, and — in text mode
+    /// only — to the keyboard sink. Raw mode deliberately does not reach the
+    /// keyboard: a binary transfer is not typing.
+    void deliverTransportBytes(const uint8_t* data, size_t n, bool textMode);
+
+    /// Take whatever the guest has queued, honouring the emulated line rate.
+    /// Appends to `out` (never clears it) because telnet escaping can EXPAND
+    /// the stream — a literal $FF becomes IAC IAC — so a fixed-capacity
+    /// buffer would have to be able to fail, and a partial escape sequence on
+    /// the wire is a corrupt stream. Returns the number of guest bytes taken.
+    size_t drainTransportTx(std::vector<uint8_t>& out);
+
+    /// Connection edges. `resetTelnet()` must run on every new connection:
+    /// the IAC parser and the CR state persist across recv() chunks, so a
+    /// half-parsed sequence from a dropped client would corrupt the next one.
+    void onTransportConnected();
+    void onTransportDisconnected();
 
     /// Printer tap — the //c's real printer port IS this card (slot 1),
     /// so the host-side ImageWriter needs to see the TX byte stream the
@@ -210,6 +251,10 @@ public:
 private:
     int slot;
     std::array<uint8_t, 256> rom{};
+    /// The host bridge. Null until startListening() creates the default TCP
+    /// transport, or a test injects one. The card keeps `listening` as a
+    /// mirror so the existing ACIA/status paths are unchanged.
+    std::unique_ptr<pom2::SuperSerialTransport> transport_;
     std::atomic<bool> listening { false };
     std::atomic<bool> connected { false };
     uint16_t port = kDefaultPort;
@@ -226,16 +271,6 @@ private:
     // out of accept()/recv() without a torn read, and so close() happens
     // exactly once (the worker is the sole closer of clientFd). See
     // stopListening()/closeClient().
-    // pom2::socket_t, not int: Winsock's SOCKET is an unsigned handle whose
-    // failure value is INVALID_SOCKET rather than -1 (SocketCompat.h).
-    std::atomic<pom2::socket_t> listenFd { pom2::kInvalidSocket };
-    std::atomic<pom2::socket_t> clientFd { pom2::kInvalidSocket };
-    // Prevent shutdown/load from acting on a descriptor after closeClient()
-    // closed it and the kernel recycled the numeric handle.
-    mutable std::mutex fdLifeMtx_;
-    std::thread worker;
-    std::atomic<bool> stopRequested { false };
-
     // 6551 status-register bit layout (MAME `mos6551.h:53-61`).
     static constexpr uint8_t SR_PARITY_ERROR  = 0x01;
     static constexpr uint8_t SR_FRAMING_ERROR = 0x02;
@@ -379,8 +414,6 @@ private:
     bool   printerSpoolTrimWarned_ = false;
 
     void buildRom();
-    void runWorker();
-    void closeClient();
 };
 
 #endif // POM2_SUPER_SERIAL_CARD_H

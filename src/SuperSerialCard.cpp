@@ -4,6 +4,9 @@
 // Copyright (C) 2026
 
 #include "SuperSerialCard.h"
+
+#include "SuperSerialTcpTransport.h"
+#include "SuperSerialTransport.h"
 #include "Pom2Build.h"
 #include "Logger.h"
 #include "ThreadGuard.h"
@@ -166,290 +169,113 @@ SuperSerialCard::~SuperSerialCard()
 
 bool SuperSerialCard::startListening(uint16_t newPort)
 {
-#if !POM2_HAS_SOCKETS
-    // No BSD sockets in the browser — telnet bridge is unavailable.
-    port = newPort;
-    pom2::log().info("SSC", "telnet listener disabled in WASM build");
-    return false;
-#else
-    if (listening && newPort == port && worker.joinable()) return true;
-    // Tear down any previous listener. This also covers a worker that
-    // exited on its own (listen-socket error): the worker clears
-    // `listening` on its way out, but the dead std::thread must still be
-    // join()ed here — assigning a new thread over a joinable member calls
-    // std::terminate — and the stale listenFd must be closed before we
-    // bind a fresh one. stopListening() is a no-op when nothing is live.
-    stopListening();
-    port = newPort;
-    pom2::ensureSocketStack();     // Winsock needs WSAStartup; no-op elsewhere
-    const pom2::socket_t lfd = ::socket(AF_INET, SOCK_STREAM, 0);
-    listenFd = lfd;
-    if (!pom2::isValidSocket(lfd)) {
-        pom2::log().warn("SSC", "socket() failed: " + pom2::lastSocketErrorText());
-        return false;
-    }
-    // Re-bind after our own TIME_WAIT, but never let a second live process
-    // steal the telnet port — the two are the SAME option on POSIX and
-    // opposite ones on Winsock. SocketCompat.h, trap 6.
-    pom2::setListenerBindPolicy(lfd);
-    sockaddr_in addr{};
-    addr.sin_family      = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port        = htons(port);
-    if (::bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        pom2::log().warn("SSC",
-            "bind 127.0.0.1:" + std::to_string(port) + " failed: " +
-            pom2::lastSocketErrorText());
-        pom2::closeHostSocketValue(lfd);
-        listenFd = pom2::kInvalidSocket;
-        return false;
-    }
-    if (::listen(lfd, 1) != 0) {
-        pom2::log().warn("SSC", "listen() failed: " + pom2::lastSocketErrorText());
-        pom2::closeHostSocketValue(lfd);
-        listenFd = pom2::kInvalidSocket;
-        return false;
-    }
-
-    stopRequested = false;
-    listening     = true;
-    worker        = pom2::guardedThread("SSC", [this] { runWorker(); });
-    pom2::log().info("SSC",
-        "listening on 127.0.0.1:" + std::to_string(port) +
-        " (telnet to connect to slot " + std::to_string(slot) + ")");
-    return true;
-#endif
+    // The listener, its worker thread and both sockets live in the transport.
+    // Created lazily so a card that never bridges never acquires a thread.
+    if (!transport_) transport_ = pom2::makeSuperSerialTcpTransport(*this, slot);
+    const bool ok = transport_->start(newPort);
+    port = transport_->port();
+    listening = transport_->isListening();
+    return ok;
 }
 
 void SuperSerialCard::stopListening()
 {
-#if !POM2_HAS_SOCKETS
-    listening = false;
-    return;
-#else
-    if (!listening && !worker.joinable()) return;
-    stopRequested = true;
-    // Wake the worker out of recv()/accept() WITHOUT close()-ing the fds
-    // under it (close + recv on the same fd from two threads is a use-after-
-    // close / fd-recycle hazard). shutdown() only half-closes; the actual
-    // close() of clientFd is the worker's job (on its exit path), and
-    // listenFd is closed here only AFTER join() so nothing recv()s/accept()s
-    // a recycled descriptor.
-    {
-        std::lock_guard<std::mutex> life(fdLifeMtx_);
-        pom2::shutdownBoth(clientFd.load());
-        pom2::shutdownBoth(listenFd.load());
-    }
-    if (worker.joinable()) worker.join();
-    {
-        std::lock_guard<std::mutex> life(fdLifeMtx_);
-        pom2::closeHostSocketValue(listenFd.exchange(pom2::kInvalidSocket));
-        // Worker closed clientFd on exit; exchange makes this a no-op.
-        pom2::closeHostSocketValue(clientFd.exchange(pom2::kInvalidSocket));
-    }
-    listening = false;
-#endif
-}
-
-void SuperSerialCard::closeClient()
-{
-#if !POM2_HAS_SOCKETS
+    if (!transport_) { listening = false; return; }
+    transport_->stop();
+    listening = transport_->isListening();
     connected = false;
-    return;
-#else
-    // exchange() guarantees exactly one close even if called from two paths.
-    std::lock_guard<std::mutex> life(fdLifeMtx_);
-    const pom2::socket_t fd = clientFd.exchange(pom2::kInvalidSocket);
-    if (pom2::isValidSocket(fd)) {
-        pom2::shutdownBoth(fd);
-        pom2::closeHostSocketValue(fd);
-    }
-    connected = false;
-#endif
 }
 
-#if POM2_HAS_SOCKETS
-void SuperSerialCard::runWorker()
+void SuperSerialCard::setTransport(std::unique_ptr<pom2::SuperSerialTransport> t)
 {
-    while (!stopRequested) {
-        // poll-then-accept via SocketUtil — the macOS shutdown-vs-accept
-        // deadlock rationale lives there (this destructor runs under
-        // stateMutex during profile switches, so a parked accept() was a
-        // UI-thread hang).
-        sockaddr_in peer{};
-        pom2::socket_t fd = pom2::kInvalidSocket;
-        const auto pa = pom2::pollAcceptOnce(listenFd.load(), 200, fd, peer);
-        if (pa == pom2::PollAccept::Retry)    continue;
-        if (pa == pom2::PollAccept::Shutdown) break;
-        pom2::disableSigpipe(fd);
-        // Disable Nagle so single-character writes from the Apple II
-        // appear at the telnet client immediately.
-        pom2::setSockOptInt(fd, IPPROTO_TCP, TCP_NODELAY, 1);
-        // Make read non-blocking so the worker can drain TX between RX
-        // arrivals without sleeping on input.
-        pom2::setNonBlocking(fd);
-
-        {
-            // Publish the accepted descriptor under the same lifetime lock
-            // used by stopListening()/closeClient().  Otherwise stop could
-            // observe INVALID, then the worker could publish a client that
-            // missed the shutdown wakeup.
-            std::lock_guard<std::mutex> life(fdLifeMtx_);
-            if (stopRequested) {
-                pom2::closeHostSocketValue(fd);
-                break;
-            }
-            clientFd = fd;
-            connected = true;
-        }
-        resetTelnet();   // fresh IAC parser state per connection
-        onConnectionEdge(true);
-        pom2::log().info("SSC",
-            std::string("client connected from ") +
-            pom2::peerAddressText(peer));
-
-        // Bridge loop: pull bytes from socket → rxBuf, push txBuf → socket.
-        // Sleep briefly between iterations to avoid a hot spin when both
-        // queues are idle.
-        //
-        // `pendingOut` holds bytes already popped from txBuf (and telnet-
-        // escaped) but not yet accepted by the kernel. The client socket is
-        // O_NONBLOCK, so a full TCP send window returns EAGAIN or a short
-        // send — the remainder stays queued here and is retried on the next
-        // iteration instead of being silently dropped (or, worse, the
-        // EAGAIN being treated as a fatal error and disconnecting).
-        std::vector<uint8_t> pendingOut;
-        uint8_t scratch[256];
-        while (!stopRequested && pom2::isValidSocket(clientFd.load())) {
-            // Raw mode gates BOTH directions of telnet processing; sample
-            // once per iteration so RX filtering, sink forwarding, and TX
-            // escaping agree within the iteration.
-            const bool raw = rawMode_.load(std::memory_order_relaxed);
-            const pom2::iolen_t got =
-                pom2::recvSocket(clientFd, scratch, sizeof(scratch));
-            if (got > 0) {
-                size_t n = static_cast<size_t>(got);
-                // Raw mode: skip both filters so XMODEM/Kermit/ADTPro
-                // see every byte (including $FF and bare LFs).
-                if (!raw) {
-                    n = processTelnetRx(scratch, n);
-                    n = normalizeLineEndings(scratch, n, telnetPrevCR_);
-                }
-                if (n > 0) {
-                    deliverRxBytes(scratch, n);
-                    // Keyboard-sink forwarding is a TEXT-mode convenience
-                    // (telnet session typing straight into BASIC). In raw
-                    // mode the stream is 8-bit binary (XMODEM / ADTPro
-                    // payload) — spraying it into the keyboard paste queue
-                    // would type garbage, so the ACIA RX queue above is
-                    // the only consumer then.
-                    if (!raw) {
-                        // Snapshot the keyboard sink under the same lock
-                        // the queues use, then drop the lock before calling
-                        // out — `Memory::queueKey` takes its own mutex and
-                        // we MUST NOT hold ours during that.
-                        std::function<void(uint8_t)> sink;
-                        {
-                            std::lock_guard<std::mutex> lk(bufferMtx);
-                            sink = keyboardSink;
-                        }
-                        if (sink) {
-                            // The RX filters above normalised line endings
-                            // for this (non-raw) path — forward each byte
-                            // to the Apple II keyboard latch.
-                            for (size_t i = 0; i < n; ++i) {
-                                sink(scratch[i]);
-                            }
-                        }
-                    }
-                }
-            } else if (got == 0) {
-                // Peer closed.
-                pom2::log().info("SSC", "client disconnected");
-                break;
-            } else if (!pom2::errWouldBlock(pom2::lastSocketError())) {
-                pom2::log().info("SSC",
-                    "recv error: " + pom2::lastSocketErrorText());
-                break;
-            }
-
-            // Drain TX buffer into pendingOut. Rate-limited if a baud-rate
-            // divider has been programmed; otherwise taken wholesale. Only
-            // refill once the previous chunk has fully left — keeps memory
-            // bounded and the pacing budget honest (the budget is charged
-            // per GUEST byte at pop time, before telnet escaping).
-            if (pendingOut.empty()) {
-                std::lock_guard<std::mutex> lk(bufferMtx);
-                const auto now = std::chrono::steady_clock::now();
-                if (bytesPerSecond_ > 0.0) {
-                    const double dt = std::chrono::duration<double>(
-                        now - lastDrainTime_).count();
-                    // Cap the budget at one ring's worth so a long idle
-                    // followed by a flush doesn't dump a backlog at once
-                    // — real silicon clocks one byte at a time, not in
-                    // bursts.
-                    sendBudget_ += dt * bytesPerSecond_;
-                    if (sendBudget_ > static_cast<double>(kBufCap))
-                        sendBudget_ = static_cast<double>(kBufCap);
-                    const size_t take = static_cast<size_t>(sendBudget_);
-                    size_t n = 0;
-                    while (n < take && !txBuf.empty()) {
-                        const uint8_t b = txBuf.front();
-                        txBuf.pop_front();
-                        if (raw) pendingOut.push_back(b);
-                        else     appendTelnetTxEscaped(pendingOut, b);
-                        ++n;
-                    }
-                    sendBudget_ -= static_cast<double>(n);
-                } else if (!txBuf.empty()) {
-                    pendingOut.reserve(txBuf.size());
-                    while (!txBuf.empty()) {
-                        const uint8_t b = txBuf.front();
-                        txBuf.pop_front();
-                        if (raw) pendingOut.push_back(b);
-                        else     appendTelnetTxEscaped(pendingOut, b);
-                    }
-                }
-                lastDrainTime_ = now;
-            }
-            if (!pendingOut.empty() && pom2::isValidSocket(clientFd.load())) {
-                // SIGPIPE-proof send (SocketUtil rule 2): a peer that
-                // vanished mid-send must surface as EPIPE, not a signal
-                // that kills the whole process.
-                const pom2::iolen_t sent = pom2::sendNoSignal(
-                    clientFd, pendingOut.data(), pendingOut.size());
-                const int sendErr = (sent < 0) ? pom2::lastSocketError() : 0;
-                if (sent > 0) {
-                    pendingOut.erase(pendingOut.begin(),
-                                     pendingOut.begin() + sent);
-                } else if (sent < 0 && (pom2::errWouldBlock(sendErr) ||
-                                        pom2::errInterrupted(sendErr))) {
-                    // Transient: TCP window full / interrupted — keep the
-                    // bytes queued in pendingOut and retry after the idle
-                    // backoff below. NOT a disconnect.
-                } else {
-                    // Real socket error (EPIPE / ECONNRESET / …) → drop the
-                    // client. (send() == 0 can't happen for n > 0.)
-                    pom2::log().info("SSC",
-                        "send error: " + pom2::socketErrorText(sendErr));
-                    break;
-                }
-            }
-
-            // Idle backoff. Tight enough that interactive typing feels
-            // instantaneous; slow enough to avoid burning a core.
-            std::this_thread::sleep_for(std::chrono::microseconds(2000));
-        }
-        closeClient();
-        onConnectionEdge(false);
-    }
-    // The worker can exit on its own (listen-socket error) — reflect that
-    // in `listening` so the UI/status shows the truth and a subsequent
-    // startListening() re-arms instead of claiming success against a dead
-    // thread. stopListening() still join()s us via worker.joinable().
-    listening = false;
+    // Replacing a live transport must not leave its thread running.
+    if (transport_) transport_->stop();
+    transport_ = std::move(t);
+    listening = transport_ && transport_->isListening();
 }
-#endif // POM2_HAS_SOCKETS
+
+// ── Transport hooks ─────────────────────────────────────────────────────
+//
+// Moved verbatim out of runWorker(): the filtering, the delivery fan-out and
+// the paced drain are card behaviour, and they stayed inside the worker only
+// because the worker was a card member. Every lock they take is the card's.
+
+size_t SuperSerialCard::processTransportTextRx(uint8_t* data, size_t n)
+{
+    n = processTelnetRx(data, n);
+    return normalizeLineEndings(data, n, telnetPrevCR_);
+}
+
+void SuperSerialCard::deliverTransportBytes(const uint8_t* data, size_t n,
+                                            bool textMode)
+{
+    if (n == 0) return;
+    deliverRxBytes(data, n);
+    if (!textMode) return;
+
+    // Copy the sink under the lock and call it outside: it is host-supplied
+    // (the paste / keyboard path) and must not run with bufferMtx held.
+    std::function<void(uint8_t)> sink;
+    {
+        std::lock_guard<std::mutex> lk(bufferMtx);
+        sink = keyboardSink;
+    }
+    if (!sink) return;
+    for (size_t i = 0; i < n; ++i) sink(data[i]);
+}
+
+size_t SuperSerialCard::drainTransportTx(std::vector<uint8_t>& out)
+{
+    const bool raw = rawMode_.load(std::memory_order_relaxed);
+    size_t taken = 0;
+
+    std::lock_guard<std::mutex> lk(bufferMtx);
+    const auto now = std::chrono::steady_clock::now();
+    if (bytesPerSecond_ > 0.0) {
+        // Credit accrues with wall time and is capped at one buffer, so a
+        // long pause cannot burst the whole ring onto the wire at once — the
+        // emulated line has a speed and the far end should see it.
+        const double dt =
+            std::chrono::duration<double>(now - lastDrainTime_).count();
+        sendBudget_ += dt * bytesPerSecond_;
+        if (sendBudget_ > static_cast<double>(kBufCap))
+            sendBudget_ = static_cast<double>(kBufCap);
+        const size_t take = static_cast<size_t>(sendBudget_);
+        while (taken < take && !txBuf.empty()) {
+            const uint8_t b = txBuf.front();
+            txBuf.pop_front();
+            if (raw) out.push_back(b);
+            else     appendTelnetTxEscaped(out, b);
+            ++taken;
+        }
+        sendBudget_ -= static_cast<double>(taken);
+    } else if (!txBuf.empty()) {
+        // Unthrottled: the guest asked for no rate limit.
+        out.reserve(out.size() + txBuf.size());
+        while (!txBuf.empty()) {
+            const uint8_t b = txBuf.front();
+            txBuf.pop_front();
+            if (raw) out.push_back(b);
+            else     appendTelnetTxEscaped(out, b);
+            ++taken;
+        }
+    }
+    lastDrainTime_ = now;
+    return taken;
+}
+
+void SuperSerialCard::onTransportConnected()
+{
+    resetTelnet();   // fresh IAC + CR state per connection
+    connected = true;
+    onConnectionEdge(true);
+}
+
+void SuperSerialCard::onTransportDisconnected()
+{
+    connected = false;
+    onConnectionEdge(false);
+}
 
 void SuperSerialCard::deliverRxBytes(const uint8_t* data, size_t n)
 {
