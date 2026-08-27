@@ -55,6 +55,7 @@
 //      as a side effect.
 
 #include "FujiNetCard.h"
+#include "FujiNetCardFactory.h"
 #include "M6502.h"
 #include "Memory.h"
 #include "SlipFramer.h"
@@ -237,7 +238,7 @@ struct Machine {
         mem.setCpu(cpu.get());
         cpu->hardReset();
 
-        auto c = std::make_unique<FujiNetCard>(kSlot);
+        auto c = pom2::makeFujiNetCard(kSlot);
         card = c.get();
         card->setMemory(&mem);
         card->setCpu(cpu.get());

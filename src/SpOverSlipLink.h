@@ -78,20 +78,17 @@
 #include <vector>
 
 #include "FujiNetLink.h"
+#include "FujiNetTransport.h"
 
 namespace pom2 {
 
 /// The production FujiNetLink: SLIP framing over TCP loopback or a USB CDC
 /// device, plus the helper process, timeouts and resync the interface
 /// deliberately does not expose.
-class SpOverSlipLink : public FujiNetLink
+class SpOverSlipLink : public FujiNetLink, public FujiNetTransport
 {
 public:
-    /// Default round-trip budget. Loopback answers in microseconds and a real
-    /// board over USB in single-digit milliseconds, so this is ~50x headroom
-    /// for the normal case while keeping a dead peer to a quarter-second
-    /// stall — one dropped frame, once, instead of a full second.
-    static constexpr int kDefaultTimeoutMs = 250;
+    // kDefaultTimeoutMs is inherited from FujiNetTransport.
     static constexpr int kMinTimeoutMs     = 50;
     static constexpr int kMaxTimeoutMs     = 5000;
 
@@ -118,13 +115,6 @@ public:
     // Response is inherited from FujiNetLink: the reply shape belongs to the
     // SmartPort protocol both ends speak, not to this transport.
 
-    struct Stats {
-        uint64_t calls    = 0;
-        uint64_t timeouts = 0;
-        uint64_t stale    = 0;   ///< responses discarded on sequence mismatch
-        uint64_t bytesOut = 0;
-        uint64_t bytesIn  = 0;
-    };
 
     SpOverSlipLink();
     ~SpOverSlipLink();
@@ -137,37 +127,37 @@ public:
     // number spaces to merge, which no real configuration needs. Changing
     // transport while running restarts the worker.
 
-    enum class Mode { Off, Tcp, Serial };
+    // Mode and Stats are inherited from FujiNetTransport.
 
-    void setTcpMode(uint16_t port);
-    void setSerialMode(std::string devicePath, int baud);
-    void setOff();
-    Mode mode() const { return mode_; }
+    void setTcpMode(uint16_t port) override;
+    void setSerialMode(std::string devicePath, int baud) override;
+    void setOff() override;
+    Mode mode() const override { return mode_; }
 
     /// The configured transport parameters, whether or not that transport is
     /// the active one — the panel edits both and the host persists both, so a
     /// user who switches TCP → serial → TCP does not lose their port.
-    uint16_t           tcpPort()    const { return tcpPort_; }
-    const std::string& serialPath() const { return serialPath_; }
-    int                serialBaud() const { return serialBaud_; }
+    uint16_t           tcpPort()    const override { return tcpPort_; }
+    const std::string& serialPath() const override { return serialPath_; }
+    int                serialBaud() const override { return serialBaud_; }
 
     /// Start the worker. Returns false (with `errOut` filled) when the chosen
     /// transport could not even be armed — a TCP port already in use, say.
-    bool start(std::string& errOut);
+    bool start(std::string& errOut) override;
     /// Stop the worker, join it, and release the peer. Safe to call twice.
-    void stop();
-    bool isRunning() const { return running_.load(); }
+    void stop() override;
+    bool isRunning() const override { return running_.load(); }
 
     // ── State for the panel ───────────────────────────────────────────────
     bool        isConnected() const override;
-    std::string describe() const;
-    std::string lastError() const;
+    std::string describe() const override;
+    std::string lastError() const override;
     std::vector<SpDevice> devices() const override;
     std::size_t deviceCount() const override;
-    Stats       stats() const;
+    Stats       stats() const override;
 
-    int  timeoutMs() const { return timeoutMs_.load(); }
-    void setTimeoutMs(int ms);
+    int  timeoutMs() const override { return timeoutMs_.load(); }
+    void setTimeoutMs(int ms) override;
 
     // ── SmartPort calls (CPU thread) ──────────────────────────────────────
     // `unit` is the SmartPort unit number, 1-based. Unit 0 addresses the bus

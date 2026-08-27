@@ -812,6 +812,24 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   left in `W5100Device` when the socket seam landed: an async mailbox with an
   in-flight cap, a bounded wait and its own cache, wired to register reads.
   Its own pass, and not on anything's critical path.
+- ✅ **FujiNetCard is a DEVICE again** *(done 2026-08-27)* — it was the one
+  card classified RUNTIME, and the reason was ownership rather than behaviour:
+  it held `SpOverSlipLink` (worker thread, sockets, helper process) and
+  `FujiNetNetDevice` (host sockets) **by value**. Two new device-layer
+  interfaces — `FujiNetTransport` (host lifecycle: arm a transport, start/stop
+  the worker, counters) and `FujiNetNetwork` (the `N:` device as the card sees
+  it) — join the existing `FujiNetLink` (protocol), with the concrete
+  implementations staying at RUNTIME and `makeFujiNetCard()` as the only place
+  that names them. Same seam shape as `SuperSerialTransport` and
+  `W5100Socket`. Two side effects worth more than the reclassification: the
+  `setLinkForTesting` hook is **gone** from the production header (injection
+  makes it redundant — seam-test cards now own a fake link plus the null
+  transport/network and *cannot* open a socket), and `NetworkCoordinator`'s
+  snapshot binds the protocol and lifecycle surfaces separately so the call
+  site shows which is which. Enforcement verified by mutation: adding
+  `<thread>` or `SocketCompat.h` to `FujiNetCard.h` now fails configure with a
+  layer violation — neither was catchable while the card lived at RUNTIME.
+
 - ✅ **The SDK install contract** *(done 2026-08-27)* — POM2 is now consumable
   as a **dependency**, not only as a build. `pom2_core` is a real installable
   STATIC target (the source list `POM2_CORE_SOURCES` is shared with

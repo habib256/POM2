@@ -286,6 +286,7 @@ set(SOURCES
     src/SpTcpTransport.cpp
     src/SpSerialTransport.cpp
     src/FujiNetCard.cpp
+    src/FujiNetCardFactory.cpp
     src/FujiNetNetDevice.cpp
     src/FujiNet_ImGui.cpp
     src/SmartPortHdvUnit.cpp
@@ -321,7 +322,10 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Pom2Architecture.cmake)
 set(POM2_DEVICES_HEADERS
     src/Ay3_8910.h
     src/AyPsgSynth.h
+    src/FujiNetCard.h
     src/FujiNetLink.h
+    src/FujiNetNetwork.h
+    src/FujiNetTransport.h
     src/MountableMediaCard.h
     src/ProDOSBlockCard.h
     src/SuperSerialTransport.h
@@ -338,6 +342,7 @@ set(POM2_DEVICES_SOURCES
     src/EchoPlusCard.cpp
     src/EchoPlusTMS5220Card.cpp
     src/FloppyEmuDevice.cpp
+    src/FujiNetCard.cpp
     src/GrapplerCard.cpp
     src/LeChatMauveCard.cpp
     src/M68705P3.cpp
@@ -363,9 +368,14 @@ set(POM2_DEVICES_SOURCES
 
 # Platform primitives with ZERO first-party includes: process supervision and
 # serial ports, in the same category as SocketCompat.h. They were RUNTIME on
-# the branch, which forced FujiNetCard (a DEVICE) into an upward include just
-# to own its helper process. Foundation is where they actually belong — the
-# guard asking the question is what surfaced it.
+# the branch, which forced FujiNetCard into an upward include just to own its
+# helper process. Foundation is where they actually belong — the guard asking
+# the question is what surfaced it.
+#
+# FujiNetCard itself is now a DEVICES card like any other: it takes its link,
+# transport and `N:` device through the FujiNetLink / FujiNetTransport /
+# FujiNetNetwork interfaces, and makeFujiNetCard (RUNTIME) is the only place
+# that names SpOverSlipLink or FujiNetNetDevice.
 set(POM2_FOUNDATION_SOURCES
     src/ChildProcess.cpp
     src/SerialPort.cpp
@@ -518,7 +528,7 @@ set(POM2_MEDIA_SOURCES
 set(POM2_RUNTIME_HEADERS
     include/pom2/core.hpp
     src/Debugger.h
-    src/FujiNetCard.h
+    src/FujiNetCardFactory.h
     src/FujiNetNetDevice.h
     src/ImageWriterRom.h
     src/SlipFramer.h
@@ -538,7 +548,7 @@ set(POM2_RUNTIME_SOURCES
     src/CharRomCatalog.cpp
     src/EmulationController.cpp
     src/FloppySoundDevice.cpp
-    src/FujiNetCard.cpp
+    src/FujiNetCardFactory.cpp
     src/FujiNetNetDevice.cpp
     src/ImageWriter.cpp
     src/ImageWriterPdf.cpp
@@ -1065,6 +1075,7 @@ set(POM2_CORE_SOURCES
     src/SpTcpTransport.cpp
     src/SpSerialTransport.cpp
     src/FujiNetCard.cpp
+    src/FujiNetCardFactory.cpp
     src/FujiNetNetDevice.cpp
     src/SmartPortHdvUnit.cpp
     src/SmartPortUnit.cpp

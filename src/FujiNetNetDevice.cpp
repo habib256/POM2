@@ -52,7 +52,7 @@ bool FujiNetNetDevice::fetchHttp(const std::string&, uint16_t, const std::string
 bool FujiNetNetDevice::open(const std::string& devicespec)
 {
     close();
-    error_       = 144;                       // general failure
+    error_       = kNetErrGeneral;
     description_ = devicespec + " — no host network in this build";
     log().warn("FujiNet", "built-in N: unavailable — this build has no host sockets");
     return false;
@@ -83,9 +83,11 @@ namespace {
 
 /// Error codes in the firmware's numbering, which guest code compares
 /// against directly (network_data.h NDEV_STATUS).
-constexpr uint8_t kErrSuccess      = 1;
-constexpr uint8_t kErrGeneral      = 144;
-constexpr uint8_t kErrFileNotFound = 170;
+// The error bytes are part of the `N:` contract (FujiNetNetwork.h), not of
+// this implementation — a fake N: has to report the same ones.
+constexpr uint8_t kErrSuccess      = kNetErrSuccess;
+constexpr uint8_t kErrGeneral      = kNetErrGeneral;
+constexpr uint8_t kErrFileNotFound = kNetErrFileNotFound;
 
 std::string upper(std::string s)
 {
