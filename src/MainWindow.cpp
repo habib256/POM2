@@ -5833,63 +5833,16 @@ void MainWindow::ejectAllDisks()
 bool MainWindow::routeMount35(int driveIdx, const std::string& path,
                               std::string& errOut)
 {
-    // Whenever a SmartPort card is plugged its units own 3.5" media;
-    // auto-create a SmartPort35Unit on the target index if it's empty or
-    // holds a different kind (HDV). This now includes //c-class: the //c /
-    // //c+ built-in SmartPort (slot 5) is the boot path POM2 exposes
-    // (block-level — the on-board IWM/Sony GCR boot is unmodelled, see
-    // project_iic_smartport_boot). (Promoted from a lambda in
-    // renderDiskLibraryWindow so the CLI insert+boot path shares it.)
-    if (primarySmartPortCard()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const size_t      idx  = static_cast<size_t>(driveIdx);
-        const std::string base =
-            "smartport_slot" + std::to_string(primarySmartPortCard()->getSlot()) +
-            "_unit" + std::to_string(driveIdx);
-        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(idx);
-        bool replaced = false;
-        if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
-            // setUnit destroys the outgoing unit, and ~SmartPortUnit's
-            // write-back is a best-effort `(void)saveDirty()` whose failure
-            // nobody sees. Flush it here instead, so a failed write aborts
-            // the mount and leaves the dirty medium retryable — the rule
-            // every other eject/insert path in POM2 follows.
-            if (u && !u->saveDirty()) {
-                errOut = "unsaved changes on SmartPort unit " +
-                         std::to_string(driveIdx + 1) +
-                         " could not be written: " + u->lastError();
-                return false;
-            }
-            primarySmartPortCard()->setUnit(
-                idx, std::make_unique<pom2::SmartPort35Unit>());
-            u = primarySmartPortCard()->unit(idx);
-            replaced = true;
-        }
-        if (!u->loadImage(path)) {
-            errOut = u->lastError();
-            return false;
-        }
-        settings->setString(base + "_type",
-            std::string(pom2::SmartPort35Unit::kKindKey));
-        settings->setString(base + "_path", path);
-        // A fresh unit comes up with write-back OFF. Keep the persisted flag
-        // in step with it — as the SmartPort panel's own type swap does —
-        // otherwise a stale `_writeback = true` re-arms the bay on the next
-        // launch and makes this session's silently-dropped writes look like
-        // a fluke rather than a configuration change.
-        if (replaced) settings->setBool(base + "_writeback", false);
-        if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
-        return true;
-    }
-    // //c+ on-board path.
-    if (!controller->mount35(driveIdx, path)) {
-        const auto& img = (driveIdx == 0)
-            ? controller->disk35Internal()
-            : controller->disk35External();
-        errOut = img.lastError();
-        return false;
-    }
-    return true;
+    // One routing rule for 3.5" media, in the coordinator: a plugged SmartPort
+    // card's units own it (auto-creating a SmartPort35Unit on the target bay,
+    // flushing whatever was there first so a failed write-back aborts the
+    // mount rather than losing the writes), and only without one does it fall
+    // through to the //c+ on-board hub. Callers keep this signature; the CLI
+    // insert+boot path and the Library share it.
+    const auto r = storageCoordinator_->mountDisk35(*controller, *settings,
+                                                    driveIdx, path);
+    if (!r.ok) errOut = r.error;
+    return r.ok;
 }
 
 bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
@@ -6554,13 +6507,17 @@ void MainWindow::renderDiskLibraryWindow()
         tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (r.request35EjectDrive >= 0) {
-        const bool ok = controller->eject35(r.request35EjectDrive);
-        const auto& img = r.request35EjectDrive == 0
-            ? controller->disk35Internal() : controller->disk35External();
-        tapeStatusMessage = ok
+        // Through the coordinator so the eject follows the SAME routing the
+        // mount did. This called controller->eject35() unconditionally, which
+        // only ever touches the on-board pair — so with a SmartPort card
+        // owning the media the button silently did nothing while the panel
+        // went on showing the disk.
+        const auto e = storageCoordinator_->ejectDisk35(
+            *controller, *settings, r.request35EjectDrive);
+        tapeStatusMessage = e.ok
             ? ("Library: 3.5\" drive " +
                std::string(r.request35EjectDrive == 0 ? "1" : "2") + " ejected")
-            : ("Library: 3.5\" eject failed: " + img.lastError());
+            : ("Library: 3.5\" eject failed: " + e.error);
         tapeStatusUntil   = lastFrameTime + 3.0;
     }
     if (r.requestHdvEject) {
