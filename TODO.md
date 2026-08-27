@@ -786,13 +786,6 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   rebuild (`PrinterCoordinator::resetFeedCursor` — a rebuild can hand a
   replacement card the same allocator address).
 
-- 🟡 **The Super Serial panel still mutates cards directly** *(2026-08-27)* —
-  `NetworkCoordinator` landed and the `sscCards`/`sscCard` aliases are gone,
-  replaced by a `serialCards()` topology accessor, so nothing dangles. But the
-  panel's per-tab body still calls `setListening` / `setRawMode` / the printer
-  tap on the card unlocked. `DevicePanelCoordinator::captureSerialCards()` and
-  `applySerial()` are the snapshot/command boundary for it and are still
-  uncalled. *0.5 d.*
 - 🟢 **W5100 name resolution is still inline** *(2026-08-27)* — deliberately
   left in `W5100Device` when the socket seam landed: an async mailbox with an
   in-flight cap, a bounded wait and its own cache, wired to register reads.

@@ -5737,3 +5737,14 @@ pom2_add_headless_test(test_ssc_transport_seam
     LINK_LIBRARIES pom2_core_test
     INCLUDE_DIRECTORIES ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# ─── Super Serial panel boundary ────────────────────────────────────────
+# Two SSCs can be plugged at once (the //c's printer and modem ports), so
+# "which card did that checkbox belong to" is a real question, and a slot
+# rebuild between a tab rendering and the click landing is a real window.
+if(TARGET pom2_core_test)
+pom2_add_headless_test(test_serial_panel_boundary
+    NAME serial_panel_boundary TIMEOUT 10 PORTABLE
+    SOURCES serial_panel_boundary_test.cpp
+    LINK_LIBRARIES pom2_core_test)
+endif()
