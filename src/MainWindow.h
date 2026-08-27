@@ -933,11 +933,12 @@ private:
     // Slot of the HDV card auto-plugged by ensureHdvCardForBoot for a CLI
     // `POM2 <image.hdv>` boot (-1 = none). Session-local: NOT persisted, so
     // ~MainWindow must skip writing slot_N_card / hdv_path for this slot.
-    int autoProvisionedHdvSlot_ = -1;
 
     // Same contract for the SmartPort card auto-plugged by the Floppy Emu
     // panel's ensureSmartPort (-1 = none): session-local, never persisted.
-    int autoProvisionedSmartPortSlot_ = -1;
+    // Both auto-provision markers live in `storageCoordinator_` now: the
+    // settings-persistence exclusion that consumes them is its code, and two
+    // copies of "which slot did we conjure for this boot" drift.
 
 #ifdef __EMSCRIPTEN__
     std::string browserResetBootImage_;

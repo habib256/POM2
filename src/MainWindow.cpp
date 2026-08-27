@@ -701,31 +701,15 @@ MainWindow::MainWindow(bool forceIIPlus)
 #endif
     }
 
-    // ── Restore Disk II state per-slot ────────────────────────────────
-    // Each plugged DiskII gets its own `disk_path_slotN` /
-    // `disk_writeback_slotN` keys. The primary (lowest-slot) card also
-    // honours the legacy unsuffixed `disk_path` / `disk_writeback` keys
-    // so settings written before multi-instance support keep loading.
-    for (auto* c : diskIICards()) {
-        if (!c) continue;
-        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-        const bool isPrimary = (c == primaryDiskII());
-        const bool wb = settings->getBool(
-            "disk_writeback" + slotKey,
-            isPrimary ? settings->getBool("disk_writeback", false) : false);
-        c->setWriteBackEnabled(wb);
-        const std::string diskPath = settings->getString(
-            "disk_path" + slotKey,
-            isPrimary ? settings->getString("disk_path", "") : std::string());
-        std::error_code ec;
-        if (!diskPath.empty() && fs::is_regular_file(diskPath, ec)) {
-            if (c->insertDisk(diskPath)) {
-                pom2::log().info("Disk II",
-                    "slot " + std::to_string(c->getSlot()) +
-                    " re-inserted from settings: " + diskPath);
-            }
-        }
-    }
+    // Disk II / HDV / CFFA / SmartPort media are restored by
+    // StorageCoordinator::restoreMediaFromSettings(), at the end of
+    // plugSlotsFromSettings() above — one pass against the finished topology
+    // rather than a second one here.
+    //
+    // This block used to do it, and it ran AFTER the plug pass, so every image
+    // was opened twice at startup. It also called insertDisk() with the
+    // default argument, so drive 2 was never restored at all: its path was
+    // persisted on exit and silently ignored on the next launch.
 
     // ── Restore previously-mounted 3.5" disks ─────────────────────────
     // Same pattern as the 5.25" / HDV restore above. Only honour the
@@ -896,7 +880,7 @@ MainWindow::~MainWindow()
     // Skip persisting an HDV card that ensureHdvCardForBoot auto-plugged for
     // a one-shot `POM2 <image.hdv>` boot — it's session-local by contract.
     const bool hdvIsAutoProvisioned =
-        primaryHdvCard() && primaryHdvCard()->getSlot() == autoProvisionedHdvSlot_;
+        primaryHdvCard() && primaryHdvCard()->getSlot() == storageCoordinator_->autoProvisionedHdvSlot();
     if (!hdvIsAutoProvisioned && primaryHdvCard() && primaryHdvCard()->isImageLoaded()) {
         // Don't persist the synthesised host-folder volume — the path is
         // a sentinel, not a real file. Re-synthesis happens on click.
@@ -1030,8 +1014,8 @@ MainWindow::~MainWindow()
     {
         const auto& cfg = pom2::profileConfig(activeProfile);
         for (int s = 1; s <= 7; ++s) {
-            if (s == autoProvisionedHdvSlot_) continue;   // session-local auto-plug
-            if (s == autoProvisionedSmartPortSlot_) continue;   // idem (Floppy Emu)
+            if (s == storageCoordinator_->autoProvisionedHdvSlot()) continue;   // session-local auto-plug
+            if (s == storageCoordinator_->autoProvisionedSmartPortSlot()) continue;   // idem (Floppy Emu)
             // Profile-forced slots (built-ins / noPhysicalSlots) hold the
             // profile's value, not the user's — shared guard with the Slot
             // Config Apply button (pom2::slotKeyIsUserChoice).
@@ -1437,25 +1421,13 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // No alias list to append to: `diskIICards()` / `primaryDiskII()` read
         // the bus, and plugSlotsFromSettings iterates slots ascending, so the
         // lowest-numbered slot is the primary exactly as before.
-        // Restore the persisted write-back opt-in on the freshly built card,
-        // exactly as plugHdv/plugCffa do below. A rebuilt DiskII used to come
-        // up with writeBackEnabled=false whatever the user had saved, and
-        // since `isWriteProtected()` is `fileWriteProtected || !writeBack`,
-        // the guest then saw a write-protected disk: DOS 3.3 answered WRITE
-        // PROTECTED and Print Shop hung forever retrying its setup save.
-        // applyProfile() re-plugs on every profile switch — including the
-        // one the ctor runs at startup — so without this the
-        // `disk_writeback[_slotN]` keys never reached a running machine.
-        {
-            const std::string slotKey = "_slot" + std::to_string(s);
-            // First DiskII plugged this pass is the primary; nothing lower
-            // can appear later because the caller walks slots ascending.
-            const bool isPrimary = (diskPanels.empty());
-            raw->setWriteBackEnabled(settings->getBool(
-                "disk_writeback" + slotKey,
-                isPrimary ? settings->getBool("disk_writeback", false)
-                          : false));
-        }
+        // Media and write-back are NOT restored here. This lambda builds
+        // empty hardware; StorageCoordinator::restoreMediaFromSettings() runs
+        // once at the end of this function, against the finished topology.
+        // That ordering is the point: "is this the primary card" is a property
+        // of the whole bus, and asking it while the bus is half-built is what
+        // made the second Disk II drive and a moved primary HDV restore wrong.
+        (void)raw;
         diskPanels.push_back(std::make_unique<pom2::DiskController_ImGui>());
         if (!diskPanel) diskPanel = diskPanels.front().get();
         st.memory().slotBus().plug(s, std::move(card));
@@ -1475,14 +1447,9 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
             hdvPath = saved;
         }
 
+        // Empty hardware only — see the note in plugDiskII. The image and the
+        // write-back opt-in arrive in the restore pass at the end.
         auto card = std::make_unique<ProDOSHardDiskCard>(s);
-        if (!hdvPath.empty() && card->loadImage(hdvPath)) {
-            hdvStatus = std::string("loaded: ") + hdvPath;
-        } else {
-            hdvStatus = "no image mounted";
-        }
-        card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
-        // No alias to seed: primaryHdvCard() reads the bus, lowest slot first.
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1517,17 +1484,8 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         auto card = std::make_unique<pom2::CffaCard>(s);
         if (!card->loadRom(cffaRomPath)) { slotCards[s] = ""; return; }
 
-        // Restore ONLY the explicitly-saved image (no folder scan — same
-        // policy as plugHdv). Per-slot keys so a CFFA can live in any slot.
-        const std::string key = "cffa_slot" + std::to_string(s);
-        const std::string saved = settings->getString(key + "_path", "");
-        std::error_code ec;
-        if (!saved.empty() && fs::is_regular_file(saved, ec)) {
-            if (!card->loadImage(saved))
-                pom2::log().warn("CFFA", "Re-mount failed: " + card->getLastError());
-        }
-        card->setWriteBackEnabled(settings->getBool(key + "_writeback", false));
-        // No alias to seed: primaryCffaCard() reads the bus, lowest slot first.
+        // Empty hardware only — the per-slot image and write-back arrive in
+        // the restore pass at the end of this function.
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1845,55 +1803,14 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
             if (!r.empty()) card->loadLironRom(r);
         }
 
-        // Restore per-unit configuration from settings. Each unit row
-        // remembers its kind ("35" / "hdv" / ""=empty), its mounted image
-        // path, and the write-back toggle. Persistence keyspace:
-        //   smartport_slotN_unitK_type     ("" / "35" / "hdv")
-        //   smartport_slotN_unitK_path     (image path, optional)
+        // Units are NOT built here. The card is plugged empty and
+        // StorageCoordinator::restoreMediaFromSettings() creates each unit
+        // from its persisted kind, applies the write-back opt-in and resolves
+        // the image path against the same cwd anchors, once the whole topology
+        // exists. Keyspace unchanged:
+        //   smartport_slotN_unitK_type      ("" / "35" / "hdv")
+        //   smartport_slotN_unitK_path      (image path, optional)
         //   smartport_slotN_unitK_writeback (bool)
-        const std::string slotKey = "smartport_slot" + std::to_string(s);
-        for (size_t k = 0; k < pom2::SmartPortCard::kMaxUnits; ++k) {
-            const std::string base = slotKey + "_unit" + std::to_string(k);
-            const std::string kind = settings->getString(base + "_type", "");
-            if (kind.empty()) continue;
-            auto unit = pom2::makeSmartPortUnit(kind);
-            if (!unit) {
-                pom2::log().warn("SmartPort",
-                    "Unknown unit kind '" + kind + "' for " + base +
-                    " — leaving empty");
-                continue;
-            }
-            unit->setWriteBackEnabled(
-                settings->getBool(base + "_writeback", false));
-            // Resolve the persisted path against multiple cwd anchors —
-            // settings.ini may have been written when POM2 ran from
-            // repo root (`hdv/X`) but a later launch from build/ would
-            // fail `is_regular_file` on the bare relative path. Same
-            // fallback the ROM probe uses.
-            const std::string p = settings->getString(base + "_path", "");
-            std::string resolved;
-            if (!p.empty()) {
-                std::error_code ec;
-                for (const std::string& cand :
-                     { p, std::string("../") + p, std::string("../../") + p }) {
-                    if (std::filesystem::is_regular_file(cand, ec)) {
-                        resolved = cand;
-                        break;
-                    }
-                }
-            }
-            if (!resolved.empty()) {
-                if (!unit->loadImage(resolved)) {
-                    pom2::log().warn("SmartPort",
-                        "Failed to remount " + resolved + " on " + base +
-                        ": " + unit->lastError());
-                }
-            } else if (!p.empty()) {
-                pom2::log().warn("SmartPort",
-                    "Persisted path not found: " + p + " (on " + base + ")");
-            }
-            card->setUnit(k, std::move(unit));
-        }
         // No alias to seed: primarySmartPortCard() reads the bus.
         st.memory().slotBus().plug(s, std::move(card));
     };
@@ -2052,6 +1969,33 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                                      err))
                 pom2::log().warn("CLI", "--fujinet: " + err);
         }
+    }
+
+    // ── Phase 2: media, once the whole topology exists ────────────────────
+    // Everything above builds EMPTY hardware. Only now can "is this the
+    // primary Disk II / HDV" be answered, which is what the legacy `disk_path`
+    // and `disk_writeback` keys fall back on — asking it while the bus was
+    // half-built is what made a moved primary HDV and the second Disk II drive
+    // restore against the wrong card.
+    //
+    // Runs under the caller's lock (this function takes a StateAccess to prove
+    // it), so it does its file reads there, exactly as the per-card restores
+    // it replaces did. That is the documented profile-switch exception in
+    // MainWindow_Slots.cpp: the CPU worker is stopped across a rebuild anyway.
+    const auto restored =
+        storageCoordinator_->restoreMediaFromSettings(st.memory().slotBus(),
+                                                      *settings);
+    for (const std::string& warning : restored.warnings)
+        pom2::log().warn("Storage", warning);
+
+    // The HDV panel's status line is derived, not remembered.
+    if (auto* hdv = primaryHdvCard()) {
+        hdvStatus = hdv->isImageLoaded()
+                        ? std::string("loaded: ") + hdv->getImagePath()
+                        : "no image mounted";
+        hdvPath = hdv->isImageLoaded() ? hdv->getImagePath() : std::string();
+    } else {
+        hdvStatus = "no image mounted";
     }
 }
 
@@ -5889,63 +5833,16 @@ void MainWindow::ejectAllDisks()
 bool MainWindow::routeMount35(int driveIdx, const std::string& path,
                               std::string& errOut)
 {
-    // Whenever a SmartPort card is plugged its units own 3.5" media;
-    // auto-create a SmartPort35Unit on the target index if it's empty or
-    // holds a different kind (HDV). This now includes //c-class: the //c /
-    // //c+ built-in SmartPort (slot 5) is the boot path POM2 exposes
-    // (block-level — the on-board IWM/Sony GCR boot is unmodelled, see
-    // project_iic_smartport_boot). (Promoted from a lambda in
-    // renderDiskLibraryWindow so the CLI insert+boot path shares it.)
-    if (primarySmartPortCard()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const size_t      idx  = static_cast<size_t>(driveIdx);
-        const std::string base =
-            "smartport_slot" + std::to_string(primarySmartPortCard()->getSlot()) +
-            "_unit" + std::to_string(driveIdx);
-        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(idx);
-        bool replaced = false;
-        if (!u || u->kindKey() != pom2::SmartPort35Unit::kKindKey) {
-            // setUnit destroys the outgoing unit, and ~SmartPortUnit's
-            // write-back is a best-effort `(void)saveDirty()` whose failure
-            // nobody sees. Flush it here instead, so a failed write aborts
-            // the mount and leaves the dirty medium retryable — the rule
-            // every other eject/insert path in POM2 follows.
-            if (u && !u->saveDirty()) {
-                errOut = "unsaved changes on SmartPort unit " +
-                         std::to_string(driveIdx + 1) +
-                         " could not be written: " + u->lastError();
-                return false;
-            }
-            primarySmartPortCard()->setUnit(
-                idx, std::make_unique<pom2::SmartPort35Unit>());
-            u = primarySmartPortCard()->unit(idx);
-            replaced = true;
-        }
-        if (!u->loadImage(path)) {
-            errOut = u->lastError();
-            return false;
-        }
-        settings->setString(base + "_type",
-            std::string(pom2::SmartPort35Unit::kKindKey));
-        settings->setString(base + "_path", path);
-        // A fresh unit comes up with write-back OFF. Keep the persisted flag
-        // in step with it — as the SmartPort panel's own type swap does —
-        // otherwise a stale `_writeback = true` re-arms the bay on the next
-        // launch and makes this session's silently-dropped writes look like
-        // a fluke rather than a configuration change.
-        if (replaced) settings->setBool(base + "_writeback", false);
-        if (!settingsReadOnly()) settings->save();   // kiosk: never touch state.cfg
-        return true;
-    }
-    // //c+ on-board path.
-    if (!controller->mount35(driveIdx, path)) {
-        const auto& img = (driveIdx == 0)
-            ? controller->disk35Internal()
-            : controller->disk35External();
-        errOut = img.lastError();
-        return false;
-    }
-    return true;
+    // One routing rule for 3.5" media, in the coordinator: a plugged SmartPort
+    // card's units own it (auto-creating a SmartPort35Unit on the target bay,
+    // flushing whatever was there first so a failed write-back aborts the
+    // mount rather than losing the writes), and only without one does it fall
+    // through to the //c+ on-board hub. Callers keep this signature; the CLI
+    // insert+boot path and the Library share it.
+    const auto r = storageCoordinator_->mountDisk35(*controller, *settings,
+                                                    driveIdx, path);
+    if (!r.ok) errOut = r.error;
+    return r.ok;
 }
 
 bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
@@ -6156,7 +6053,7 @@ int MainWindow::ensureHdvCardForBoot()
         card->setWriteBackEnabled(settings->getBool("hdv_writeback", false));
         st.memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "hdv";
-        autoProvisionedHdvSlot_ = slot;   // session-local; ~MainWindow won't persist it
+        storageCoordinator_->markAutoProvisionedHdv(slot);   // session-local; ~MainWindow won't persist it
     }
     pom2::log().info("CLI",
         "auto-plugged ProDOS HDV card in slot " + std::to_string(slot) +
@@ -6190,7 +6087,7 @@ int MainWindow::ensureSmartPortCardForBoot()
         if (!r.empty()) card->loadLironRom(r);
         controller->memory().slotBus().plug(slot, std::move(card));
         slotCards[slot] = "smartport35";
-        autoProvisionedSmartPortSlot_ = slot;   // session-local; not persisted
+        storageCoordinator_->markAutoProvisionedSmartPort(slot);   // session-local; not persisted
     }
     pom2::log().info("Slots",
         "auto-plugged SmartPort card in slot " + std::to_string(slot) +
@@ -6610,13 +6507,17 @@ void MainWindow::renderDiskLibraryWindow()
         tapeStatusUntil   = lastFrameTime + 4.0;
     }
     if (r.request35EjectDrive >= 0) {
-        const bool ok = controller->eject35(r.request35EjectDrive);
-        const auto& img = r.request35EjectDrive == 0
-            ? controller->disk35Internal() : controller->disk35External();
-        tapeStatusMessage = ok
+        // Through the coordinator so the eject follows the SAME routing the
+        // mount did. This called controller->eject35() unconditionally, which
+        // only ever touches the on-board pair — so with a SmartPort card
+        // owning the media the button silently did nothing while the panel
+        // went on showing the disk.
+        const auto e = storageCoordinator_->ejectDisk35(
+            *controller, *settings, r.request35EjectDrive);
+        tapeStatusMessage = e.ok
             ? ("Library: 3.5\" drive " +
                std::string(r.request35EjectDrive == 0 ? "1" : "2") + " ejected")
-            : ("Library: 3.5\" eject failed: " + img.lastError());
+            : ("Library: 3.5\" eject failed: " + e.error);
         tapeStatusUntil   = lastFrameTime + 3.0;
     }
     if (r.requestHdvEject) {
@@ -6640,31 +6541,12 @@ void MainWindow::renderSmartPortPanelWindow()
 {
     if (!show(pom2::PanelId::SmartPort)) return;
 
-    // Build snapshot from the currently-plugged SmartPort card. When no
-    // card is plugged the panel renders a "no card" hint.
-    pom2::SmartPort_ImGui::CardSnapshot snap;
-    snap.plugged = (primarySmartPortCard() != nullptr);
-    if (snap.plugged) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.slot = primarySmartPortCard()->getSlot();
-        for (size_t k = 0; k < snap.units.size(); ++k) {
-            const pom2::SmartPortUnit* u = primarySmartPortCard()->unit(k);
-            auto& us = snap.units[k];
-            if (!u) {
-                us.kind.clear();
-                us.kindLabel.clear();
-                continue;
-            }
-            us.kind             = std::string(u->kindKey());
-            us.kindLabel        = std::string(u->kindLabel());
-            us.path             = u->path();
-            us.lastError        = u->lastError();
-            us.blockCount       = u->blockCount();
-            us.loaded           = u->isLoaded();
-            us.writeProtected   = u->isWriteProtected();
-            us.writeBackEnabled = u->isWriteBackEnabled();
-        }
-    }
+    // One acquisition for every unit row, with the card resolved from the live
+    // bus inside it. The old code fetched a SmartPortUnit* and then reused it
+    // across several INDEPENDENT lock acquisitions — snapshot, then type swap,
+    // then write-back, then mount, then eject — so a slot rebuild between any
+    // two of them left the rest writing through a freed unit.
+    const auto snap = storageCoordinator_->captureSmartPortPanel(*controller);
 
     char title[64];
     if (snap.plugged) {
@@ -6679,88 +6561,17 @@ void MainWindow::renderSmartPortPanelWindow()
 
     if (!snap.plugged) return;
 
-    // Apply per-unit actions under the state mutex. Settings updates
-    // (kind / path / writeback) happen here so a restart restores the
-    // same layout. Eject + writeback writes pass through the unit's
-    // own API; setUnit replaces the entire unit (e.g. type swap).
-    const std::string slotKey =
-        "smartport_slot" + std::to_string(snap.slot);
-    bool dirtySettings = false;
-    for (size_t k = 0; k < snap.units.size(); ++k) {
-        const auto& a    = r.units[k];
-        const std::string base = slotKey + "_unit" + std::to_string(k);
-
-        if (a.clearType || !a.setType.empty()) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (a.clearType) {
-                primarySmartPortCard()->setUnit(k, nullptr);
-                settings->setString(base + "_type", "");
-                settings->setString(base + "_path", "");
-                settings->setBool  (base + "_writeback", false);
-                tapeStatusMessage = "SmartPort unit " +
-                    std::to_string(k) + ": cleared";
-            } else {
-                auto unit = pom2::makeSmartPortUnit(a.setType);
-                if (unit) {
-                    settings->setString(base + "_type", a.setType);
-                    settings->setString(base + "_path", "");
-                    settings->setBool  (base + "_writeback", false);
-                    primarySmartPortCard()->setUnit(k, std::move(unit));
-                    tapeStatusMessage = "SmartPort unit " +
-                        std::to_string(k) + ": type = " + a.setType;
-                } else {
-                    tapeStatusMessage = "SmartPort unit " +
-                        std::to_string(k) + ": unknown type '" +
-                        a.setType + "'";
-                }
-            }
-            dirtySettings = true;
-            tapeStatusUntil = lastFrameTime + 3.0;
-            // Type change drops any previously-loaded media in this
-            // unit — skip the rest of the actions for this row.
-            continue;
-        }
-
-        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(k);
-        if (!u) continue;
-
-        if (a.writeBackChanged) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            u->setWriteBackEnabled(a.writeBackOn);
-            settings->setBool(base + "_writeback", a.writeBackOn);
-            dirtySettings = true;
-            tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                ": write-back " + (a.writeBackOn ? "ON" : "OFF");
-            tapeStatusUntil = lastFrameTime + 3.0;
-        }
-
-        if (!a.mountPath.empty()) {
-            std::string mountErr;
-            if (pom2::mountSmartPortUnit(*controller, *u, a.mountPath, mountErr)) {
-                settings->setString(base + "_path", a.mountPath);
-                dirtySettings = true;
-                tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                    ": mounted " + a.mountPath;
-            } else {
-                tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                    ": mount failed: " + mountErr;
-            }
-            tapeStatusUntil = lastFrameTime + 4.0;
-        }
-
-        if (a.eject) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = u->eject();
-            if (ok) {
-                settings->setString(base + "_path", "");
-                dirtySettings = true;
-            }
-            tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                (ok ? ": ejected" : ": eject failed: " + u->lastError());
-            tapeStatusUntil = lastFrameTime + 4.0;
-        }
+    // Re-resolves the card under the lock, applies the whole frame's request
+    // in one critical section, and saves settings after unlocking. Unit-type
+    // replacement flushes the outgoing unit first, so a failed write-back
+    // aborts the swap instead of destroying the dirty medium with it.
+    const auto status =
+        storageCoordinator_->applySmartPortPanel(*controller, *settings,
+                                                 snap.slot, r);
+    if (!status.message.empty()) {
+        tapeStatusMessage = status.message;
+        tapeStatusUntil   = lastFrameTime + status.visibleSeconds;
     }
-    if (dirtySettings) settings->save();
 }
 
 bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,

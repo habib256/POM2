@@ -5,6 +5,69 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-27 — Wiring the coordinators, and what the aliases were hiding
+
+Five of the landed coordinators are now wired into `MainWindow`:
+`MouseCoordinator`, `PrinterCoordinator`, `AudioCoordinator`,
+`DevicePanelCoordinator` and `StorageCoordinator`. Thirteen of the eighteen
+card aliases are gone.
+
+The aliases were never only a tidiness problem, and the wiring turned up a
+dozen defects behind them. Two families account for almost all of it.
+
+**A default argument that meant "drive 1 only."** `DiskIICard`'s drive
+parameter defaults to 0, so `isDiskLoaded()`, `getDiskPath()` and
+`ejectDisk()` each silently ignored drive 2 — in five different places. Drive
+2 was never restored at startup, was lost on every profile switch, was dropped
+by Slot Config Apply, stayed mounted through eject-all, and had its path
+persisted on exit only to be ignored on the next launch. Each site read
+correctly; the bug was that the *whole set* had to be wrong together for the
+feature to work, and nothing held them together. `StorageCoordinator` iterates
+`kDiskIIDriveCount` in one place.
+
+**A mutation that never wrote the key recording it.** Machine ▸ Eject disk and
+Eject HDV cleared the drive but left `disk_path_slotN` / `hdv_path` set, so the
+next launch re-mounted what had just been ejected. The Disk II and HDV
+write-back toggles wrote the card and not the key, and because
+`isWriteProtected()` is `fileWriteProtected || !writeBack`, the setting
+reverting meant DOS 3.3 answered WRITE PROTECTED again. The coordinator's
+commands mutate under the lock and persist after releasing it, together.
+
+The rest were routing: eject-all reported success over a failed write-back
+(the medium stays mounted so the write can be retried — that is exactly when
+the user needs telling); the Library's 3.5" eject called `eject35()`
+unconditionally, so with a SmartPort card owning the media the button did
+nothing while the panel went on showing the disk; the mixer drew one row per
+alias, so a second coexisting Mockingboard had no control and inherited the
+other's persisted level; the ImageWriter's "not feeding" list never named the
+FujiNet unit, so a FujiNet-only setup showed an unconnected printer; and
+`printer_sound_pan` was read at startup but never written.
+
+**Slot construction stops interpreting storage settings.** The plug lambdas
+build empty hardware; one `restoreMediaFromSettings()` pass runs against the
+finished topology. The ordering is the point: "is this the primary card"
+decides whether the legacy unsuffixed keys apply, and it is a property of the
+whole bus — asking it while the bus was half-built is why a moved primary HDV
+restored against the wrong keys. It also deleted a duplicate: the constructor
+had its own restore loop that ran *after* the plug pass, so every image was
+opened twice at startup.
+
+**One deadlock, introduced and caught here.** Wiring `PrinterCoordinator` into
+`renderFujiNetPanelWindow` put a `captureHost()` inside an existing
+`lock_guard(stateMutex())`. Every coordinator capture takes the machine lock
+itself and `stateMutex` is non-recursive, so opening that panel would have hung
+the UI thread and the emulator together — while the full suite stayed green,
+because nothing drives the ImGui panels. It survived one review because the
+check being run looked only for `lockState()` and that site uses the bare
+`stateMutex()`.
+
+`tools/check_coordinator_locks.sh` is the answer to that, and it is
+falsifiable rather than assumed: against `44b715f` it reports the real bug and
+exits 1. Its allowlist names the two shapes that may legally sit inside a lock
+— plain accessors, and methods taking `SlotBus&`/`Settings&` directly rather
+than an `EmulationController`, where the signature *is* the contract saying the
+caller already holds the lock.
+
 ## 2026-08-26 — The coordinator branch lands the half that ports
 
 `refactor/core-boundaries-and-coordinators` was written against `be055e2` and

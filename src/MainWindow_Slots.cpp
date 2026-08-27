@@ -24,6 +24,7 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "StorageCoordinator.h"
 #include "DevicePanelCoordinator.h"
 #include "PrinterCoordinator.h"
 #include "MediaMount.h"
@@ -936,8 +937,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // The session-local auto-plugged HDV (POM2 <image.hdv> one-shot boot) is
     // destroyed by the slot rebuild below; clear its marker so a later real
     // HDV in the same slot number isn't wrongly skipped at shutdown.
-    autoProvisionedHdvSlot_ = -1;
-    autoProvisionedSmartPortSlot_ = -1;
+    storageCoordinator_->clearAutoProvisioned();
+    
 
     // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
     //    which reads `activeProfile` to apply the profile's built-in locked slots
@@ -976,46 +977,24 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    server's HTTP thread, whose /disk insert + eject handlers reassign
     //    the very std::string that getDiskPath()/getImagePath() return a
     //    reference into. aiServer->detach() only happens in step 3, below.
-    std::string savedHdvPath;
-    // Capture every plugged Disk II's path so multi-instance setups
-    // (DiskII slot 6 + DiskII slot 4) survive the profile switch. Indexed
-    // by slot number, not by diskIICards()[] order, so re-plugging in the
-    // same slot picks the right path even if SettingsBackedSlots returns
-    // them in a different order.
-    // Pair the path with the live write-back toggle, same as savedCffaPaths
-    // below: plugSlotsFromSettings restores the *persisted* opt-in, but a
-    // toggle made from the Disk II panel this session isn't in settings yet
-    // and would be silently reverted to read-only by the re-plug.
-    // `nullopt` = no Disk II in that slot before the switch, so the card the
-    // new profile plugs there keeps whatever plugSlotsFromSettings restored
-    // from the persisted keys instead of inheriting a fabricated read-only.
-    std::array<std::optional<std::pair<std::string, bool>>, 8> savedDiskPaths{};
-    // Same idea for CFFA: a Disk-Library mid-session mount only updates the
-    // live card, not settings, so plugSlotsFromSettings's cffa_slotN_path
-    // restore would otherwise silently revert to the pre-session path (or
-    // drop the mount entirely if there wasn't one). Pair the path with the
-    // user's write-back toggle — re-plug defaults to read-only.
-    std::array<std::pair<std::string, bool>, 8> savedCffaPaths{};
+    // Capture the live media as a typed, value-only snapshot before the
+    // teardown: a mid-session mount or write-back toggle exists only on the
+    // card, not in settings, and plugSlotsFromSettings would otherwise revert
+    // it to whatever was last persisted. Indexed by slot, so re-plugging into
+    // the same slot picks the right medium whatever order the rebuild uses.
+    //
+    // It must happen before step 3's aiServer->detach(): the AI server's HTTP
+    // thread reassigns the very std::string that getDiskPath()/getImagePath()
+    // return a reference into, and nothing else quiesces it.
+    //
+    // The hand-rolled version this replaces captured `isDiskLoaded()` and
+    // `getDiskPath()` with their default arguments — drive 1 only — so a disk
+    // in drive 2 was silently lost on every profile switch.
+    pom2::StorageCoordinator::RebuildSnapshot mediaSnapshot;
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskIICards()) {
-            if (!c) continue;
-            savedDiskPaths[static_cast<size_t>(c->getSlot())] =
-                std::make_pair(c->isDiskLoaded() ? c->getDiskPath() : std::string(),
-                               c->isWriteBackEnabled());
-        }
-        if (primaryHdvCard() && primaryHdvCard()->isImageLoaded()) {
-            const std::string path = primaryHdvCard()->getImagePath();
-            if (path.rfind("[host folder] ", 0) == std::string::npos) {
-                savedHdvPath = path;
-            }
-        }
-        for (auto* blk : blockCards()) {
-            auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-            if (!cffa || !cffa->isImageLoaded()) continue;
-            savedCffaPaths[static_cast<size_t>(cffa->getSlot())] =
-                { cffa->getImagePath(), cffa->isWriteBackEnabled() };
-        }
+        mediaSnapshot = storageCoordinator_->captureRebuildSnapshot(
+            controller->memory().slotBus());
     }
 
     // 3. Tear down all slot cards under the state mutex. Mockingboard's
@@ -1195,45 +1174,17 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
             display->setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
     }
 
-    // 8. Re-mount preserved media. Iterate every newly-plugged DiskII
-    //    and look up its slot in the snapshot — empty entries mean no
-    //    disk was mounted there at the profile-switch time.
-    for (auto* c : diskIICards()) {
-        if (!c) continue;
-        const auto& saved = savedDiskPaths[static_cast<size_t>(c->getSlot())];
-        if (!saved) continue;               // no DiskII here before the switch
-        const auto& [path, writeBack] = *saved;
-        // Write-back BEFORE the mount: insertDisk copies the card flag into
-        // the freshly loaded image, and a card that comes up read-only makes
-        // the guest see a write-protected disk (DOS 3.3 "WRITE PROTECTED",
-        // Print Shop hanging on its setup save).
-        c->setWriteBackEnabled(writeBack);
-        if (path.empty()) continue;
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(path, ec)) {
-            (void)c->insertDisk(path);
-        }
-    }
-    if (primaryHdvCard() && !savedHdvPath.empty()) {
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(savedHdvPath, ec)) {
-            (void)primaryHdvCard()->loadImage(savedHdvPath);
-        }
-    }
-    // CFFA: plugSlotsFromSettings already mounted whatever `cffa_slotN_path`
-    // settings held; if the user mounted a different image mid-session, the
-    // live snapshot wins (matches Disk II / HDV above). Empty snapshot ⇒
-    // leave plugSlots' settings-driven mount alone.
-    for (auto* blk : blockCards()) {
-        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-        if (!cffa) continue;
-        const auto& [path, wb] = savedCffaPaths[static_cast<size_t>(cffa->getSlot())];
-        if (path.empty()) continue;
-        std::error_code ec;
-        if (std::filesystem::is_regular_file(path, ec)) {
-            (void)cffa->loadImage(path);
-            cffa->setWriteBackEnabled(wb);
-        }
+    // 8. Re-apply the live media over what plugSlotsFromSettings restored
+    //    from the persisted keys. The live snapshot is authoritative for
+    //    EMPTY drives too: a card/drive present in the snapshot and empty
+    //    proves the user ejected it this session, so the settings-driven
+    //    mount is undone rather than resurrecting a disk that was ejected
+    //    after the last save. Cards absent from the snapshot keep whatever
+    //    settings gave them.
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        storageCoordinator_->restoreRebuildSnapshot(
+            controller->memory().slotBus(), mediaSnapshot);
     }
 
     // 9. CPU mode (profile default with optional user override).
@@ -1306,44 +1257,23 @@ bool MainWindow::restartEmulationFromSettings()
     //    and the HDV/CFFA library mounts update the live cards but NOT the
     //    settings keys (those are written only at shutdown), so without this a
     //    Slot-Config "Apply" rebuilds from stale keys and silently drops the
-    //    mounted disk/HDV/CFFA. plugSlotsFromSettings + step 4 restore FROM
-    //    settings, so persisting the live state here preserves it.
+    //    mounted disk/HDV/CFFA. plugSlotsFromSettings restores FROM settings,
+    //    so persisting the live state here preserves it.
     //
-    //    Read under stateMutex and copy BY VALUE: getDiskPath() /
-    //    getImagePath() hand back a reference into the card's live
-    //    DiskImage, and the AI control server's HTTP thread (which nothing
-    //    has parked yet — aiServer->detach() is step 2) reassigns exactly
-    //    that string from its /disk insert + eject handlers.
+    //    The coordinator owns the exclusions that go with it: a session-only
+    //    auto-provisioned HDV slot and a synthesised "[host folder] " volume
+    //    must not reach hdv_path, or they come back as a real mount next time.
+    //
+    //    The loop this replaces read isDiskLoaded()/getDiskPath() with their
+    //    default arguments, so drive 2's path was never synced and Apply
+    //    dropped whatever was mounted in it.
     {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        for (auto* c : diskIICards()) {
-            if (!c) continue;
-            const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-            settings->setString("disk_path" + slotKey,
-                c->isDiskLoaded() ? std::string(c->getDiskPath()) : std::string());
-            settings->setBool("disk_writeback" + slotKey, c->isWriteBackEnabled());
-        }
-        if (primaryHdvCard() && primaryHdvCard()->getSlot() != autoProvisionedHdvSlot_ &&
-            primaryHdvCard()->isImageLoaded()) {
-            const std::string p = primaryHdvCard()->getImagePath();
-            if (p.rfind("[host folder] ", 0) == std::string::npos)
-                settings->setString("hdv_path", p);
-        }
-        for (auto* blk : blockCards()) {
-            auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-            if (!cffa) continue;
-            const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
-            settings->setString(key + "_path",
-                cffa->isImageLoaded() ? std::string(cffa->getImagePath())
-                                      : std::string());
-            settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
-        }
+        const auto snapshot = storageCoordinator_->captureRebuildSnapshot(
+            controller->memory().slotBus());
+        storageCoordinator_->persistRebuildSettings(*settings, snapshot);
     }
-    // (3.5"/SmartPort media is already saved eagerly on mount.)
 
-    // 1. Stop the worker thread so card destructors don't race against a
-    //    running CPU step, then prove every opted-in dirty medium is durable
-    //    before destroying any card.
     const auto previousMode = controller->getMode();
     controller->stop();
     std::string flushErr;
@@ -1357,8 +1287,8 @@ bool MainWindow::restartEmulationFromSettings()
     // The rebuild is now committed. Its session-local auto-plugged media will
     // be destroyed below, so their shutdown-persistence markers no longer
     // describe a live card.
-    autoProvisionedHdvSlot_ = -1;
-    autoProvisionedSmartPortSlot_ = -1;
+    storageCoordinator_->clearAutoProvisioned();
+    
     // Drop the rewind ring: its SLOTn sections describe the card set being
     // torn down; restoring one onto the rebuilt (possibly different) cards
     // would be incoherent. Same rationale as applyProfile.
