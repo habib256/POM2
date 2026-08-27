@@ -306,6 +306,261 @@ set(SOURCES
     src/main.cpp
 )
 
+# ─── Architecture layers ──────────────────────────────────────────────────
+# POM2 still emits ONE static archive; these manifests do not change how
+# anything is built. What they buy is a configure-time check that the layering
+# the code claims is the layering it has: a lower layer may not include a
+# higher one, and every first-party header a classified file reaches must
+# itself be classified.
+#
+# The rank order is FOUNDATION < MEDIA < MACHINE < DEVICES < RUNTIME <
+# FRONTEND. A violation fails `cmake`, not a test run, so it is caught before
+# anything is compiled.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Pom2Architecture.cmake)
+
+set(POM2_DEVICES_HEADERS
+    src/Ay3_8910.h
+    src/AyPsgSynth.h
+    src/FujiNetLink.h
+    src/MountableMediaCard.h
+    src/ProDOSBlockCard.h
+    src/SuperSerialTransport.h
+    src/Via6522.h
+    src/W5100Resolver.h
+    src/W5100Socket.h
+)
+
+set(POM2_DEVICES_SOURCES
+    src/CffaCard.cpp
+    src/ClockCard.cpp
+    src/Cs8900aDevice.cpp
+    src/DiskIICard.cpp
+    src/EchoPlusCard.cpp
+    src/EchoPlusTMS5220Card.cpp
+    src/FloppyEmuDevice.cpp
+    src/GrapplerCard.cpp
+    src/LeChatMauveCard.cpp
+    src/M68705P3.cpp
+    src/MC6821.cpp
+    src/Mockingboard.cpp
+    src/MouseCard.cpp
+    src/MouseCardAppleWin.cpp
+    src/PhasorCard.cpp
+    src/PrinterCard.cpp
+    src/ProDOSHardDiskCard.cpp
+    src/SmartPort35Unit.cpp
+    src/SmartPortCard.cpp
+    src/SmartPortHdvUnit.cpp
+    src/SmartPortUnit.cpp
+    src/SoftCardZ80.cpp
+    src/Ssi263.cpp
+    src/Ssi263PhonemeData.cpp
+    src/SuperSerialCard.cpp
+    src/UthernetCard.cpp
+    src/UthernetIICard.cpp
+    src/W5100Device.cpp
+)
+
+# Platform primitives with ZERO first-party includes: process supervision and
+# serial ports, in the same category as SocketCompat.h. They were RUNTIME on
+# the branch, which forced FujiNetCard (a DEVICE) into an upward include just
+# to own its helper process. Foundation is where they actually belong — the
+# guard asking the question is what surfaced it.
+set(POM2_FOUNDATION_SOURCES
+    src/ChildProcess.cpp
+    src/SerialPort.cpp
+)
+
+set(POM2_FOUNDATION_HEADERS
+    src/AudioSource.h
+    src/ByteIO.h
+    src/ChildProcess.h
+    src/FloppySoundSink.h
+    src/Logger.h
+    src/NetworkBackend.h
+    src/NetworkValues.h
+    src/Pom2Build.h
+    src/PrinterSoundSink.h
+    src/SerialPort.h
+)
+
+set(POM2_FRONTEND_HEADERS
+    src/AudioCoordinator.h
+    src/DebugCoordinator.h
+    src/Debugger_ImGui.h
+    src/DevicePanelCoordinator.h
+    src/IconsFontAwesome6.h
+    src/Mat4.h
+    src/MouseCoordinator.h
+    src/MouseGrab.h
+    src/NetworkCoordinator.h
+    src/PaintCardBatcher.h
+    src/PanelCatalog.h
+    src/PanelRegistry.h
+    src/Pom2GL.h
+    src/PrinterCoordinator.h
+    src/PrinterFeedCursor.h
+    src/RomCatalog.h
+    src/SlotCardCatalog.h
+    src/SlotCardFactory.h
+    src/SlotConfigurationCoordinator.h
+    src/SlotProvisioningCoordinator.h
+    src/SlotRebuildCoordinator.h
+    src/StatusLed.h
+    src/StorageCoordinator.h
+    src/hgrpaint/IHgrPaintHost.h
+    src/hgrpaint/ImportCommon.h
+)
+
+set(POM2_FRONTEND_SOURCES
+    src/AudioCoordinator.cpp
+    src/DebugCoordinator.cpp
+    src/DevicePanelCoordinator.cpp
+    src/MouseCoordinator.cpp
+    src/NetworkCoordinator.cpp
+    src/PrinterCoordinator.cpp
+    src/SlotCardFactory.cpp
+    src/SlotConfigurationCoordinator.cpp
+    src/SlotProvisioningCoordinator.cpp
+    src/SlotRebuildCoordinator.cpp
+    src/StorageCoordinator.cpp
+    src/CassetteDeck_ImGui.cpp
+    src/CliDispatcher.cpp
+    src/CliRunner.cpp
+    src/Disk35Controller_ImGui.cpp
+    src/DiskController_ImGui.cpp
+    src/DiskLibrary_ImGui.cpp
+    src/HdvController_ImGui.cpp
+    src/JoystickInput.cpp
+    src/JoystickPanel_ImGui.cpp
+    src/LeChatMauve_ImGui.cpp
+    src/MainWindow.cpp
+    src/MainWindow_DevicePanels.cpp
+    src/MainWindow_MemoryMaps.cpp
+    src/MainWindow_Slots.cpp
+    src/MemoryViewer_ImGui.cpp
+    src/NtscPostProcessor.cpp
+    src/CrtEffectStack.cpp
+    src/Voxel3DRenderer.cpp
+    src/OpenGLShader.cpp
+    src/ImageWriter_ImGui.cpp
+    src/Rewind_ImGui.cpp
+    src/FloppyEmu_ImGui.cpp
+    src/Settings.cpp
+    src/Pom2HgrPaintHost.cpp
+    src/hgrpaint/Cam16.cpp
+    src/hgrpaint/DhgrNtsc8Palette.cpp
+    src/hgrpaint/HgrConvert.cpp
+    src/hgrpaint/HgrImageDecode.cpp
+    src/hgrpaint/HgrPaintEditor.cpp
+    src/hgrpaint/HgrPaintModel.cpp
+    src/hgrsprite/HgrSpriteAsmExport.cpp
+    src/hgrsprite/HgrSpriteBlit.cpp
+    src/hgrsprite/HgrSpriteEditor.cpp
+    src/Uthernet_ImGui.cpp
+    src/FujiNet_ImGui.cpp
+    src/SmartPort_ImGui.cpp
+    src/CommandPalette_ImGui.cpp
+    src/Pom2Theme.cpp
+    src/RomStatus_ImGui.cpp
+    src/AbstractionLevels_ImGui.cpp
+    src/AppleIIeKeyboardLayout.cpp
+    src/Keyboard_ImGui.cpp
+    src/Toolbar_ImGui.cpp
+    src/main.cpp
+)
+
+set(POM2_MACHINE_HEADERS
+    src/Apple2VideoDecode.h
+    src/AppleKeyLatch.h
+    src/CpuClock.h
+    src/MemoryProfile.h
+    src/MemoryWatchSink.h
+    src/PaddleInputs.h
+    src/SlotPeripheral.h
+)
+
+set(POM2_MACHINE_SOURCES
+    src/Keyboard.cpp
+    src/M6502.cpp
+    src/Z80.cpp
+    src/Memory.cpp
+    src/MemoryProfile_IIcClass.cpp
+    src/AppleWinNtsc.cpp
+    src/CassetteDevice.cpp
+    src/Disassembler6502.cpp
+    src/IWMDevice.cpp
+    src/SmartPortHub.cpp
+    src/Sony35Drive.cpp
+    src/NoSlotClock.cpp
+    src/SlotBus.cpp
+    src/SpeakerDevice.cpp
+    src/SystemProfile.cpp
+)
+
+set(POM2_MEDIA_HEADERS
+    src/AtomicFileReplace.h
+    src/MediaMount.h
+    src/TwoImg.h
+)
+
+set(POM2_MEDIA_SOURCES
+    src/AtaBlockDevice.cpp
+    src/Block512Backing.cpp
+    src/Disk35Image.cpp
+    src/DiskImage.cpp
+    src/ProDOSVolume.cpp
+    src/ResourcePaths.cpp
+    src/SnapshotIO.cpp
+    src/Sony35Gcr.cpp
+)
+
+set(POM2_RUNTIME_HEADERS
+    include/pom2/core.hpp
+    src/Debugger.h
+    src/FujiNetCard.h
+    src/FujiNetNetDevice.h
+    src/ImageWriterRom.h
+    src/SlipFramer.h
+    src/SocketCompat.h
+    src/SocketUtil.h
+    src/SpOverSlipLink.h
+    src/SpTransport.h
+    src/SuperSerialTcpTransport.h
+    src/ThreadGuard.h
+    src/W5100NameResolver.h
+)
+
+set(POM2_RUNTIME_SOURCES
+    src/AiControlServer.cpp
+    src/Apple2Display.cpp
+    src/AudioDevice.cpp
+    src/CharRomCatalog.cpp
+    src/EmulationController.cpp
+    src/FloppySoundDevice.cpp
+    src/FujiNetCard.cpp
+    src/FujiNetNetDevice.cpp
+    src/ImageWriter.cpp
+    src/ImageWriterPdf.cpp
+    src/MachineSnapshot.cpp
+    src/Pom2Core.cpp
+    src/PrinterHistory.cpp
+    src/PrinterScreenDump.cpp
+    src/PrinterSoundDevice.cpp
+    src/RewindBuffer.cpp
+    src/RomLoader.cpp
+    src/SlirpNetworkBackend.cpp
+    src/SpOverSlipLink.cpp
+    src/SpSerialTransport.cpp
+    src/SpTcpTransport.cpp
+    src/SuperSerialTcpTransport.cpp
+    src/W5100HostSockets.cpp
+    src/W5100NameResolver.cpp
+    src/hgrpaint/HgrFont.cpp
+)
+
+pom2_enforce_source_layers(${CMAKE_CURRENT_SOURCE_DIR})
+
 set(HEADERS
     src/M6502.h
     src/Z80.h

@@ -68,7 +68,7 @@ W5100NameResolver::W5100NameResolver(LookupFn lookup)
 #endif
 }
 
-W5100NameResolver::Result W5100NameResolver::resolve(const std::string& name,
+W5100Resolver::Result W5100NameResolver::resolve(const std::string& name,
                                                      int waitMs)
 {
     Result out;

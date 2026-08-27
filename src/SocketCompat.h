@@ -97,26 +97,7 @@ inline bool isValidSocket(socket_t s) { return s != kInvalidSocket; }
 // GCC/Clang/Emscripten builtin; MSVC does not define it, and every Windows
 // target POM2 builds for is little-endian, so the swap branch is right there
 // too.
-namespace pom2 {
-
-inline constexpr uint16_t byteSwap16(uint16_t v)
-{
-    return static_cast<uint16_t>((v << 8) | (v >> 8));
-}
-
-#if defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__) && \
-    __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-inline constexpr uint16_t hostToNet16(uint16_t v) { return v; }
-inline constexpr uint16_t netToHost16(uint16_t v) { return v; }
-#else
-inline constexpr uint16_t hostToNet16(uint16_t v) { return byteSwap16(v); }
-inline constexpr uint16_t netToHost16(uint16_t v) { return byteSwap16(v); }
-#endif
-
-// The protocol selectors live further down, after the platform headers that
-// define SOCK_STREAM and friends have been pulled in.
-
-} // namespace pom2
+#include "NetworkValues.h"   // byteSwap16 / hostToNet16 / the protocol selectors
 
 #if !POM2_HAS_SOCKETS
 namespace pom2 {

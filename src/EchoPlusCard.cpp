@@ -31,7 +31,7 @@ struct EchoPlusCard::AudioSrc : public AudioSource, public RateAware
 
     EchoPlusCard* parent;
 
-    std::atomic<uint32_t> sampleRate { AudioDevice::kSampleRate };
+    std::atomic<uint32_t> sampleRate { kAudioSampleRate };
     std::atomic<float>    volume     { 0.7f };
     std::atomic<bool>     muted      { false };
 
@@ -42,7 +42,7 @@ struct EchoPlusCard::AudioSrc : public AudioSource, public RateAware
 
     void setSampleRate(uint32_t hz) override
     {
-        if (hz == 0) hz = AudioDevice::kSampleRate;
+        if (hz == 0) hz = kAudioSampleRate;
         sampleRate.store(hz, std::memory_order_relaxed);
     }
 
@@ -96,7 +96,7 @@ AudioSource* EchoPlusCard::audioSource() { return audio_.get(); }
 
 void EchoPlusCard::setSampleRate(uint32_t hz)
 {
-    if (hz == 0) hz = AudioDevice::kSampleRate;
+    if (hz == 0) hz = kAudioSampleRate;
     audio_->sampleRate.store(hz, std::memory_order_relaxed);
 }
 

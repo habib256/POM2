@@ -54,7 +54,6 @@
 #define POM2_SUPER_SERIAL_CARD_H
 
 #include "SlotPeripheral.h"
-#include "SocketCompat.h"   // socket_t / kInvalidSocket for the telnet fds
 
 #include <array>
 #include <atomic>
@@ -66,7 +65,6 @@
 #include <mutex>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <vector>
 
 namespace pom2 { class SuperSerialTransport; }

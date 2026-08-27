@@ -36,6 +36,8 @@
 #include "Memory.h"
 #include "ResourcePaths.h"
 #include "SuperSerialCard.h"
+#include "SuperSerialTcpTransport.h"
+#include "SuperSerialTransport.h"
 #include "Version.h"
 
 #include <atomic>
@@ -290,6 +292,9 @@ int main(int argc, char** argv)
                 const char buf[1] = { static_cast<char>(b) };
                 mem.pasteText(buf, 1);
             });
+        // The card cannot build its own transport — see SuperSerialCard.
+        ssc->setTransport(pom2::makeSuperSerialTcpTransport(
+            *ssc, SuperSerialCard::kDefaultSlot));
         if (!ssc->startListening(static_cast<uint16_t>(port))) {
             std::fprintf(stderr, "SSC listener failed (port busy?)\n"); return 1;
         }

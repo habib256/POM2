@@ -74,8 +74,7 @@
 #define POM2_W5100_DEVICE_H
 
 #include "NetworkBackend.h"
-#include "SocketCompat.h"
-#include "W5100NameResolver.h"
+#include "NetworkValues.h"
 #include "W5100Socket.h"   // socket_t / kInvalidSocket for Socket::fd
 
 #include <array>
@@ -88,6 +87,8 @@
 #include <vector>
 
 namespace pom2 {
+
+class W5100Resolver;
 
 // ── W5100 memory map (AppleWin `W5100.h`) ─────────────────────────────
 inline constexpr uint16_t kW5100Mr       = 0x0000;
@@ -198,6 +199,9 @@ public:
     /// factory, installed lazily on first use so existing construction sites
     /// are unchanged. Tests inject before any socket is opened.
     void setSocketFactory(std::unique_ptr<W5100SocketFactory> factory);
+    /// Injected for the same reason as the socket factory: the resolver
+    /// owns worker threads, which a device may not acquire itself.
+    void setNameResolver(std::unique_ptr<W5100Resolver> resolver);
 
     W5100Device();
     ~W5100Device();
@@ -328,7 +332,7 @@ private:
     // Socket lifecycle (`Uthernet2.cpp:910-1102`).
     void setSocketStatus(size_t i, uint8_t status);
     void clearSocket(size_t i);
-    void openSystemSocket(size_t i, int type, int protocol, uint8_t status);
+    void openSystemSocket(size_t i, W5100SocketKind kind, uint8_t status);
     void openSocket(size_t i);
     void closeSocket(size_t i);
     void connectSocket(size_t i);
@@ -386,7 +390,7 @@ private:
 
     /// Virtual DNS. Created lazily so a card that never resolves a name
     /// never starts a resolver.
-    std::unique_ptr<W5100NameResolver> resolver_;
+    std::unique_ptr<W5100Resolver> resolver_;
     void drainPendingDns();
 
     std::vector<uint8_t>              memory_;

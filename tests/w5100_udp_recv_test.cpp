@@ -54,6 +54,7 @@
 
 #include "SocketCompat.h"
 #include "W5100Device.h"
+#include "W5100HostSockets.h"
 
 #include <cassert>
 #include <cstdint>
@@ -247,6 +248,10 @@ void testOversizedDatagramIsDropped()
 {
     LocalPeer peer;
     W5100Device dev;
+    // The device no longer builds its own host sockets — whoever
+    // plugs it injects them. Inject the production factory so this
+    // test exercises the same path the emulator does.
+    dev.setSocketFactory(pom2::makeHostW5100SocketFactory());
     openUdpSocket(dev, peer, 0x00);
     assert(dev.socketInfo(0).rxCapacity == 1024);
 
@@ -279,6 +284,10 @@ void testFittingDatagramLandsWhole()
 {
     LocalPeer peer;
     W5100Device dev;
+    // The device no longer builds its own host sockets — whoever
+    // plugs it injects them. Inject the production factory so this
+    // test exercises the same path the emulator does.
+    dev.setSocketFactory(pom2::makeHostW5100SocketFactory());
     openUdpSocket(dev, peer, 0x02);           // 4 KB ring for socket 0
     assert(dev.socketInfo(0).rxCapacity == 4096);
 
@@ -305,6 +314,10 @@ void testZeroLengthDatagramKeepsSocket()
 {
     LocalPeer peer;
     W5100Device dev;
+    // The device no longer builds its own host sockets — whoever
+    // plugs it injects them. Inject the production factory so this
+    // test exercises the same path the emulator does.
+    dev.setSocketFactory(pom2::makeHostW5100SocketFactory());
     openUdpSocket(dev, peer, 0x02);
 
     peer.sendToGuest(0);
@@ -338,6 +351,10 @@ void testFullRingLosesTheNextDatagram()
 {
     LocalPeer peer;
     W5100Device dev;
+    // The device no longer builds its own host sockets — whoever
+    // plugs it injects them. Inject the production factory so this
+    // test exercises the same path the emulator does.
+    dev.setSocketFactory(pom2::makeHostW5100SocketFactory());
     openUdpSocket(dev, peer, 0x01);           // 2 KB ring: one datagram fits
     assert(dev.socketInfo(0).rxCapacity == 2048);
 
@@ -374,6 +391,10 @@ void testHighMirrorReads()
 {
     LocalPeer peer;
     W5100Device dev;
+    // The device no longer builds its own host sockets — whoever
+    // plugs it injects them. Inject the production factory so this
+    // test exercises the same path the emulator does.
+    dev.setSocketFactory(pom2::makeHostW5100SocketFactory());
     openUdpSocket(dev, peer, 0x02);
 
     constexpr uint16_t kMirror = static_cast<uint16_t>(kS0 + 0x8000);

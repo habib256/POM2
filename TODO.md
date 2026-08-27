@@ -790,13 +790,13 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   left in `W5100Device` when the socket seam landed: an async mailbox with an
   in-flight cap, a bounded wait and its own cache, wired to register reads.
   Its own pass, and not on anything's critical path.
-- 🟢 **The SDK install contract + the CMake layer guard** *(2026-08-26 merge)* —
-  `find_package(pom2_core)` / `POM2::core`, the standalone consumer example and
-  the configure-time rejection of upward includes all rest on the branch's
-  layered object libraries (media / machine / devices / runtime). The flat
-  v0.8.5 source lists have no installable library target to attach them to, so
-  these land with that layering or not at all. The facade itself
-  (`include/pom2/core.hpp`, pinned by `pom2_core_api`) is already in.
+- 🟢 **The SDK install contract** *(2026-08-27)* — `find_package(pom2_core)`,
+  the `POM2::core` imported target and the standalone consumer example are the
+  last piece still on `refactor/core-boundaries-and-coordinators`. They need an
+  installable library target, which the flat v0.8.5 tree does not define; the
+  facade itself (`include/pom2/core.hpp`) and its contract test are already in.
+  The **layer guard landed separately** — it turned out to need only source
+  manifests, not the branch's object libraries.
 - 🟢 **What is still parked on `refactor/core-boundaries-and-coordinators`**
   *(inventory, 2026-08-27)* — so nobody re-derives it from the diff: the
   branch's own `MainWindow`/`Memory` decompositions (superseded by v0.8.5's and
