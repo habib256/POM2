@@ -6584,31 +6584,12 @@ void MainWindow::renderSmartPortPanelWindow()
 {
     if (!show(pom2::PanelId::SmartPort)) return;
 
-    // Build snapshot from the currently-plugged SmartPort card. When no
-    // card is plugged the panel renders a "no card" hint.
-    pom2::SmartPort_ImGui::CardSnapshot snap;
-    snap.plugged = (primarySmartPortCard() != nullptr);
-    if (snap.plugged) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        snap.slot = primarySmartPortCard()->getSlot();
-        for (size_t k = 0; k < snap.units.size(); ++k) {
-            const pom2::SmartPortUnit* u = primarySmartPortCard()->unit(k);
-            auto& us = snap.units[k];
-            if (!u) {
-                us.kind.clear();
-                us.kindLabel.clear();
-                continue;
-            }
-            us.kind             = std::string(u->kindKey());
-            us.kindLabel        = std::string(u->kindLabel());
-            us.path             = u->path();
-            us.lastError        = u->lastError();
-            us.blockCount       = u->blockCount();
-            us.loaded           = u->isLoaded();
-            us.writeProtected   = u->isWriteProtected();
-            us.writeBackEnabled = u->isWriteBackEnabled();
-        }
-    }
+    // One acquisition for every unit row, with the card resolved from the live
+    // bus inside it. The old code fetched a SmartPortUnit* and then reused it
+    // across several INDEPENDENT lock acquisitions — snapshot, then type swap,
+    // then write-back, then mount, then eject — so a slot rebuild between any
+    // two of them left the rest writing through a freed unit.
+    const auto snap = storageCoordinator_->captureSmartPortPanel(*controller);
 
     char title[64];
     if (snap.plugged) {
@@ -6623,88 +6604,17 @@ void MainWindow::renderSmartPortPanelWindow()
 
     if (!snap.plugged) return;
 
-    // Apply per-unit actions under the state mutex. Settings updates
-    // (kind / path / writeback) happen here so a restart restores the
-    // same layout. Eject + writeback writes pass through the unit's
-    // own API; setUnit replaces the entire unit (e.g. type swap).
-    const std::string slotKey =
-        "smartport_slot" + std::to_string(snap.slot);
-    bool dirtySettings = false;
-    for (size_t k = 0; k < snap.units.size(); ++k) {
-        const auto& a    = r.units[k];
-        const std::string base = slotKey + "_unit" + std::to_string(k);
-
-        if (a.clearType || !a.setType.empty()) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            if (a.clearType) {
-                primarySmartPortCard()->setUnit(k, nullptr);
-                settings->setString(base + "_type", "");
-                settings->setString(base + "_path", "");
-                settings->setBool  (base + "_writeback", false);
-                tapeStatusMessage = "SmartPort unit " +
-                    std::to_string(k) + ": cleared";
-            } else {
-                auto unit = pom2::makeSmartPortUnit(a.setType);
-                if (unit) {
-                    settings->setString(base + "_type", a.setType);
-                    settings->setString(base + "_path", "");
-                    settings->setBool  (base + "_writeback", false);
-                    primarySmartPortCard()->setUnit(k, std::move(unit));
-                    tapeStatusMessage = "SmartPort unit " +
-                        std::to_string(k) + ": type = " + a.setType;
-                } else {
-                    tapeStatusMessage = "SmartPort unit " +
-                        std::to_string(k) + ": unknown type '" +
-                        a.setType + "'";
-                }
-            }
-            dirtySettings = true;
-            tapeStatusUntil = lastFrameTime + 3.0;
-            // Type change drops any previously-loaded media in this
-            // unit — skip the rest of the actions for this row.
-            continue;
-        }
-
-        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(k);
-        if (!u) continue;
-
-        if (a.writeBackChanged) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            u->setWriteBackEnabled(a.writeBackOn);
-            settings->setBool(base + "_writeback", a.writeBackOn);
-            dirtySettings = true;
-            tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                ": write-back " + (a.writeBackOn ? "ON" : "OFF");
-            tapeStatusUntil = lastFrameTime + 3.0;
-        }
-
-        if (!a.mountPath.empty()) {
-            std::string mountErr;
-            if (pom2::mountSmartPortUnit(*controller, *u, a.mountPath, mountErr)) {
-                settings->setString(base + "_path", a.mountPath);
-                dirtySettings = true;
-                tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                    ": mounted " + a.mountPath;
-            } else {
-                tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                    ": mount failed: " + mountErr;
-            }
-            tapeStatusUntil = lastFrameTime + 4.0;
-        }
-
-        if (a.eject) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = u->eject();
-            if (ok) {
-                settings->setString(base + "_path", "");
-                dirtySettings = true;
-            }
-            tapeStatusMessage = "SmartPort unit " + std::to_string(k) +
-                (ok ? ": ejected" : ": eject failed: " + u->lastError());
-            tapeStatusUntil = lastFrameTime + 4.0;
-        }
+    // Re-resolves the card under the lock, applies the whole frame's request
+    // in one critical section, and saves settings after unlocking. Unit-type
+    // replacement flushes the outgoing unit first, so a failed write-back
+    // aborts the swap instead of destroying the dirty medium with it.
+    const auto status =
+        storageCoordinator_->applySmartPortPanel(*controller, *settings,
+                                                 snap.slot, r);
+    if (!status.message.empty()) {
+        tapeStatusMessage = status.message;
+        tapeStatusUntil   = lastFrameTime + status.visibleSeconds;
     }
-    if (dirtySettings) settings->save();
 }
 
 bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
