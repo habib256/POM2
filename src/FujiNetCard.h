@@ -118,8 +118,23 @@ public:
 
     /// The link is owned by the card and exposed so the panel and the host
     /// can configure the transport, read counters and enumerate devices.
-    SpOverSlipLink&       link()       { return link_; }
-    const SpOverSlipLink& link() const { return link_; }
+    /// The command surface the card actually uses. Returning the interface
+    /// rather than the concrete link is what lets a test drive the card with
+    /// canned SmartPort replies and no socket, helper process or peer.
+    FujiNetLink&       link()       { return linkOverride_ ? *linkOverride_ : static_cast<FujiNetLink&>(link_); }
+    const FujiNetLink& link() const { return linkOverride_ ? *linkOverride_ : static_cast<const FujiNetLink&>(link_); }
+
+    /// Substitute the command surface. Non-owning and test-only: the real
+    /// link stays constructed and owned, so transportLink() and the card's
+    /// own lifecycle are unaffected. Nothing in the production build calls
+    /// this — it exists so the card can be driven with canned SmartPort
+    /// replies and no socket, helper process or peer.
+    void setLinkForTesting(FujiNetLink* link) { linkOverride_ = link; }
+
+    /// Transport lifecycle — framing, timeouts, the helper process — is NOT
+    /// part of the command surface, so it stays on the concrete link.
+    SpOverSlipLink&       transportLink()       { return link_; }
+    const SpOverSlipLink& transportLink() const { return link_; }
 
     // ── Built-in N: (POM2's own network device) ───────────────────────────
     //
@@ -264,6 +279,8 @@ private:
 
     std::array<uint8_t, 256> rom_{};
     SpOverSlipLink           link_;
+    /// Non-owning test override for link(); null in production.
+    FujiNetLink*             linkOverride_ = nullptr;
     ChildProcess             helper_;
 
     uint64_t callCount_  = 0;

@@ -1032,7 +1032,7 @@ MainWindow::~MainWindow()
     // FujiNet relay — transport choice and its parameters, per slot.
     if (fujiNetCard) {
         const std::string sk = "_slot" + std::to_string(fujiNetCard->getSlot());
-        const auto& link = fujiNetCard->link();
+        const auto& link = fujiNetCard->transportLink();
         settings->setBool("fujinet_enabled" + sk, link.isRunning());
         settings->setInt ("fujinet_timeout_ms" + sk, link.timeoutMs());
         settings->setString("fujinet_transport" + sk,
@@ -1504,7 +1504,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         card->setCpu(&st.cpu());
 
         const std::string sk = "_slot" + std::to_string(s);
-        auto& link = card->link();
+        auto& link = card->transportLink();
         link.setTimeoutMs(settings->getInt("fujinet_timeout_ms" + sk,
                                            pom2::SpOverSlipLink::kDefaultTimeoutMs));
 
@@ -6371,7 +6371,7 @@ bool MainWindow::plugFujiNetUnlocked(const pom2::StateAccess& st,
     auto card = std::make_unique<pom2::FujiNetCard>(slot);
     card->setMemory(&st.memory());
     card->setCpu(&st.cpu());
-    auto& link = card->link();
+    auto& link = card->transportLink();
     if (serial)
         link.setSerialMode(serialDevice, pom2::SerialPort::kDefaultBaud);
     else
@@ -6484,7 +6484,7 @@ void MainWindow::renderFujiNetPanelWindow()
         // touches the link except from inside a SmartPort call, which cannot
         // overlap this because it holds that same mutex.
         std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const auto& link = fujiNetCard->link();
+        const auto& link = fujiNetCard->transportLink();
         snap.slot      = fujiNetCard->getSlot();
         snap.transport = link.mode() == pom2::SpOverSlipLink::Mode::Serial
                              ? pom2::FujiNet_ImGui::Transport::Serial
@@ -6554,7 +6554,7 @@ void MainWindow::renderFujiNetPanelWindow()
     // Every transport change stops and restarts a worker thread, so all of
     // these take the state mutex — a reconfiguration racing an in-flight
     // SmartPort call would tear the transport out from under it.
-    auto& link = fujiNetCard->link();
+    auto& link = fujiNetCard->transportLink();
     if (r.transportChanged) {
         std::lock_guard<std::mutex> lk(controller->stateMutex());
         switch (r.transportTo) {
