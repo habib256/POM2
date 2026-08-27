@@ -370,13 +370,50 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 - 🟢 **SmartPortCard leftovers** (2026-07-12 Liron audit follow-ups —
   STATUS pre-flight, the SmartPort `$Cn0D` dispatch and the real-ROM
-  identity all landed same-day, see CHANGELOG): empty-bay WP error code
-  is $2B where $28 "no device" is the honest one; boot failure is a
-  silent `JMP $CnE0` loop (real firmware prints an error); 3.5-type units
-  present WP-until-write-back while HDV bays are RAM-writable —
-  inconsistent on the same card; CONTROL calls needing the control-list
-  DATA (only code 0 works — the stub has no guest→device list copy);
-  extended $4x calls return $01.
+  identity all landed same-day, see CHANGELOG). Two of the five are
+  **done** (2026-08-27), and closing the error-code one turned up a much
+  bigger defect underneath:
+
+  - ✅ **empty-bay error codes** — READ answered `$27` "I/O error" (it fell
+    through to the transfer) and WRITE answered `$2B` "write protected" (it
+    tested WP before media). Both now pre-flight the bay through a shared
+    subroutine and answer `$28`, "no device connected". Write-protect still
+    reports `$2B`, pinned in the same test so testing media first cannot
+    quietly stop the card reporting WP at all.
+  - ✅ **…and the STATUS routine was dead code.** The slot ROM is 256
+    hand-assembled bytes and `emit()` had no bound, so the write-block
+    routine had grown straight *through* the STATUS pre-flight at `$CnC0`.
+    `JMP $CnC0` landed mid-instruction in the write loop, ran an illegal
+    opcode and fell into the I/O-error branch — every ProDOS STATUS call
+    answered `$27` on a healthy bay and no block count ever came back, so a
+    volume scanner could not size the device. Nothing failed because nothing
+    executed it. `emit()` is now bounded (`romLayoutOverflowed()`), and the
+    arithmetic that caused it is fixed rather than papered over: the slot
+    page wanted 208 bytes for the 195 that `$Cn20-$CnE2` holds, so the
+    pre-flight and STATUS moved to the **`$C800` bank** (1.5 KB free, and
+    already where the `$CE00` SmartPort handler lives). They cannot go in
+    the slot page's leftover gaps — with `roms/liron.rom` loaded,
+    `$Cn13-$Cn1F` and `$CnE3-$CnFF` are deliberately the real dump's
+    identity bytes, so a routine parked there executes real Liron firmware.
+    Pinned by `smartport_rom_layout`, which runs everything twice (synthetic
+    + real dump) and asserts the passes differ.
+  - 🟢 **extended `$4x` calls return `$01`** — *this is correct, not a gap.*
+    The card never advertises extended SmartPort (`$Cn07` = `$01`, a plain
+    ProDOS block device, deliberately — see the //c boot note in
+    `buildRom`), and `$01` BADCMD is what a non-extended controller answers.
+    Already pinned by `liron_smartport_dispatch`.
+  - 🟡 **still open**: boot failure is a silent `JMP $CnE0` loop (real
+    firmware prints an error); CONTROL calls needing the control-list DATA
+    (only code 0 works — the stub has no guest→device list copy).
+  - 🟡 **still open, needs a ruling**: 3.5-type units report
+    `fileWriteProtected || !writeBackEnabled` (WP until write-back is on,
+    the same rule `DiskImage` uses for 5.25") while HDV bays report only
+    `wpHeader_` and stay RAM-writable. Two bays on the *same* card answer
+    the guest's "can I write?" differently, decided by a host-side toggle
+    that models nothing on the machine. Physically, write-protect is a
+    property of the medium; the counter-argument is that accepting a write
+    with write-back off loses it silently. Whichever way it goes, one card
+    must not do both.
 - 🟢 **`$C05E/F` under IOUDIS is DONE — the entry was stale** (checked
   2026-08-27). The 2026-07-30 IOUDIS work gates the whole `$C058-$C05F`
   range on `iicProfile_ && !ioudis` (`Memory.cpp`, the branch above the

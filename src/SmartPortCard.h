@@ -143,6 +143,10 @@ public:
 
     // ── SlotPeripheral interface ────────────────────────────────────────
     std::string_view name() const override { return "SmartPort"; }
+
+    /// True when a hand-assembled slot-ROM region overflowed its budget.
+    /// Only a test should ever look at this; a correct build is always false.
+    bool romLayoutOverflowed() const { return romOverflow_; }
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead      (uint8_t low8) override;
@@ -180,6 +184,10 @@ private:
     int  slot_;
     std::array<std::unique_ptr<SmartPortUnit>, kMaxUnits> units_{};
     std::array<uint8_t, 256> rom_{};
+    /// True when a hand-assembled ROM region did not fit its budget. Always
+    /// false in a correct build; pinned by `smartport_rom_layout`, which is
+    /// the check the silent $CnC0 overwrite got past.
+    bool                     romOverflow_ = false;
 
     // Per-unit transfer state. The byte-stream protocol auto-increments
     // `streamOffset_[u]` per access, wrapping every 512 B. Drive select
@@ -233,6 +241,7 @@ private:
     uint8_t readDataByte();
     void    writeDataByte(uint8_t v);
     uint8_t statusByte() const;
+
     uint8_t blockCountByte(int which) const;   // 0 = low, 1 = high (STATUS)
     /// One block access on `unit` (null = the active one): lights that
     /// unit's access LED and, when a floppy sound device is attached,
