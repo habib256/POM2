@@ -786,40 +786,18 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   rebuild (`PrinterCoordinator::resetFeedCursor` — a rebuild can hand a
   replacement card the same allocator address).
 
-- 🟡 **Re-derive the device injection seams on top of v0.8.5** *(2026-08-26
-  merge; W5100 done 2026-08-27)* — the branch's versions predate main's socket
-  hardening (`disableSigpipe`, `MSG_NOSIGNAL`), `ThreadGuard` and the
-  torn-RSR-read fix, so each has to be rebuilt over the hardened code rather
-  than merged under it.
-  - ✅ **`W5100Socket`** — done. Hardening moved rather than rewritten;
-    `Socket::fd` is now an owning handle. `send()` gained a mode because
-    main's TX path calls `sendto` and plain `send` against one socket
-    (`flushPendingTx` continues an accepted tail and must not re-address it).
-    Pinned by `w5100_socket_seam`, which drives TCP connect with no host
-    socket opened — the SYN_SENT cases were previously reachable only against
-    a real unreachable peer.
-  - 🟡 **`SuperSerialTransport`** — the telnet listener. Main added
-    `ThreadGuard` and a join-before-reassign fix inside the code the branch
-    moved; port those into the transport, do not merge over them.
-  - ✅ **`FujiNetLink`** — done, and it needed no code moved: SpOverSlipLink
-    already implemented every method with matching signatures, it was just
-    never named as an interface. Main's dead-helper timeout fix and log
-    throttle stayed untouched underneath. The card's accessor split into
-    `link()` (commands) and `transportLink()` (lifecycle the UI configures).
-    Pinned by `fujinet_link_seam`.
-  - 🟡 **W5100 name resolution** — deliberately left in `W5100Device`: an
-    async mailbox with an in-flight cap, a bounded wait and its own cache,
-    wired to register reads. Its own pass.
-  `NetworkCoordinator` lands with the last of these. *~1 d left.*
-
-  The SSC one is the largest by far and the only one that moves a thread: its
-  worker is ~180 lines of socket + telnet-IAC parsing that reaches into the
-  card's RX ring, TX deque, pacing state and printer tap. The branch's answer
-  is three hooks on the card (`processTransportTextRx`, `deliverTransportBytes`,
-  `drainTransportTx`) with the thread and sockets in the transport TU. Port
-  main's `guardedThread` wrapper AND the join-before-reassign fix into it —
-  assigning a new `std::thread` over a joinable member calls `std::terminate`,
-  and the worker can exit on its own after a listen error.
+- 🟡 **`NetworkCoordinator` — the last coordinator** *(unblocked 2026-08-27)* —
+  all three device seams are done (`W5100Socket`, `FujiNetLink`,
+  `SuperSerialTransport`), each re-derived over v0.8.5's hardened code rather
+  than merged under it, each with a fake and a test that opens no socket. The
+  coordinator itself is still on
+  `refactor/core-boundaries-and-coordinators`; wiring it removes the last
+  three card aliases (`sscCards`, `sscCard`, `fujiNetCard`, ~29 sites).
+  *0.5-1 d.*
+- 🟢 **W5100 name resolution is still inline** *(2026-08-27)* — deliberately
+  left in `W5100Device` when the socket seam landed: an async mailbox with an
+  in-flight cap, a bounded wait and its own cache, wired to register reads.
+  Its own pass, and not on anything's critical path.
 - 🟢 **The SDK install contract + the CMake layer guard** *(2026-08-26 merge)* —
   `find_package(pom2_core)` / `POM2::core`, the standalone consumer example and
   the configure-time rejection of upward includes all rest on the branch's
