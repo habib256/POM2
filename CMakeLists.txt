@@ -975,7 +975,9 @@ endif()
 # -UNDEBUG is applied by tests/CMakeLists.txt at directory scope, so this
 # archive is compiled with asserts live — see the note at the top of that file.
 if(NOT EMSCRIPTEN)
-add_library(pom2_core_test STATIC
+# The core sources, shared by the installable SDK archive and the
+# assertion-enabled test twin. One list so the two cannot drift.
+set(POM2_CORE_SOURCES
     src/M6502.cpp
     src/Z80.cpp
     src/SoftCardZ80.cpp
@@ -1073,6 +1075,84 @@ add_library(pom2_core_test STATIC
     src/SystemProfile.cpp
     src/AppleIIeKeyboardLayout.cpp
 )
+
+# ─── pom2_core : the installable SDK archive ──────────────────────────────
+# The same core, built for consumers rather than for tests: asserts follow the
+# build type instead of being forced on, and the only header it exposes is the
+# PIMPL facade. `include/` is PUBLIC so a consumer gets <pom2/core.hpp> and
+# nothing else — src/ stays private, which is what keeps Memory and M6502 out
+# of the public surface (pinned by pom2_core_api).
+add_library(pom2_core STATIC ${POM2_CORE_SOURCES})
+add_library(POM2::core ALIAS pom2_core)
+# The ALIAS above only exists inside this build. EXPORT_NAME is what makes the
+# INSTALLED package spell it POM2::core too — without it a consumer has to
+# write POM2::pom2_core, and the two spellings would diverge silently.
+set_target_properties(pom2_core PROPERTIES EXPORT_NAME core)
+
+target_include_directories(pom2_core
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+    PRIVATE
+        ${POM2_SRC_DIR}
+        ${POM2_GENERATED_DIR}
+        ${IMGUI_DIR}          # miniaudio.h location only, no ImGui linkage
+)
+target_compile_features(pom2_core PUBLIC cxx_std_17)
+
+set(POM2_CORE_PACKAGE_NEEDS_THREADS 0)
+set(POM2_CORE_PACKAGE_WITH_SLIRP 0)
+if(UNIX AND NOT APPLE)
+    find_package(Threads REQUIRED)
+    target_link_libraries(pom2_core PUBLIC ${CMAKE_DL_LIBS} Threads::Threads m)
+    set(POM2_CORE_PACKAGE_NEEDS_THREADS 1)
+endif()
+if(APPLE)
+    target_link_libraries(pom2_core PUBLIC
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(pom2_core PUBLIC winmm ws2_32)
+endif()
+if(POM2_SLIRP_TARGET)
+    target_link_libraries(pom2_core PUBLIC ${POM2_SLIRP_TARGET})
+    set(POM2_CORE_PACKAGE_WITH_SLIRP 1)
+endif()
+
+# Everything below is one component, so `--install --component pom2_core_sdk`
+# gives a consumer the archive, the header and the package files and nothing
+# else — no ROMs, no fonts, no emulator binary.
+include(GNUInstallDirs)
+include(CMakePackageConfigHelpers)
+
+install(TARGETS pom2_core
+        EXPORT pom2_coreTargets
+        COMPONENT pom2_core_sdk
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/include/pom2
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
+        COMPONENT pom2_core_sdk)
+install(EXPORT pom2_coreTargets
+        FILE pom2_coreTargets.cmake
+        NAMESPACE POM2::
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pom2_core
+        COMPONENT pom2_core_sdk)
+
+configure_package_config_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/cmake/pom2_coreConfig.cmake.in
+    ${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfig.cmake
+    INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pom2_core)
+write_basic_package_version_file(
+    ${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfigVersion.cmake
+    VERSION ${PROJECT_VERSION}
+    COMPATIBILITY SameMinorVersion)
+install(FILES
+            ${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfig.cmake
+            ${CMAKE_CURRENT_BINARY_DIR}/pom2_coreConfigVersion.cmake
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/pom2_core
+        COMPONENT pom2_core_sdk)
+
+add_library(pom2_core_test STATIC ${POM2_CORE_SOURCES})
 target_include_directories(pom2_core_test PUBLIC
     ${POM2_SRC_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
