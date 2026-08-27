@@ -1,3 +1,19 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 // SlotBus dispatch smoke test — pins:
 //   * device-select decode (slot N at $C080+N*16, low4 = addr & 0xF)
 //   * slot-ROM decode (slot N at $CN00, low8 = addr & 0xFF)
