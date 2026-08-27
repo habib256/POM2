@@ -29,6 +29,7 @@
 // as a white bracket so you can see what slice of memory is in focus.
 
 #include "MainWindow.h"
+#include "DebugCoordinator.h"
 
 #include "DiskIICard.h"
 #include "EmulationController.h"
@@ -422,7 +423,7 @@ void MainWindow::renderMemoryBarWindow()
 
     // --- Memory viewer viewport overlay ---
     if (show(pom2::PanelId::MemViewer)) {
-        const auto vp = memViewer->getViewportRange();
+        const auto vp = debugCoordinator_->memoryViewer().getViewportRange();
         float vpY0 = addrToY(vp.startAddress);
         float vpY1 = addrToY(vp.endAddress);
         if (vpY1 - vpY0 < 4.0f) vpY1 = vpY0 + 4.0f;
@@ -477,7 +478,7 @@ void MainWindow::renderMemoryBarWindow()
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 show(pom2::PanelId::MemViewer) = true;
-                memViewer->navigateToAddress(static_cast<int>(hoverAddr));
+                debugCoordinator_->memoryViewer().navigateToAddress(static_cast<int>(hoverAddr));
             }
         }
     }
@@ -671,7 +672,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
 
     // --- Memory viewer viewport overlay ---
     if (show(pom2::PanelId::MemViewer)) {
-        const auto vp = memViewer->getViewportRange();
+        const auto vp = debugCoordinator_->memoryViewer().getViewportRange();
         float vpX0 = addrToX(vp.startAddress);
         float vpX1 = addrToX(vp.endAddress);
         if (vpX1 - vpX0 < 4.0f) vpX1 = vpX0 + 4.0f;
@@ -726,7 +727,7 @@ void MainWindow::renderMemoryBarHorizontalWindow()
 
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                 show(pom2::PanelId::MemViewer) = true;
-                memViewer->navigateToAddress(static_cast<int>(hoverAddr));
+                debugCoordinator_->memoryViewer().navigateToAddress(static_cast<int>(hoverAddr));
             }
         }
     }
@@ -829,7 +830,7 @@ void MainWindow::renderMemoryGridWindow()
                         mousePos.y >= p0.y && mousePos.y < p1.y) {
                         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
                             show(pom2::PanelId::MemViewer) = true;
-                            memViewer->navigateToAddress(addr);
+                            debugCoordinator_->memoryViewer().navigateToAddress(addr);
                         }
                         ImGui::BeginTooltip();
                         ImGui::Text("Page $%02X : $%04X-$%04X", page, addr, addr + 0xFF);

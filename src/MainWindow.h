@@ -55,6 +55,7 @@ namespace pom2 { class SlotCardFactory; }
 namespace pom2 { class SlotRebuildCoordinator; }
 namespace pom2 { class SlotConfigurationCoordinator; }
 namespace pom2 { class SlotProvisioningCoordinator; }
+namespace pom2 { class DebugCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -279,7 +280,11 @@ private:
     // ↔ Color 4-bit) rather than snapping to a single default each way.
     Apple2Display::HiResMode lastColorHiResMode_ = Apple2Display::HiResMode::ColorNTSC;
     Apple2Display::HiResMode lastMonoHiResMode_  = Apple2Display::HiResMode::MonoWhite;
-    std::unique_ptr<MemoryViewer_ImGui>           memViewer;
+    /// Owns the memory viewer and its two-phase contract: the snapshot is
+    /// read under the machine lock, staged edits are flushed after it is
+    /// released. Flushing inline would self-deadlock — the write sink
+    /// re-takes the same non-recursive mutex.
+    std::unique_ptr<pom2::DebugCoordinator>       debugCoordinator_;
     /// Run-control debugger panel. All of its state and every decision it
     /// makes live in Debugger_ImGui — MainWindow only owns it and shows it.
     std::unique_ptr<pom2::Debugger_ImGui>        debuggerPanel;

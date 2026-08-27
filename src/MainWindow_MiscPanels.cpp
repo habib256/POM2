@@ -11,6 +11,7 @@
 // to that translation unit.)
 
 #include "MainWindow.h"
+#include "DebugCoordinator.h"
 #include "EmulationController.h"
 
 #include "CassetteDeck_ImGui.h"
@@ -26,27 +27,13 @@
 
 void MainWindow::renderMemoryViewerWindow()
 {
-    if (!show(pom2::PanelId::MemViewer)) return;
-    ImGui::SetNextWindowSize(ImVec2(720, 520), ImGuiCond_FirstUseEver);
-    if (ImGui::Begin("Memory viewer", &show(pom2::PanelId::MemViewer))) {
-        {
-            // Hold the state mutex briefly so the snapshot the viewer reads
-            // (Memory::data()) is consistent — no torn writes mid-row.
-            auto st = controller->lockState();
-            memViewer->setCmosMode(
-                st.cpu().getCpuMode() == M6502::CpuMode::CMOS);
-            memViewer->render();
-        }
-        // Byte edits / Undo / Redo are only STAGED by render(); apply them
-        // here, OUTSIDE the lock. The write sink re-takes stateMutex (the
-        // poke must go through Memory::memWrite like a CPU store), and
-        // stateMutex is a plain non-recursive std::mutex — flushing inline
-        // would self-deadlock the UI thread while it still holds the lock
-        // the CPU worker needs at its next chunk, freezing the emulator.
-        // Same hazard as ejectAllDisks() → eject35().
-        memViewer->flushPendingWrites();
-    }
-    ImGui::End();
+    // The whole body — window, locked snapshot, and the flush that MUST
+    // happen after the lock is released — belongs to DebugCoordinator. The
+    // ordering is the reason it is one unit: the write sink re-takes
+    // stateMutex to push each poke through Memory::memWrite like a CPU store,
+    // and that mutex is non-recursive, so flushing inline would freeze the UI
+    // thread while it still holds the lock the worker needs at its next chunk.
+    debugCoordinator_->renderMemoryViewer(show(pom2::PanelId::MemViewer));
 }
 
 // ─── Cassette deck ───────────────────────────────────────────────────────

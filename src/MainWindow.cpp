@@ -60,6 +60,7 @@
 #include "AudioCoordinator.h"
 #include "DevicePanelCoordinator.h"
 #include "SlotCardFactory.h"
+#include "DebugCoordinator.h"
 #include "SlotConfigurationCoordinator.h"
 #include "SlotProvisioningCoordinator.h"
 #include "SlotRebuildCoordinator.h"
@@ -185,7 +186,7 @@ MainWindow::MainWindow(bool forceIIPlus)
     // headers out of MainWindow.h.
     : controller     (std::make_unique<EmulationController>()),
       display        (std::make_unique<Apple2Display>()),
-      memViewer      (std::make_unique<MemoryViewer_ImGui>(&controller->memory())),
+      debugCoordinator_(std::make_unique<pom2::DebugCoordinator>(*controller)),
       debuggerPanel  (std::make_unique<pom2::Debugger_ImGui>()),
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
@@ -272,11 +273,6 @@ MainWindow::MainWindow(bool forceIIPlus)
     // Memory viewer writes go through Memory::memWrite under stateMutex,
     // so a byte poked from the UI passes through ROM-write protection and
     // any future I/O hooks just like a CPU store would.
-    memViewer->setWriteCallback([this](uint16_t a, uint8_t v) {
-        auto st = controller->lockState();
-        st.memory().memWrite(a, v);
-    });
-
     // Bind every panel in the catalog to its flag BEFORE anything reads or
     // writes panel state: the menus, the palette, the settings round-trip and
     // the browser build's chrome-light startup are all derived from those

@@ -37,6 +37,7 @@ COORD = (
     'slotProvisioningCoordinator_->',
     'slotConfigCoordinator_->',
     'slotCardFactory_->',
+    'debugCoordinator_->',
     'storageCoordinator_->',
     'slotConfigurationCoordinator_->',
     'slotProvisioningCoordinator_->',
