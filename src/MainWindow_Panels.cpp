@@ -23,6 +23,7 @@
 // the god-object does not get to grow by 250 lines of table.
 
 #include "MainWindow.h"
+#include "PrinterCoordinator.h"
 
 #include "EchoPlusCard.h"
 #include "FujiNetCard.h"
@@ -89,8 +90,19 @@ void MainWindow::registerPanels()
         [this] { return "Phasor" + slotSuffix(phasorCard); }, card(&phasorCard) });
     panels_.bind(P::EchoPlus, RT{
         [this] { return "Echo+" + slotSuffix(echoPlusCard); }, card(&echoPlusCard) });
+    // Availability and label both come from the coordinator's snapshot: there
+    // is no PrinterCard alias to test the address of any more.
     panels_.bind(P::Printer, RT{
-        [this] { return "Printer" + slotSuffix(printerCard); }, card(&printerCard) });
+        [this] {
+            const int slot =
+                printerCoordinator_->captureHost(*controller).printerCardSlot;
+            return slot >= 0 ? "Printer (slot " + std::to_string(slot) + ")"
+                             : std::string("Printer");
+        },
+        [this] {
+            return printerCoordinator_->captureHost(*controller)
+                       .printerCardSlot >= 0;
+        } });
 
     // Super Serial is the one card a profile can carry TWICE (the //c's
     // printer and modem ports), so its label lists every slot it occupies.

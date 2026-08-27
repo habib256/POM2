@@ -47,6 +47,7 @@ class EmulationController;
 // header stays outside that include cone; see `emul()` below.
 namespace pom2 { class StateAccess; }
 namespace pom2 { class MouseCoordinator; }
+namespace pom2 { class PrinterCoordinator; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -330,6 +331,11 @@ private:
     /// snapshots. Owns no card pointer.
     std::unique_ptr<pom2::MouseCoordinator> mouseCoordinator_;
 
+    /// Host printer cable: resolves every feed source under lockState(),
+    /// drains exactly one by physical priority and hands an owned byte
+    /// batch out after unlocking. Owns no card pointer.
+    std::unique_ptr<pom2::PrinterCoordinator> printerCoordinator_;
+
     std::vector<DiskIICard*>     diskCards;
     DiskIICard*                  diskCard = nullptr;       // non-owning, owned by SlotBus
     ProDOSHardDiskCard*          hdvCard = nullptr;        // non-owning, owned by SlotBus
@@ -359,8 +365,11 @@ private:
     EchoPlusCard*                echoPlusCard     = nullptr; // non-owning, owned by SlotBus
     EchoPlusTMS5220Card*         echoPlusTmsCard  = nullptr; // non-owning, owned by SlotBus
     pom2::SmartPortCard*         smartPortCard    = nullptr; // non-owning, owned by SlotBus
-    PrinterCard*                 printerCard      = nullptr; // non-owning, owned by SlotBus
-    GrapplerCard*                grapplerCard     = nullptr; // non-owning, owned by SlotBus
+    // PrinterCard / GrapplerCard / the FujiNet printer unit / the SSC printer
+    // tap are the four things that can feed the ImageWriter. All four are
+    // reached through `printerCoordinator_`, which resolves them under the
+    // machine lock and owns the feed-cursor handover — the panel used to read
+    // a spool through a bare alias while the CPU thread appended to it.
     // Ethernet. Both are multi-pluggable in principle but the panel and
     // settings track one of each — two NICs on one virtual network is a
     // configuration nobody asks for, and each would need its own MAC.
@@ -559,16 +568,11 @@ private:
     // ImageWriter II paper-tray window (rendered printout). Visible by
     // default: it is one of the three tabs the default dock layout seeds to
     // the right of the screen (see `applyDockLayout`, DockLayout::Reset).
-    // How many spool bytes have already been fed to `imageWriter`, so a
-    // poll only picks up what arrived since the previous frame. Re-seated
-    // whenever the source card changes or its spool is cleared — see
-    // `printerFeedCursor` (PrinterFeedCursor.h) for the two rules.
-    size_t       imageWriterConsumed = 0;
-    // Identity of the card the cursor above counts against. The three
-    // spools grow independently, so a cursor carried across a source
-    // switch (e.g. PrinterCard unplugged, SSC tap takes over) would skip
-    // or replay part of the new source's stream.
-    const void*  imageWriterSource = nullptr;
+    // The feed cursor and the identity of the card it counts against now
+    // live inside PrinterCoordinator — they are one invariant with the drain
+    // that advances them, and keeping them here meant every source branch
+    // re-stated the handover rules. See PrinterFeedCursor.h for the rules
+    // themselves, which are unchanged.
     /// Whether the printer's full input buffer holds the ACK line and so
     /// blocks the guest — the real handshake. OFF by default: it is
     /// faithful (a real Apple II *did* sit there for minutes printing a

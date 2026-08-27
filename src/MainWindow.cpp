@@ -57,6 +57,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCoordinator.h"
+#include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
 #include "MouseGrab.h"
 #include "NtscPostProcessor.h"
@@ -183,6 +184,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
       mouseCoordinator_(std::make_unique<pom2::MouseCoordinator>(*controller)),
+      printerCoordinator_(std::make_unique<pom2::PrinterCoordinator>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -1091,12 +1093,9 @@ MainWindow::~MainWindow()
                         static_cast<int>(imageWriter->autoFeedMode()));
     settings->setInt   ("imagewriter_speed",
                         static_cast<int>(imageWriter->speed()));
-    if (grapplerCard) {
-        settings->setInt ("grappler_printer_type",
-                          static_cast<int>(grapplerCard->printerType()));
-        settings->setBool("grappler_msb_software",
-                          grapplerCard->msbSoftwareControl());
-    }
+    // No-ops when no Grappler+ is plugged, so the keys keep their previous
+    // values rather than being overwritten with a default.
+    printerCoordinator_->persistGrappler(*settings, *controller);
     settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
     if (ntscFx) {
         const auto& p = ntscFx->getParams();
@@ -1615,7 +1614,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
 
     auto plugPrinter = [&](int s) {
         auto card = std::make_unique<PrinterCard>(s);
-        printerCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -1803,7 +1801,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 static_cast<int>(GrapplerCard::PrinterType::AppleDotMatrix))));
         card->setMsbSoftwareControl(
             settings->getBool("grappler_msb_software", true));
-        grapplerCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
     };
 
@@ -3600,8 +3597,8 @@ void MainWindow::renderStatusBar()
             // Unexplained, that reads as a hung emulator.
             if (imageWriter && imageWriter->busy()) {
                 const bool waiting =
-                    printerBackPressure && grapplerCard &&
-                    grapplerCard->printerBusy();
+                    printerBackPressure &&
+                    printerCoordinator_->captureHost(*controller).grapplerBusy;
                 pom2::verticalRule();
                 ImGui::TextColored(u32(pal.warn),
                                    ICON_FA_PRINT " printing %zu B%s",
@@ -5433,7 +5430,7 @@ void MainWindow::renderAbstractionPanel()
                "ProDOS-signature stub, so tools that pull the driver off the "
                "card find nothing.");
     degradable("grappler", plugged("grappler"),
-               grapplerCard && grapplerCard->isRomLoaded(),
+               printerCoordinator_->captureHost(*controller).grapplerRomLoaded,
                pom2::AbsLevel::H1,
                "roms/grappler_plus.bin absent — running buildStubRom(), so "
                "the real Orange Micro firmware is not executing.");
@@ -6964,9 +6961,14 @@ void MainWindow::renderFujiNetPanelWindow()
         snap.printerTap    = fujiNetCard->hasPrinterUnit();
         snap.printerBytes  = fujiNetCard->bytesWritten();
         // pumpImageWriter() arbitrates: parallel cards outrank the FujiNet
-        // tap, which outranks the SSC tap.
-        snap.printerOutranked = snap.printerTap &&
-                                (printerCard != nullptr || grapplerCard != nullptr);
+        // tap, which outranks the SSC tap. Outranked iff the arbitration picked something OTHER than this
+        // tap. Asking the coordinator which source won says that directly;
+        // the old `printerCard || grapplerCard` re-stated the priority list
+        // here and would have to be edited again for every new source.
+        snap.printerOutranked =
+            snap.printerTap &&
+            printerCoordinator_->captureHost(*controller).source !=
+                pom2::PrinterCoordinator::SourceKind::FujiNet;
         snap.hostClockCard = (clockCard != nullptr);
         snap.helperRunning  = fujiNetCard->helper().isRunning();
         snap.helperPath     = fujiNetHelperPath_;

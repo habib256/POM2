@@ -24,6 +24,7 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "PrinterCoordinator.h"
 #include "MediaMount.h"
 
 // Same heavy-includes-here pattern as MainWindow.cpp — MainWindow.h
@@ -1051,10 +1052,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         phasorCard       = nullptr;
         echoPlusCard     = nullptr;
         echoPlusTmsCard  = nullptr;
-        printerCard      = nullptr;
-        // grapplerCard feeds pumpImageWriter() every frame — leaving it
-        // dangling here is a use-after-free the moment the card is gone.
-        grapplerCard     = nullptr;
+        // The printer sources are no longer aliased here. A rebuild can hand
+        // a replacement card the same allocator address, so the feed cursor's
+        // identity must be invalidated explicitly or the new card's spool is
+        // counted against the old card's cursor.
+        printerCoordinator_->resetFeedCursor();
         // Same hazard: the Ethernet panel dereferences these every frame.
         uthernetCard     = nullptr;
         uthernetIICard   = nullptr;
@@ -1406,8 +1408,7 @@ bool MainWindow::restartEmulationFromSettings()
         phasorCard       = nullptr;
         echoPlusCard     = nullptr;
         echoPlusTmsCard  = nullptr;
-        printerCard      = nullptr;
-        grapplerCard     = nullptr;   // see pumpImageWriter() — non-owning
+        printerCoordinator_->resetFeedCursor();   // see pumpImageWriter()
         uthernetCard     = nullptr;   // see the Ethernet panel — non-owning
         uthernetIICard   = nullptr;
         fujiNetCard      = nullptr;   // owns a socket + worker thread

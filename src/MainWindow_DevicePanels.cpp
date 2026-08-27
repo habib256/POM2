@@ -25,6 +25,7 @@
 #include "GrapplerCard.h"
 #include "ImageWriter.h"
 #include "PrinterCard.h"
+#include "PrinterCoordinator.h"
 #include "PrinterSoundDevice.h"
 #include "Settings.h"
 #include "SuperSerialCard.h"
@@ -253,22 +254,29 @@ void MainWindow::renderSscPanelWindow()
 
 void MainWindow::renderPrinterPanelWindow()
 {
-    if (!show(pom2::PanelId::Printer) || !printerCard) return;
+    if (!show(pom2::PanelId::Printer)) return;
+    // One acquisition for the whole panel: plugged state, slot, byte count,
+    // truncation flag and the spool text. This used to read the spool through
+    // a bare alias while the CPU thread appended to it — the comment below
+    // claimed the lock was held everywhere it was touched, and it was not.
+    const auto printerPanel =
+        printerCoordinator_->capturePrinterPanel(*controller);
+    if (!printerPanel.plugged) return;
 
     ImGui::SetNextWindowSize(ImVec2(560, 420), ImGuiCond_FirstUseEver);
     const std::string title = "Printer (slot " +
-        std::to_string(printerCard->getSlot()) + ")###printerPanel";
+        std::to_string(printerPanel.slot) + ")###printerPanel";
     if (!ImGui::Begin(title.c_str(), &show(pom2::PanelId::Printer))) {
         ImGui::End();
         return;
     }
 
-    const size_t nBytes = printerCard->bytesWritten();
+    const size_t nBytes = printerPanel.bytesWritten;
     ImGui::Text("Spool: %zu byte%s", nBytes, nBytes == 1 ? "" : "s");
     ImGui::SameLine();
     ImGui::TextDisabled("— PR#%d from BASIC sends output here",
-                        printerCard->getSlot());
-    if (printerCard->spoolTruncated()) {
+                        printerPanel.slot);
+    if (printerPanel.spoolTruncated) {
         ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
             "Preview/save retains only the newest %zu bytes; older output "
             "was already streamed to the virtual printer.",
@@ -331,7 +339,7 @@ void MainWindow::renderPrinterPanelWindow()
             printerLastSaveStatus = "Save failed: cannot open " +
                                     p.string();
         } else {
-            const std::string text = printerCard->spoolText();
+            const std::string& text = printerPanel.spoolText;
             out.write(text.data(), static_cast<std::streamsize>(text.size()));
             out.flush();
             out.close();
@@ -362,7 +370,8 @@ void MainWindow::renderPrinterPanelWindow()
 #endif
 
     if (ImGui::Button("Clear spool")) {
-        printerCard->clearSpool();
+        printerCoordinator_->clearPrinterPanelSpool(*controller,
+                                                    printerPanel.slot);
         printerLastSaveStatus.clear();
     }
     ImGui::SameLine();
@@ -371,15 +380,13 @@ void MainWindow::renderPrinterPanelWindow()
     ImGui::Separator();
     ImGui::TextDisabled("Preview (high bit stripped, CR → LF):");
 
-    // Snapshot once per frame; printerCard mutates this from the CPU
-    // thread, but we hold the state lock everywhere it's touched so a
-    // single read is consistent.
-    const std::string preview = printerCard->spoolText();
+    // Taken with the rest of the panel state, under one lock.
+    const std::string& preview = printerPanel.spoolText;
     ImGui::BeginChild("##printerPreview", ImVec2(0, 0), true,
                       ImGuiWindowFlags_HorizontalScrollbar);
     if (preview.empty()) {
         ImGui::TextDisabled("(empty — try `PR#%d : PRINT \"HELLO\"` from BASIC)",
-                            printerCard->getSlot());
+                            printerPanel.slot);
     } else {
         ImGui::TextUnformatted(preview.data(),
                                preview.data() + preview.size());
@@ -412,49 +419,21 @@ void MainWindow::pumpImageWriter()
     // the top costs one frame of lag and never misses a page.
     archiveNewPrinterPages();
 
-    std::vector<uint8_t> fresh;
-    size_t total = 0;
-    // Cursor handover rules (source change, spool cleared) live in
-    // printerFeedCursor() — see PrinterFeedCursor.h for why re-seating at
-    // 0 was wrong. Pinned by testSpoolSeam.
-    if (printerCard) {
-        imageWriterConsumed = pom2::printerFeedCursor(
-            imageWriterSource, imageWriterConsumed,
-            printerCard, printerCard->bytesWritten());
-        total = printerCard->drainSpoolFrom(imageWriterConsumed, fresh);
-    } else if (grapplerCard) {
-        imageWriterConsumed = pom2::printerFeedCursor(
-            imageWriterSource, imageWriterConsumed,
-            grapplerCard, grapplerCard->bytesWritten());
-        total = grapplerCard->drainSpoolFrom(imageWriterConsumed, fresh);
-    } else if (fujiNetCard && fujiNetCard->hasPrinterUnit()) {
-        // FujiNet's printer unit. Ranked below the parallel cards (a machine
-        // with a real printer card keeps that routing) but above the SSC tap,
-        // because a FujiNet printer is an explicit choice while the tap is a
-        // //c-class default. The FujiNet prints its own copy too — POM2 just
-        // renders the same byte stream on its own paper.
-        imageWriterConsumed = pom2::printerFeedCursor(
-            imageWriterSource, imageWriterConsumed,
-            fujiNetCard, fujiNetCard->bytesWritten());
-        total = fujiNetCard->drainSpoolFrom(imageWriterConsumed, fresh);
-    } else if (SuperSerialCard* tap = printerTapSsc()) {
-        // //c-class printer port: the SSC's TX tap (slot 1 by default —
-        // see plugSlotsFromSettings). Parallel cards outrank it so a IIe
-        // with both a PrinterCard and an SSC keeps the parallel routing.
-        imageWriterConsumed = pom2::printerFeedCursor(
-            imageWriterSource, imageWriterConsumed,
-            tap, tap->printerSpoolBytes());
-        total = tap->drainPrinterSpoolFrom(imageWriterConsumed, fresh);
-    } else {
+    // One call resolves every candidate source under the machine lock,
+    // applies the physical priority (PrinterCard > Grappler+ > FujiNet unit >
+    // SSC tap), advances the feed cursor across a source change or a cleared
+    // spool, and hands back an OWNED byte batch. The cursor handover rules
+    // still live in printerFeedCursor() (PrinterFeedCursor.h explains why
+    // re-seating at 0 was wrong); they are now applied inside the coordinator
+    // instead of being re-stated per source here. Pinned by testSpoolSeam.
+    auto batch = printerCoordinator_->drainImageWriter(*controller);
+    std::vector<uint8_t> fresh = std::move(batch.bytes);
+
+    if (!batch.haveSource()) {
         // No source this frame (card unplugged, or the tap switched off).
-        // Forget WHICH source it was so the next one re-seats — but do not
-        // zero the cursor here: that was the other half of the reprint
-        // bug, since a source that comes back is re-seated at its own
-        // current total by resyncSource above.
-        imageWriterSource = nullptr;
-        // The mechanism keeps running: a job already in the printer's
-        // input buffer must still reach paper even with nothing feeding
-        // it (unplugging the card does not un-print the page).
+        // The mechanism keeps running: a job already in the printer's input
+        // buffer must still reach paper even with nothing feeding it —
+        // unplugging the card does not un-print the page.
         imageWriter->tick(static_cast<double>(ImGui::GetIO().DeltaTime));
         return;
     }
@@ -466,8 +445,6 @@ void MainWindow::pumpImageWriter()
                                     fresh.size(), fresh.size() == 1 ? "" : "s",
                                     imageWriter->pendingBytes());
     }
-    imageWriterConsumed = total;
-
     // Print what the mechanism had time for this frame. ImGui's DeltaTime
     // is the host frame time, which is what a real print head answers to
     // (the guest can be paused, turbo'd or rewound — the paper still
@@ -479,7 +456,7 @@ void MainWindow::pumpImageWriter()
     // head catches up; the Grappler firmware spins on that ACK bit before
     // every byte, so a guest printing a long job now waits for the paper
     // instead of blasting a whole page into a host queue.
-    if (grapplerCard) {
+    {
         // Only hold the line when the user asked for the real handshake:
         // a Print Shop page is ~100 KB of dot columns, which at 250 cps
         // keeps the guest blocked for minutes. Faithful, and
@@ -487,8 +464,8 @@ void MainWindow::pumpImageWriter()
         const bool busy =
             printerBackPressure &&
             imageWriter->pendingBytes() > pom2::ImageWriter::kInputBufferBytes;
-        if (busy != grapplerCard->printerBusy()) {
-            grapplerCard->setPrinterBusy(busy);
+        const auto update = printerCoordinator_->setGrapplerBusy(*controller, busy);
+        if (update.grapplerPlugged && update.changed) {
             if (imageWriter->tracing())
                 imageWriter->traceEvent(
                     "BUSY=%d — the Apple II %s (queue %zu / %zu buffer)",
@@ -513,27 +490,37 @@ void MainWindow::renderImageWriterWindow()
     // and a Grappler+ coexist (different catalog keys, so its duplicate
     // check does not object), and the loser then feeds nothing at all —
     // silently, with paper that just stays blank. Name the losers.
-    std::vector<std::string> ignored;
-    {
-        const bool haveParallel = printerCard || grapplerCard;
-        if (printerCard && grapplerCard)
-            ignored.push_back("Grappler+ slot " +
-                              std::to_string(grapplerCard->getSlot()));
-        if (haveParallel)
-            for (auto* ssc : sscCards)
-                if (ssc && ssc->printerTap())
-                    ignored.push_back("Super Serial slot " +
-                                      std::to_string(ssc->getSlot()));
+    // The coordinator arbitrates and reports BOTH which source won and which
+    // plugged sources are therefore feeding nothing — including the FujiNet
+    // printer unit, which the hand-rolled list here never named, so a
+    // FujiNet-only setup showed an unconnected printer instead of its source.
+    const auto printerHost = printerCoordinator_->captureHost(*controller);
+    const std::vector<std::string>& ignored = printerHost.ignoredSources;
+
+    using SourceKind = pom2::PrinterCoordinator::SourceKind;
+    host.haveSource = printerHost.source != SourceKind::None;
+    switch (printerHost.source) {
+        case SourceKind::PrinterCard:
+            host.sourceLabel = "fed by Printer card, slot " +
+                               std::to_string(printerHost.sourceSlot);
+            break;
+        case SourceKind::Grappler:
+            host.sourceLabel = "fed by Grappler+, slot " +
+                               std::to_string(printerHost.sourceSlot);
+            break;
+        case SourceKind::FujiNet:
+            host.sourceLabel = "fed by FujiNet printer unit, slot " +
+                               std::to_string(printerHost.sourceSlot);
+            break;
+        case SourceKind::SuperSerial:
+            host.sourceLabel = "fed by Super Serial (printer port), slot " +
+                               std::to_string(printerHost.sourceSlot);
+            break;
+        case SourceKind::None:
+            break;
     }
 
-    if (printerCard) {
-        host.haveSource  = true;
-        host.sourceLabel = "fed by Printer card, slot " +
-                           std::to_string(printerCard->getSlot());
-    } else if (grapplerCard) {
-        host.haveSource  = true;
-        host.sourceLabel = "fed by Grappler+, slot " +
-                           std::to_string(grapplerCard->getSlot());
+    if (printerHost.grapplerPlugged) {
         // The Grappler's S1 printer-type switches decide which dialect of
         // escape codes its firmware emits — an Epson-configured card feeds
         // this ImageWriter Epson graphics commands, which come out as
@@ -544,21 +531,18 @@ void MainWindow::renderImageWriterWindow()
             host.cardDipOptions.push_back(
                 { GrapplerCard::printerTypeName(t), i });
         }
-        host.cardDipValue = static_cast<int>(grapplerCard->printerType());
+        host.cardDipValue = printerHost.grapplerPrinterType;
         host.cardDipRecommended = static_cast<int>(PT::AppleDotMatrix);
         host.backPressure = printerBackPressure;
         host.onBackPressureChanged =
             [this](bool v) { printerBackPressure = v; };
+        // Re-resolves the card under the lock before writing: this callback
+        // runs later in the frame, and the slot can have been rebuilt.
         host.onCardDipChanged = [this](int v) {
-            if (grapplerCard)
-                grapplerCard->setPrinterType(
-                    static_cast<GrapplerCard::PrinterType>(v));
+            printerCoordinator_->setGrapplerPrinterType(*controller, v);
         };
-    } else if (SuperSerialCard* tap = printerTapSsc()) {
-        host.haveSource  = true;
-        host.sourceLabel = "fed by Super Serial (printer port), slot " +
-                           std::to_string(tap->getSlot());
     }
+
     if (host.haveSource && !ignored.empty()) {
         host.sourceLabel += "  (not feeding: ";
         for (size_t i = 0; i < ignored.size(); ++i)
