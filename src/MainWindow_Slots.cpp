@@ -24,6 +24,7 @@
 // otherwise the entry is greyed out in the dropdown.
 
 #include "MainWindow.h"
+#include "SlotConfigurationCoordinator.h"
 #include "SlotRebuildCoordinator.h"
 #include "StorageCoordinator.h"
 #include "DevicePanelCoordinator.h"
@@ -151,16 +152,15 @@ void MainWindow::renderSlotConfigPanel()
             ImGui::SetNextItemWidth(-FLT_MIN);
         };
 
-        // Snapshot the canonical mapping into a working copy so the user's
-        // edits are local until Apply.
-        static std::array<std::string, 8> draft{};
-        // Re-seed the working copy from the live slotCards[] whenever a
-        // profile switch / settings restart rebuilt them. slotDraftInited_ is
-        // a MainWindow member that applyProfile/restartEmulationFromSettings
-        // reset for exactly this purpose — a plain `static bool` here would
-        // never observe the rebuild and would keep stale assignments.
+        // The staged editor value lives in the coordinator, not in a
+        // function-local `static`: it is one of the three slot maps, and the
+        // one that must NOT be confused with either the effective plan or the
+        // live bus. Re-seeded from the plan whenever a profile switch or a
+        // settings restart rebuilt it — slotDraftInited_ is reset by both for
+        // exactly that purpose, which a `static bool` here could never observe.
+        auto& draft = slotConfigCoordinator_->draft();
         if (!slotDraftInited_) {
-            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+            slotConfigCoordinator_->resetDraft();
             slotDraftInited_ = true;
         }
 
@@ -489,7 +489,7 @@ void MainWindow::renderSlotConfigPanel()
                     tapeStatusUntil = lastFrameTime + 8.0;
                     pom2::log().warn("Slots", tapeStatusMessage);
                 }
-                for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+                slotConfigCoordinator_->resetDraft();
             }
         }
         ImGui::EndDisabled();
@@ -505,7 +505,7 @@ void MainWindow::renderSlotConfigPanel()
         ImGui::SameLine();
         ImGui::BeginDisabled(pending == 0);
         if (ImGui::Button("Revert"))
-            for (int s = 1; s <= 7; ++s) draft[s] = slotCards[s];
+            slotConfigCoordinator_->resetDraft();
         ImGui::EndDisabled();
         if (pending > 0 && ImGui::IsItemHovered())
             ImGui::SetTooltip("Discard the %d staged slot change%s.\n"
@@ -565,6 +565,20 @@ void MainWindow::renderMediaPanel()
         // and each bay snapshot below does take the lock.
         SlotBus& bus = controller->memory().slotBus();
 
+        // Label rows from the LIVE bus, not from the plan. They are not the
+        // same thing: a card auto-provisioned for a boot is plugged without
+        // being configured, and a configured card whose ROM is missing is
+        // configured without being plugged. Reading the plan here meant the
+        // first showed a blank label and the second showed a card that was
+        // not there.
+        //
+        // Unlocked on purpose, and consistent with the `bus` reference above:
+        // captureLive reads only topology (which slot holds which card, and
+        // each card's const name), which is UI-thread-confined. The header's
+        // "caller must hold the state lock" is written for callers that are
+        // not the thread which owns every writer; this one is.
+        const auto liveSlots = slotConfigCoordinator_->captureLive(
+            controller->memory().slotBus());
         for (int s = 1; s <= 7; ++s) {
             SlotPeripheral* p = bus.peripheral(s);
             if (!p) continue;
@@ -575,7 +589,7 @@ void MainWindow::renderMediaPanel()
                 any = true;
                 ImGui::PushID(2000 + s);
                 ImGui::Text("Slot %d — %s%s", s,
-                            pom2::cardLabelForKey(slotCards[s]),
+                            pom2::cardLabelForKey(liveSlots.keys[s]),
                             builtIn ? " (built-in)" : "");
 
                 int nb = media->bayCount();
@@ -721,7 +735,7 @@ void MainWindow::renderMediaPanel()
                 any = true;
                 ImGui::PushID(3000 + s);
                 ImGui::Text("Slot %d — %s%s", s,
-                            pom2::cardLabelForKey(slotCards[s]),
+                            pom2::cardLabelForKey(liveSlots.keys[s]),
                             builtIn ? " (built-in)" : "");
 
                 bool bootable = false;

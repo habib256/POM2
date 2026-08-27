@@ -34,6 +34,9 @@ COORD = (
     'printerCoordinator_->',
     'audioCoordinator_->',
     'devicePanelCoordinator_->',
+    'slotProvisioningCoordinator_->',
+    'slotConfigCoordinator_->',
+    'slotCardFactory_->',
     'storageCoordinator_->',
     'slotConfigurationCoordinator_->',
     'slotProvisioningCoordinator_->',
@@ -65,6 +68,18 @@ LOCK_FREE = (
     'persistDiskIIDrive',            # 2. takes SlotBus&
     'flushAll',                      # 2. takes SlotBus&
     'topology',                      # 2. takes SlotBus&
+    # 4. SlotCardFactory::create takes only a Request — no controller, no bus,
+    #    so it cannot take the lock. It DOES read ROM files, which is why it
+    #    is called from plugSlotsFromSettings under the rebuild's lock: that
+    #    is the documented profile-switch exception (the CPU worker is stopped
+    #    across a rebuild anyway). See CLAUDE.md, "Never hold stateMutex
+    #    across file I/O".
+    'create',
+    'captureLive',                   # 2. takes SlotBus&
+    'resolve',                       # 1. plan resolution over Settings
+    'effectivePlan',                 # 1.
+    'draft',                         # 1.
+    'resetDraft',                    # 1.
     # 3. A third shape, and the clearest: the name ends in `Locked` and the
     #    method takes a `const StateAccess&` — a token that exists only
     #    because the caller took the lock. These MUST be called inside one,
@@ -86,6 +101,14 @@ def enclosing_function(lines, idx):
 
 def lock_still_open(lines, fn_start, call_idx):
     """Nearest preceding lock, then check whether its block has closed."""
+    # A function that RECEIVES a StateAccess is locked for its whole body —
+    # the parameter is the proof of ownership, and there is no lockState()
+    # call inside for the search below to find. MainWindow::plugSlotsFromSettings
+    # is the one that matters; treat the whole body as inside the lock.
+    signature = lines[fn_start]
+    if 'StateAccess' in signature:
+        return fn_start + 1
+
     lock = None
     for j in range(call_idx - 1, fn_start - 1, -1):
         code = lines[j].split('//')[0]
