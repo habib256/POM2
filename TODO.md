@@ -743,7 +743,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   |---|---|---|
   | ~~`SlotCardFactory`~~ ✅ 2026-08-27 | — | seven keys' construction + ROM policy left MainWindow |
   | ~~`SlotRebuildCoordinator`~~ ✅ 2026-08-27 | — | one `stable → prepared → rebuilding → stable` transaction replaces the two hand-synced teardown copies |
-  | `SlotConfigurationCoordinator` + `SlotProvisioningCoordinator` | `slotCards[]` draft/live | the effective-plan / staged-draft / live-snapshot split, and session-only boot provisioning (`ensure*CardForBoot`) |
+  | ~~`SlotConfigurationCoordinator`~~ ✅ 2026-08-27 | — | plan / draft / live are three maps again; a missing ROM or a session-only card no longer rewrites the user's config |
+  | ~~`SlotProvisioningCoordinator`~~ ✅ 2026-08-27 | — | one boot-target policy for CLI, drag-and-drop and Floppy Emu |
   | `DebugCoordinator` | — | needs Dear ImGui, so frontend-only |
   | `NetworkCoordinator` | `sscCards` `sscCard` `fujiNetCard` (~29 sites) | **blocked** on the device seams below |
 
