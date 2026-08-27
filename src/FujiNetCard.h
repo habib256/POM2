@@ -84,12 +84,14 @@
 
 #include "ChildProcess.h"
 #include "SlotPeripheral.h"
-#include "FujiNetNetDevice.h"
-#include "SpOverSlipLink.h"
+#include "FujiNetLink.h"
+#include "FujiNetNetwork.h"
+#include "FujiNetTransport.h"
 
 #include <array>
 #include <cstdint>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -117,7 +119,22 @@ public:
     static constexpr uint8_t kMagicProDOS    = 0x66;
     static constexpr size_t kMaxPrinterSpoolBytes = 4u * 1024u * 1024u;
 
-    explicit FujiNetCard(int slot = kDefaultSlot);
+    /// The card is a DEVICE: it issues SmartPort commands and serves `N:`
+    /// calls, and it must not know that the far end is a socket, a USB CDC
+    /// device or a helper process. Both host implementations are therefore
+    /// injected rather than constructed here — see `makeFujiNetCard()`
+    /// (FujiNetCardFactory.h, RUNTIME) for the production wiring, which is
+    /// the only place that names SpOverSlipLink and FujiNetNetDevice.
+    ///
+    /// `transport` is a reference because there is always one, and it
+    /// normally aliases `link` (SpOverSlipLink implements both interfaces).
+    /// Passing it separately is what keeps the protocol surface and the host
+    /// lifecycle surface independent — a test can hand over canned SmartPort
+    /// replies while still driving a real transport, or the reverse.
+    FujiNetCard(int slot,
+                std::unique_ptr<FujiNetLink> link,
+                FujiNetTransport& transport,
+                std::unique_ptr<FujiNetNetwork> network);
     ~FujiNetCard() override;
 
     int getSlot() const { return slot_; }
@@ -132,20 +149,15 @@ public:
     /// The command surface the card actually uses. Returning the interface
     /// rather than the concrete link is what lets a test drive the card with
     /// canned SmartPort replies and no socket, helper process or peer.
-    FujiNetLink&       link()       { return linkOverride_ ? *linkOverride_ : static_cast<FujiNetLink&>(link_); }
-    const FujiNetLink& link() const { return linkOverride_ ? *linkOverride_ : static_cast<const FujiNetLink&>(link_); }
+    FujiNetLink&       link()       { return *link_; }
+    const FujiNetLink& link() const { return *link_; }
 
-    /// Substitute the command surface. Non-owning and test-only: the real
-    /// link stays constructed and owned, so transportLink() and the card's
-    /// own lifecycle are unaffected. Nothing in the production build calls
-    /// this — it exists so the card can be driven with canned SmartPort
-    /// replies and no socket, helper process or peer.
-    void setLinkForTesting(FujiNetLink* link) { linkOverride_ = link; }
 
-    /// Transport lifecycle — framing, timeouts, the helper process — is NOT
-    /// part of the command surface, so it stays on the concrete link.
-    SpOverSlipLink&       transportLink()       { return link_; }
-    const SpOverSlipLink& transportLink() const { return link_; }
+    /// Transport lifecycle — arming a transport, starting and stopping the
+    /// worker, counters — is NOT part of the command surface, so it is a
+    /// separate interface. Never null.
+    FujiNetTransport&       transportLink()       { return *transport_; }
+    const FujiNetTransport& transportLink() const { return *transport_; }
 
     // ── Built-in N: (POM2's own network device) ───────────────────────────
     //
@@ -159,7 +171,6 @@ public:
     // FujiNet board over USB has a working N:; leave this OFF for one.
     void setBuiltInNetwork(bool on) { builtInNetwork_ = on; }
     bool builtInNetwork() const     { return builtInNetwork_; }
-    const FujiNetNetDevice& netDevice() const { return net_; }
 
     // ── Printer tap (phase 2) ─────────────────────────────────────────────
     //
@@ -239,8 +250,8 @@ private:
     bool serveBuiltInNetwork(uint8_t command, uint8_t unit, uint16_t params,
                              uint16_t payload);
 
-    FujiNetNetDevice net_;
-    bool             builtInNetwork_ = false;
+    std::unique_ptr<FujiNetNetwork> net_;
+    bool                            builtInNetwork_ = false;
     /// Which unit the peer called its network device, REMEMBERED. The device
     /// list is cleared when a peer dies, and the peer dies easily; without
     /// this the built-in N: would stop answering at exactly the moment it is
@@ -289,9 +300,11 @@ private:
     M6502*   cpu_ = nullptr;
 
     std::array<uint8_t, 256> rom_{};
-    SpOverSlipLink           link_;
-    /// Non-owning test override for link(); null in production.
-    FujiNetLink*             linkOverride_ = nullptr;
+    /// The owned command surface, and the host lifecycle surface that
+    /// normally aliases it. `transport_` is non-owning by design: it points
+    /// into `link_` in the production wiring.
+    std::unique_ptr<FujiNetLink> link_;
+    FujiNetTransport*            transport_ = nullptr;
     ChildProcess             helper_;
 
     uint64_t callCount_  = 0;

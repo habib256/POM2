@@ -78,7 +78,16 @@ constexpr uint8_t rel(uint8_t at, uint8_t target)
 
 } // namespace
 
-FujiNetCard::FujiNetCard(int slot) : slot_(slot)
+FujiNetCard::FujiNetCard(int slot,
+                         std::unique_ptr<FujiNetLink> link,
+                         FujiNetTransport& transport,
+                         std::unique_ptr<FujiNetNetwork> network)
+    // Init order follows DECLARATION order (net_ is declared with the
+    // built-in-N: members, well above slot_), not argument order.
+    : net_(std::move(network)),
+      slot_(slot),
+      link_(std::move(link)),
+      transport_(&transport)
 {
     buildRom();
 }
@@ -88,7 +97,7 @@ FujiNetCard::~FujiNetCard()
     // Order matters: stop the link first so the helper's peer goes away
     // cleanly, then terminate the helper. The other way round leaves the
     // link's worker chasing a socket whose far end just died.
-    link_.stop();
+    transport_->stop();
     helper_.stop();
 }
 
@@ -336,7 +345,7 @@ namespace {
 /// A peer that is attached but silent is an I/O error; no peer at all is
 /// "no device", which is what makes a bus scan with nothing plugged in
 /// terminate cleanly instead of reporting broken hardware.
-uint8_t statusFor(const SpOverSlipLink::Response& r, bool connected)
+uint8_t statusFor(const FujiNetLink::Response& r, bool connected)
 {
     if (r.replied) return r.status;
     return connected ? kSpIoError : kSpNoDevice;
@@ -699,7 +708,7 @@ uint8_t FujiNetCard::builtInNetUnit() const
     // past its last one. Held steady while the guest has a session open,
     // though — moving the unit under its feet because the peer died mid-fetch
     // would strand it mid-page.
-    if (net_.isOpen() && netUnit_) return netUnit_;
+    if (net_->isOpen() && netUnit_) return netUnit_;
     const std::size_t next = link().deviceCount() + 1;
     const_cast<FujiNetCard*>(this)->netUnit_ =
         static_cast<uint8_t>(std::min<std::size_t>(next, 254));
@@ -774,11 +783,11 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
                              list.size() - specOff);
             const std::size_t nul = spec.find('\0');
             if (nul != std::string::npos) spec.resize(nul);
-            finish(net_.open(spec) ? kSpOk : kSpIoError);
+            finish(net_->open(spec) ? kSpOk : kSpIoError);
             return true;
         }
         case kNetClose:
-            net_.close();
+            net_->close();
             finish(kSpOk);
             return true;
         default:
@@ -829,7 +838,7 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
             return true;
         }
         uint8_t st[4];
-        net_.status(st);
+        net_->status(st);
         if (!writeGuestBlock(payload, st, sizeof st)) { finish(kSpIoError); return true; }
         finish(kSpOk, static_cast<uint8_t>(sizeof st), 0x00);
         return true;
@@ -838,14 +847,14 @@ bool FujiNetCard::serveBuiltInNetwork(uint8_t command, uint8_t unit,
     case kSpRead: {
         if (!paramsSafe(5)) { finish(kSpIoError); return true; }
         const uint16_t count = readGuest16(params);
-        // Check the DESTINATION before touching the cursor. net_.read()
+        // Check the DESTINATION before touching the cursor. net_->read()
         // CONSUMES, and a write refused afterwards left those bytes gone for
         // good: the guest retried at a good address, received the NEXT chunk,
         // and the page silently lost a piece with no error anywhere in sight.
-        const std::size_t want = std::min<std::size_t>(count, net_.available());
+        const std::size_t want = std::min<std::size_t>(count, net_->available());
         if (want && !rangeIsSafe(payload, want)) { finish(kSpIoError); return true; }
         std::vector<uint8_t> buf(want);
-        const std::size_t n = net_.read(buf.data(), want);
+        const std::size_t n = net_->read(buf.data(), want);
         if (n && !writeGuestBlock(payload, buf.data(), n)) { finish(kSpIoError); return true; }
         finish(kSpOk, static_cast<uint8_t>(n & 0xFF), static_cast<uint8_t>(n >> 8));
         return true;

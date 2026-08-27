@@ -5277,6 +5277,7 @@ set_tests_properties(sp_over_slip_link PROPERTIES TIMEOUT 60)
 add_executable(test_fujinet_card
     fujinet_card_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/FujiNetCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FujiNetCardFactory.cpp
     ${CMAKE_SOURCE_DIR}/src/FujiNetNetDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/SpOverSlipLink.cpp

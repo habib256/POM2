@@ -22,7 +22,7 @@
 #include "Memory.h"
 #include "SerialPort.h"
 #include "SlotBus.h"
-#include "SpOverSlipLink.h"
+#include "FujiNetTransport.h"
 
 namespace pom2 {
 namespace {
@@ -50,22 +50,27 @@ FujiNet_ImGui::Snapshot NetworkCoordinator::captureFujiNetPanel(
         auto* card = findFujiNet(state.memory().slotBus());
         if (card) {
             snap.plugged = true;
-            const auto& link = card->transportLink();
+            // Two surfaces, deliberately bound separately: `transport` is
+            // how the host drives the link (mode, worker, counters), `link`
+            // is the SmartPort protocol the card speaks over it. Connection
+            // and the device list belong to the protocol side.
+            const auto& transport = card->transportLink();
+            const auto& link      = card->link();
             snap.slot      = card->getSlot();
             snap.transport =
-                link.mode() == SpOverSlipLink::Mode::Serial
+                transport.mode() == FujiNetTransport::Mode::Serial
                     ? FujiNet_ImGui::Transport::Serial
-                : link.mode() == SpOverSlipLink::Mode::Tcp
+                : transport.mode() == FujiNetTransport::Mode::Tcp
                     ? FujiNet_ImGui::Transport::Tcp
                     : FujiNet_ImGui::Transport::Off;
-            snap.running    = link.isRunning();
+            snap.running    = transport.isRunning();
             snap.connected  = link.isConnected();
-            snap.state      = link.describe();
-            snap.lastError  = link.lastError();
-            snap.tcpPort    = link.tcpPort();
-            snap.serialPath = link.serialPath();
-            snap.serialBaud = link.serialBaud();
-            snap.timeoutMs  = link.timeoutMs();
+            snap.state      = transport.describe();
+            snap.lastError  = transport.lastError();
+            snap.tcpPort    = transport.tcpPort();
+            snap.serialPath = transport.serialPath();
+            snap.serialBaud = transport.serialBaud();
+            snap.timeoutMs  = transport.timeoutMs();
             for (const auto& d : link.devices()) {
                 FujiNet_ImGui::DeviceRow row;
                 row.unit    = d.unit;
@@ -75,7 +80,7 @@ FujiNet_ImGui::Snapshot NetworkCoordinator::captureFujiNetPanel(
                 row.blocks  = d.blocks;
                 snap.devices.push_back(row);
             }
-            const auto st   = link.stats();
+            const auto st   = transport.stats();
             snap.calls      = st.calls;
             snap.timeouts   = st.timeouts;
             snap.stale      = st.stale;

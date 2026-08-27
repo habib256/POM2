@@ -59,6 +59,7 @@
 #ifndef POM2_FUJINET_NET_DEVICE_H
 #define POM2_FUJINET_NET_DEVICE_H
 
+#include "FujiNetNetwork.h"
 #include "SocketCompat.h"
 
 #include <cstdint>
@@ -67,17 +68,10 @@
 
 namespace pom2 {
 
-/// `N:` command bytes, verbatim from the firmware's fujiCommandID.h.
-enum : uint8_t {
-    kNetOpen     = 0x4F,   ///< 'O'
-    kNetClose    = 0x43,   ///< 'C'
-    kNetRead     = 0x52,   ///< 'R'
-    kNetStatus   = 0x53,   ///< 'S'
-    kNetWrite    = 0x57,   ///< 'W'
-    kNetGetError = 0x45,   ///< 'E'
-};
+// The kNet* command bytes live in FujiNetNetwork.h — they are protocol,
+// and the card decodes them without knowing this implementation exists.
 
-class FujiNetNetDevice {
+class FujiNetNetDevice : public FujiNetNetwork {
 public:
     /// The firmware caps a status reply's byte count at 512 and guest code
     /// sizes its buffer from it, so promising more would overrun the guest.
@@ -90,18 +84,18 @@ public:
     /// whole response body is fetched now and buffered — the guest then drains
     /// it with STATUS/READ, which is exactly the shape its code expects and
     /// avoids holding a socket open across an emulated machine's lifetime.
-    bool open(const std::string& devicespec);
-    void close();
-    bool isOpen() const { return open_; }
+    bool open(const std::string& devicespec) override;
+    void close() override;
+    bool isOpen() const override { return open_; }
 
     /// 4-byte status: bytes waiting (LE 16), connected flag, error code.
-    void status(uint8_t out[4]) const;
+    void status(uint8_t out[4]) const override;
 
     /// Copy up to `n` buffered bytes out. Returns how many were copied.
-    std::size_t read(uint8_t* dst, std::size_t n);
+    std::size_t read(uint8_t* dst, std::size_t n) override;
 
     /// Bytes still unread.
-    std::size_t available() const { return body_.size() - cursor_; }
+    std::size_t available() const override { return body_.size() - cursor_; }
 
     /// Last error, in the firmware's numbering: 1 = success, 144 = general
     /// failure, 170 = file not found. Guest code compares against these.

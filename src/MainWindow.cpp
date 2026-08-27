@@ -41,6 +41,9 @@
 #include "W5100HostSockets.h"
 #include "W5100NameResolver.h"
 #include "FujiNetCard.h"
+#include "FujiNetCardFactory.h"
+#include "SerialPort.h"
+#include "SpTransport.h"
 #include "Uthernet_ImGui.h"
 #include "ImageWriter.h"
 #include "ImageWriter_ImGui.h"
@@ -1056,7 +1059,7 @@ MainWindow::~MainWindow()
         settings->setBool("fujinet_enabled" + sk, link.isRunning());
         settings->setInt ("fujinet_timeout_ms" + sk, link.timeoutMs());
         settings->setString("fujinet_transport" + sk,
-                            link.mode() == pom2::SpOverSlipLink::Mode::Serial
+                            link.mode() == pom2::FujiNetTransport::Mode::Serial
                                 ? "serial" : "tcp");
         settings->setInt   ("fujinet_port" + sk, link.tcpPort());
         settings->setString("fujinet_serial_path" + sk, link.serialPath());
@@ -1533,14 +1536,14 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // peer, and finding one is asynchronous, so plugging always succeeds
         // — a machine with this card and no FujiNet running behaves like a
         // machine with an empty drive, not a broken one.
-        auto card = std::make_unique<pom2::FujiNetCard>(s);
+        auto card = pom2::makeFujiNetCard(s);
         card->setMemory(&st.memory());
         card->setCpu(&st.cpu());
 
         const std::string sk = "_slot" + std::to_string(s);
         auto& link = card->transportLink();
         link.setTimeoutMs(settings->getInt("fujinet_timeout_ms" + sk,
-                                           pom2::SpOverSlipLink::kDefaultTimeoutMs));
+                                           pom2::FujiNetTransport::kDefaultTimeoutMs));
 
         // Built-in N:, on by default. The FujiNet desktop build's own network
         // device answers the guest's open with success and then never opens a
@@ -6418,7 +6421,7 @@ bool MainWindow::plugFujiNetUnlocked(const pom2::StateAccess& st,
                                      int tcpPort, std::string& errOut)
 {
     auto& bus = st.memory().slotBus();
-    auto card = std::make_unique<pom2::FujiNetCard>(slot);
+    auto card = pom2::makeFujiNetCard(slot);
     card->setMemory(&st.memory());
     card->setCpu(&st.cpu());
     auto& link = card->transportLink();

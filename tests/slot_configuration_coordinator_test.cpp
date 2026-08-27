@@ -27,6 +27,7 @@
 #include "EchoPlusCard.h"
 #include "EchoPlusTMS5220Card.h"
 #include "FujiNetCard.h"
+#include "FujiNetCardFactory.h"
 #include "GrapplerCard.h"
 #include "LeChatMauveCard.h"
 #include "Mockingboard.h"
@@ -159,7 +160,7 @@ int main()
     expectLiveKey(std::make_unique<EchoPlusTMS5220Card>(3), "echoplus_tms");
     expectLiveKey(std::make_unique<pom2::UthernetCard>(3), "uthernet");
     expectLiveKey(std::make_unique<pom2::UthernetIICard>(3), "uthernet2");
-    expectLiveKey(std::make_unique<pom2::FujiNetCard>(3), "fujinet");
+    expectLiveKey(pom2::makeFujiNetCard(3), "fujinet");
 
     // A live failure/absence must never erase the effective request. This is
     // the contract that preserves a CFFA assignment while its ROM is missing.
