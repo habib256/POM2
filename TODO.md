@@ -699,15 +699,30 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `renderScreenWindow`, tightly coupled to the GL upload. Target is still
   &lt; 3 000 lines/file. *1-2 d.*
   → [DEV](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp)
-- 🟠 **Wire the landed coordinators into `MainWindow`** *(2026-08-26 merge)* —
-  the ten host-policy coordinators + `SlotCardFactory` are in the tree and
-  under test (nine tests, all green) but nothing calls them yet: `MainWindow`
-  still owns the storage/audio/printer/mouse card aliases and the slot-rebuild
-  protocol inline. Wiring them is what removes those aliases and closes the
-  lifetime holes they were written for (a card pointer fetched before the lock,
-  or reused across several independent lock acquisitions). Now an ordinary
-  refactor against one decomposition rather than a merge between two.
-  → `CHANGELOG.md` 2026-08-26. *3-5 d.*
+- 🟠 **Wire the remaining coordinators into `MainWindow`** *(2026-08-26 merge;
+  in progress 2026-08-27)* — **done so far**: `MouseCoordinator`,
+  `PrinterCoordinator`, `AudioCoordinator`, `DevicePanelCoordinator`. That
+  removed 8 of the 18 card aliases (mouse ×2, printer ×2, audio ×4, Chat
+  Mauve, Clock, Uthernet ×2) and fixed three real defects on the way — a mixer
+  that hid a coexisting second Mockingboard, an ImageWriter "not feeding" list
+  that never named the FujiNet unit, and a panel reading a spool with no lock.
+  **Left**: `StorageCoordinator` (diskCards/diskCard/hdvCard/cffaCard/
+  smartPortCard — ~200 call sites, by far the biggest), `SlotCardFactory` +
+  `SlotConfigurationCoordinator` + `SlotProvisioningCoordinator` +
+  `SlotRebuildCoordinator` (slot composition and the teardown transaction),
+  and `DebugCoordinator`. `sscCards`/`sscCard` and `fujiNetCard` wait on
+  `NetworkCoordinator`, which needs the device seams first (item below).
+  → `CHANGELOG.md` 2026-08-26/27. *2-4 d left.*
+- 🟠 **No test drives the ImGui panels, so a UI-thread deadlock fails nothing**
+  *(found the hard way 2026-08-27)* — wiring a coordinator into
+  `renderFujiNetPanelWindow` put a `lockState()` call inside an existing
+  `lock_guard(stateMutex())` scope. `stateMutex` is non-recursive, so opening
+  that panel would have hung the UI thread and the emulator with it, and the
+  full 207-test suite stayed green. Caught by a static scan, not by a test.
+  `tests/frontend_device_panel_concurrency` is exactly the missing net and is
+  still on `refactor/core-boundaries-and-coordinators` waiting on the device
+  seams. Until it lands, every new coordinator call site needs the scan.
+  *1 d, after the seams.*
 - 🟡 **Re-derive the device injection seams on top of v0.8.5** *(2026-08-26
   merge)* — `W5100Socket` / `SuperSerialTransport` / `FujiNetLink` and their
   deterministic fakes stayed on `refactor/core-boundaries-and-coordinators`
