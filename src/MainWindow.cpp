@@ -5723,8 +5723,13 @@ void MainWindow::renderDiskPanelWindow()
             diskTurboWhileMotor = result.turboNewValue;
         }
         if (result.writeBackToggleChanged) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            card->setWriteBackEnabled(result.writeBackNewValue);
+            // Persists disk_writeback_slotN with the change — the bare setter
+            // did not, so the toggle did not survive a restart, and since
+            // isWriteProtected() is `fileWriteProtected || !writeBack` the
+            // guest then saw a write-protected disk again.
+            (void)storageCoordinator_->setDiskIIWriteBack(
+                *controller, *settings, card->getSlot(),
+                result.writeBackNewValue);
             tapeStatusMessage = "slot " + std::to_string(card->getSlot()) +
                 (result.writeBackNewValue
                     ? ": write-back ENABLED (saves on eject)"
@@ -5732,11 +5737,11 @@ void MainWindow::renderDiskPanelWindow()
             tapeStatusUntil = lastFrameTime + 4.0;
         }
         if (result.requestEject) {
-            std::lock_guard<std::mutex> lk(controller->stateMutex());
-            const bool ok = card->ejectDisk();
-            tapeStatusMessage = ok
+            const auto r = storageCoordinator_->ejectDiskII(
+                *controller, *settings, card->getSlot(), 0);
+            tapeStatusMessage = r.ok
                 ? ("Disk ejected (slot " + std::to_string(card->getSlot()) + ")")
-                : ("Eject failed: " + card->getLastError());
+                : ("Eject failed: " + r.error);
             tapeStatusUntil   = lastFrameTime + 4.0;
         }
         if (result.requestBoot) {
