@@ -3134,6 +3134,32 @@ endif()
 add_test(NAME smartport_io_error COMMAND test_smartport_io_error)
 set_tests_properties(smartport_io_error PROPERTIES TIMEOUT 10)
 
+# ─── Slot-ROM layout: the 256 bytes must not overrun each other ──────────
+add_executable(test_smartport_rom_layout
+    smartport_rom_layout_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+)
+target_include_directories(test_smartport_rom_layout PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_rom_layout PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_rom_layout PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_rom_layout PRIVATE winmm)
+endif()
+add_test(NAME smartport_rom_layout COMMAND test_smartport_rom_layout)
+set_tests_properties(smartport_rom_layout PROPERTIES TIMEOUT 10)
+
 # ─── SmartPort-protocol dispatch ($Cn0D) + real-Liron identity ────────────
 add_executable(test_liron_smartport_dispatch
     liron_smartport_dispatch_test.cpp
