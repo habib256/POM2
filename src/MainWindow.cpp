@@ -57,6 +57,7 @@
 #include "Mockingboard.h"
 #include "MouseCard.h"
 #include "MouseCoordinator.h"
+#include "NetworkCoordinator.h"
 #include "AudioCoordinator.h"
 #include "DevicePanelCoordinator.h"
 #include "SlotCardFactory.h"
@@ -192,6 +193,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
       mouseCoordinator_(std::make_unique<pom2::MouseCoordinator>(*controller)),
+      networkCoordinator_(std::make_unique<pom2::NetworkCoordinator>()),
       printerCoordinator_(std::make_unique<pom2::PrinterCoordinator>()),
       audioCoordinator_(std::make_unique<pom2::AudioCoordinator>(
           controller->audio(), *controller)),
@@ -230,9 +232,6 @@ MainWindow::MainWindow(bool forceIIPlus)
                   // also owns a listening socket and a worker thread that
                   // SlotBus::clear() joins, so the alias has to go before the
                   // clear, not after it.
-                  sscCard = nullptr;
-                  sscCards.clear();
-                  fujiNetCard = nullptr;
               },
               [this] { printerCoordinator_->resetFeedCursor(); },
               // Nothing host-side outlives the cards today; the hook exists
@@ -1015,7 +1014,7 @@ MainWindow::~MainWindow()
     // Legacy global keys (`ssc_listening`, `ssc_port`, `ssc_raw_mode`)
     // are mirrored to the primary SSC for backwards-compat with older
     // settings files and the AI control path.
-    for (auto* ssc : sscCards) {
+    for (auto* ssc : serialCards()) {
         if (!ssc) continue;
         const std::string sk = "_slot" + std::to_string(ssc->getSlot());
         settings->setBool("ssc_listening" + sk, ssc->isListening());
@@ -1023,16 +1022,22 @@ MainWindow::~MainWindow()
         settings->setBool("ssc_raw_mode"  + sk, ssc->rawMode());
         settings->setBool("ssc_printer_tap" + sk, ssc->printerTap());
     }
-    if (sscCard) {
-        settings->setBool("ssc_listening", sscCard->isListening());
-        settings->setInt ("ssc_port",      sscCard->getPort());
-        settings->setBool("ssc_raw_mode",  sscCard->rawMode());
+    if (primarySerialCard()) {
+        settings->setBool("ssc_listening", primarySerialCard()->isListening());
+        settings->setInt ("ssc_port",      primarySerialCard()->getPort());
+        settings->setBool("ssc_raw_mode",  primarySerialCard()->rawMode());
     }
 
     // FujiNet relay — transport choice and its parameters, per slot.
-    if (fujiNetCard) {
-        const std::string sk = "_slot" + std::to_string(fujiNetCard->getSlot());
-        const auto& link = fujiNetCard->transportLink();
+    // Resolved from the live bus rather than an alias: the destructor runs
+    // after controller->stop(), so this is a UI-thread topology read.
+    pom2::FujiNetCard* fujiNet = nullptr;
+    for (int s = 1; s < SlotBus::kSlotCount && !fujiNet; ++s)
+        fujiNet = dynamic_cast<pom2::FujiNetCard*>(
+            controller->memory().slotBus().peripheral(s));
+    if (fujiNet) {
+        const std::string sk = "_slot" + std::to_string(fujiNet->getSlot());
+        const auto& link = fujiNet->transportLink();
         settings->setBool("fujinet_enabled" + sk, link.isRunning());
         settings->setInt ("fujinet_timeout_ms" + sk, link.timeoutMs());
         settings->setString("fujinet_transport" + sk,
@@ -1041,7 +1046,8 @@ MainWindow::~MainWindow()
         settings->setInt   ("fujinet_port" + sk, link.tcpPort());
         settings->setString("fujinet_serial_path" + sk, link.serialPath());
         settings->setInt   ("fujinet_serial_baud" + sk, link.serialBaud());
-        settings->setString("fujinet_helper_path" + sk, fujiNetHelperPath_);
+        settings->setString("fujinet_helper_path" + sk,
+                            networkCoordinator_->helperPath());
     }
 
     // AI control listener — persist enable, port, token, and the panel
@@ -1393,12 +1399,13 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // IRQ routing is auto-wired by SlotBus's installed router (see
         // Memory::setCpu) — no per-card setup needed.
         st.memory().slotBus().plug(s, std::move(card));
-        sscCards.push_back(raw);
-        if (sscCard == nullptr) sscCard = raw;     // primary alias = lowest slot
+        // No alias list: serialCards() reads the bus, slot-ascending, so the
+        // lowest-slot card is the primary exactly as before. The card is
+        // already plugged above, so it is visible to that read.
         // Per-slot persistence; fall back to legacy global keys (the
         // primary SSC was the only one before //c dual-port support).
         const std::string sk = "_slot" + std::to_string(s);
-        const bool legacyPrimary = (raw == sscCard);
+        const bool legacyPrimary = (raw == primarySerialCard());
         raw->setRawMode(settings->getBool(
             "ssc_raw_mode" + sk,
             legacyPrimary ? settings->getBool("ssc_raw_mode", false) : false));
@@ -1538,13 +1545,12 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 pom2::log().warn("FujiNet", "link not started: " + err);
         }
 
-        fujiNetCard = card.get();
         st.memory().slotBus().plug(s, std::move(card));
 
-        fujiNetHelperPath_ = settings->getString("fujinet_helper_path" + sk, "");
-        fujiNetHelperResolved_ = pom2::ChildProcess::findOnPath(
-            fujiNetHelperPath_.empty() ? std::string("fujinet")
-                                       : fujiNetHelperPath_);
+        // setHelperPath resolves against PATH as well: a configured name the
+        // host cannot find is what the panel must show as unresolved.
+        networkCoordinator_->setHelperPath(
+            settings->getString("fujinet_helper_path" + sk, ""));
     };
 
     auto plugPhasor = [&](int s) {
@@ -5769,6 +5775,23 @@ std::vector<DiskIICard*> MainWindow::diskIICards() const
         .diskIICards;
 }
 
+std::vector<SuperSerialCard*> MainWindow::serialCards() const
+{
+    // Slot-ascending, which is what makes "the primary is the first" true.
+    std::vector<SuperSerialCard*> out;
+    SlotBus& bus = controller->memory().slotBus();
+    for (int slot = 1; slot < SlotBus::kSlotCount; ++slot)
+        if (auto* ssc = dynamic_cast<SuperSerialCard*>(bus.peripheral(slot)))
+            out.push_back(ssc);
+    return out;
+}
+
+SuperSerialCard* MainWindow::primarySerialCard() const
+{
+    const auto cards = serialCards();
+    return cards.empty() ? nullptr : cards.front();
+}
+
 DiskIICard* MainWindow::primaryDiskII() const
 {
     return storageCoordinator_->topology(controller->memory().slotBus())
@@ -6380,7 +6403,6 @@ bool MainWindow::plugFujiNetUnlocked(const pom2::StateAccess& st,
     std::string err;
     if (!link.start(err)) { errOut = err; return false; }
 
-    fujiNetCard = card.get();
     bus.plug(slot, std::move(card));
     // Session-only (CLI --fujinet / drag-and-drop): the live bus shows it,
     // the plan does not claim it.
@@ -6476,63 +6498,18 @@ void MainWindow::renderFujiNetPanelWindow()
 {
     if (!show(pom2::PanelId::FujiNet)) return;
 
-    pom2::FujiNet_ImGui::Snapshot snap;
-    snap.plugged = (fujiNetCard != nullptr);
-    if (snap.plugged) {
-        // The link has its own locking, so the state mutex is only needed to
-        // keep the card pointer alive across the read — the CPU worker never
-        // touches the link except from inside a SmartPort call, which cannot
-        // overlap this because it holds that same mutex.
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        const auto& link = fujiNetCard->transportLink();
-        snap.slot      = fujiNetCard->getSlot();
-        snap.transport = link.mode() == pom2::SpOverSlipLink::Mode::Serial
-                             ? pom2::FujiNet_ImGui::Transport::Serial
-                         : link.mode() == pom2::SpOverSlipLink::Mode::Tcp
-                             ? pom2::FujiNet_ImGui::Transport::Tcp
-                             : pom2::FujiNet_ImGui::Transport::Off;
-        snap.running    = link.isRunning();
-        snap.connected  = link.isConnected();
-        snap.state      = link.describe();
-        snap.lastError  = link.lastError();
-        if (snap.lastError.empty()) snap.lastError = fujiNetStatus_;
-        snap.tcpPort    = link.tcpPort();
-        snap.serialPath = link.serialPath();
-        snap.serialBaud = link.serialBaud();
-        snap.timeoutMs  = link.timeoutMs();
-        for (const auto& d : link.devices()) {
-            pom2::FujiNet_ImGui::DeviceRow row;
-            row.unit    = d.unit;
-            row.name    = d.name;
-            row.type    = d.type;
-            row.subtype = d.subtype;
-            row.blocks  = d.blocks;
-            snap.devices.push_back(row);
-        }
-        const auto st  = link.stats();
-        snap.calls      = st.calls;
-        snap.timeouts   = st.timeouts;
-        snap.stale      = st.stale;
-        snap.bytesIn    = st.bytesIn;
-        snap.bytesOut   = st.bytesOut;
-        snap.localCalls = fujiNetCard->localCount();
-        snap.serialDevices = fujiNetSerialDevices_;
-        snap.printerTap    = fujiNetCard->hasPrinterUnit();
-        snap.printerBytes  = fujiNetCard->bytesWritten();
-        snap.helperRunning  = fujiNetCard->helper().isRunning();
-        snap.helperPath     = fujiNetHelperPath_;
-        snap.helperExitCode = fujiNetCard->helper().lastExitCode();
-        snap.helperResolved = fujiNetHelperResolved_;
-    }
+    // One acquisition for the snapshot, one for whatever the frame asked for.
+    // What this replaces bound `auto& link = card->transportLink()` OUTSIDE
+    // any lock and then wrote through that reference inside SIX separate
+    // critical sections — a slot rebuild between any two of them left the rest
+    // writing to a freed link — and applied the timeout change with no lock at
+    // all.
+    auto snap = networkCoordinator_->captureFujiNetPanel(*controller);
 
-    // Both of these take the machine lock themselves, so they MUST stay
-    // outside the guard above — stateMutex is non-recursive and asking for it
-    // twice on this thread hangs the UI and the emulator together.
+    // Both of these take the machine lock themselves, so they must stay
+    // outside any guard: stateMutex is non-recursive.
     //
     // Outranked iff the arbitration picked something OTHER than this tap.
-    // Asking the coordinator which source won says that directly; the old
-    // `printerCard || grapplerCard` re-stated the priority list here and would
-    // have to be edited again for every new source.
     snap.printerOutranked =
         snap.printerTap &&
         printerCoordinator_->captureHost(*controller).source !=
@@ -6543,95 +6520,9 @@ void MainWindow::renderFujiNetPanelWindow()
     const auto r = fujiNetPanel->render("FujiNet", show(pom2::PanelId::FujiNet), snap);
     if (!snap.plugged) return;
 
-    // Enumerating serial devices scans /dev (or the registry), so it happens
-    // on demand rather than every frame.
-    if (r.requestRescan) {
-        fujiNetSerialDevices_.clear();
-        for (const auto& d : pom2::SerialPort::enumerate())
-            fujiNetSerialDevices_.emplace_back(d.path, d.description);
-    }
-
-    // Every transport change stops and restarts a worker thread, so all of
-    // these take the state mutex — a reconfiguration racing an in-flight
-    // SmartPort call would tear the transport out from under it.
-    auto& link = fujiNetCard->transportLink();
-    if (r.transportChanged) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        switch (r.transportTo) {
-        case pom2::FujiNet_ImGui::Transport::Tcp:
-            link.setTcpMode(link.tcpPort());
-            break;
-        case pom2::FujiNet_ImGui::Transport::Serial:
-            link.setSerialMode(link.serialPath(), link.serialBaud());
-            break;
-        case pom2::FujiNet_ImGui::Transport::Off:
-            link.setOff();
-            break;
-        }
-    }
-    if (r.portChanged) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        link.setTcpMode(r.portTo);
-    }
-    if (r.serialChanged) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        link.setSerialMode(r.serialPathTo, r.serialBaudTo);
-    }
-    if (r.timeoutChanged) link.setTimeoutMs(r.timeoutTo);
-
-    if (r.requestStart) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        std::string err;
-        if (!link.start(err)) fujiNetStatus_ = err;
-        else                  fujiNetStatus_.clear();
-    }
-    if (r.requestStop) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        link.stop();
-    }
-    if (r.requestDropPeer) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        // Cheapest correct way to drop a peer without reaching into the
-        // transport: stop and restart the link.
-        link.stop();
-        std::string err;
-        link.start(err);
-    }
-    if (r.helperPathChanged) {
-        fujiNetHelperPath_ = r.helperPathTo;
-        fujiNetHelperResolved_ =
-            pom2::ChildProcess::findOnPath(fujiNetHelperPath_.empty()
-                                               ? std::string("fujinet")
-                                               : fujiNetHelperPath_);
-    }
-    if (r.requestHelperStart) {
-        std::string err;
-        if (!fujiNetCard->startHelper(fujiNetHelperPath_, err))
-            fujiNetStatus_ = err;
-        else
-            fujiNetStatus_.clear();
-    }
-    if (r.requestHelperStop) fujiNetCard->helper().stop();
-
-    if (r.requestHelperRestart) {
-        // Stop, then start. The stop terminates the whole process GROUP (see
-        // the note on startHelper) — leaving a grandchild holding the
-        // loopback port is exactly what would make the restart fail to bind.
-        fujiNetCard->helper().stop();
-        std::string err;
-        if (!fujiNetCard->startHelper(fujiNetHelperPath_, err))
-            fujiNetStatus_ = err;
-        else
-            fujiNetStatus_ = "FujiNet program restarted.";
-    }
-
-    if (r.requestOpenWebUi) {
-        // The FujiNet web UI is on port 80 of the peer's host; over the
-        // loopback transport that is simply localhost. No portable
-        // "open a URL" helper exists in POM2, so surface the address for the
-        // user to click/copy rather than shelling out to a browser.
-        fujiNetStatus_ = "FujiNet web UI: http://127.0.0.1/";
-    }
+    // The web-UI button has no portable "open a URL" helper in POM2, so the
+    // coordinator surfaces the address on the status line instead.
+    networkCoordinator_->applyFujiNetPanel(*controller, r);
 }
 
 void MainWindow::renderFloppyEmuWindow()

@@ -87,7 +87,15 @@ void MainWindow::registerPanels()
         [this] { return "SmartPort Configuration" + slotSuffix(primarySmartPortCard()); },
         [this] { return primarySmartPortCard() != nullptr; } });
     panels_.bind(P::FujiNet, RT{
-        [this] { return "FujiNet" + slotSuffix(fujiNetCard); }, card(&fujiNetCard) });
+        [this] {
+            const auto inv = devicePanelCoordinator_->captureInventory();
+            return inv.fujiNetPlugged()
+                       ? "FujiNet (slot " + std::to_string(inv.fujiNetSlot) + ")"
+                       : std::string("FujiNet");
+        },
+        [this] {
+            return devicePanelCoordinator_->captureInventory().fujiNetPlugged();
+        } });
     panels_.bind(P::Phasor, RT{
         [this] {
             const auto slots = audioCoordinator_->captureInventory().phasorSlots;
@@ -126,18 +134,20 @@ void MainWindow::registerPanels()
     // printer and modem ports), so its label lists every slot it occupies.
     panels_.bind(P::Ssc, RT{
         [this] {
-            if (sscCards.empty()) return std::string("Super Serial (no card plugged)");
-            if (sscCards.size() == 1)
+            // Hoisted: each call walks the bus.
+            const auto ports = serialCards();
+            if (ports.empty()) return std::string("Super Serial (no card plugged)");
+            if (ports.size() == 1)
                 return "Super Serial (slot " +
-                       std::to_string(sscCards[0]->getSlot()) + ")";
+                       std::to_string(ports[0]->getSlot()) + ")";
             std::string lbl = "Super Serial (slots";
-            for (size_t i = 0; i < sscCards.size(); ++i) {
+            for (size_t i = 0; i < ports.size(); ++i) {
                 lbl += (i == 0) ? " " : ", ";
-                lbl += std::to_string(sscCards[i]->getSlot());
+                lbl += std::to_string(ports[i]->getSlot());
             }
             return lbl + ")";
         },
-        [this] { return !sscCards.empty(); } });
+        [this] { return !serialCards().empty(); } });
 
     // One entry covers both NICs; the panel tabs between whichever are in.
     panels_.bind(P::Ethernet, RT{
