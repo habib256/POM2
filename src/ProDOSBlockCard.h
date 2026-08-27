@@ -93,6 +93,22 @@ public:
         return true;
     }
 
+    /// Two-phase phase 2. Every ProDOSBlockCard has block backing, so this
+    /// never reports "unsupported" — a false return is a real failure.
+    bool adoptBay(int bay, pom2::Block512Backing::PreparedImage&& prepared,
+                  std::string& errOut) override
+    {
+        if (bay != 0) { errOut = "invalid bay"; return false; }
+        if (!adoptImage(std::move(prepared))) {
+            errOut = getLastError();
+            // adoptImage only fails for real reasons here; make sure the
+            // caller never reads an empty string as "fall back and retry".
+            if (errOut.empty()) errOut = "image could not be adopted";
+            return false;
+        }
+        return true;
+    }
+
     bool ejectBay(int bay) override { return bay == 0 && ejectImage(); }
     void setBayWriteBack(int bay, bool on) override
     {

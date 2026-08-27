@@ -59,6 +59,7 @@
 #include "MouseCoordinator.h"
 #include "AudioCoordinator.h"
 #include "DevicePanelCoordinator.h"
+#include "SlotCardFactory.h"
 #include "StorageCoordinator.h"
 #include "PrinterCoordinator.h"
 #include "MouseCardAppleWin.h"
@@ -193,6 +194,7 @@ MainWindow::MainWindow(bool forceIIPlus)
       devicePanelCoordinator_(std::make_unique<pom2::DevicePanelCoordinator>(
           *controller, *settings)),
       storageCoordinator_(std::make_unique<pom2::StorageCoordinator>()),
+      slotCardFactory_(std::make_unique<pom2::SlotCardFactory>()),
       disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
       diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
       cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
@@ -1355,139 +1357,76 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
     //    raw `*Card` member pointer (non-owning) for the rest of MainWindow
     //    to find, and plugs the card into the SlotBus. ────────────────
 
+    // Read once for every factory Request below: the CFFA firmware comes in
+    // an NMOS and a 65C02 variant and the factory picks by this.
+    const bool cpuIsCmosForSlots =
+        st.cpu().getCpuMode() == M6502::CpuMode::CMOS;
+
     auto plugDiskII = [&](int s) {
-        static const char* diskRomCandidates[] = {
-            "roms/disk2.rom", "../roms/disk2.rom", "../../roms/disk2.rom"
-        };
-        for (const char* p : diskRomCandidates) {
-            std::string r = pom2::findResource(p);
-            if (!r.empty()) { diskRomPath = r; break; }
-        }
-        auto card = std::make_unique<DiskIICard>(s);
-        // DiskIICard ctor pre-loads the embedded Apple 341-0027-A boot PROM,
-        // so the card is bootable out of the box. A user-supplied dump at
-        // `roms/disk2.rom` overrides only if it loads cleanly (256 bytes).
-        if (fs::exists(diskRomPath) && card->loadBootRom(diskRomPath)) {
-            diskRomStatus = std::string("loaded: ") + diskRomPath;
-        } else {
-            diskRomStatus = "embedded 341-0027-A PROM (no user disk2.rom)";
-        }
-        // Optional: load the P6 LSS sequencer PROM (Apple part 341-0028-A)
-        // for the cycle-accurate bit-level controller path. Bundled at
-        // `roms/diskii_p6.rom`; falls back to the embedded default.
-        static const char* lssRomCandidates[] = {
-            "roms/diskii_p6.rom", "../roms/diskii_p6.rom",
-            "../../roms/diskii_p6.rom"
-        };
-        for (const char* p : lssRomCandidates) {
-            std::string r = pom2::findResource(p);
-            if (!r.empty()) { (void)card->loadLssRom(r); break; }
-        }
-        // Optional 13-sector PROMs (Apple 341-0009 boot + 341-0010 LSS) for
-        // pre-DOS-3.3 disks. The card serves them only while a 13-sector
-        // disk is mounted (see DiskIICard serving13_). Bundled at
-        // roms/disk2_13.rom + roms/diskii_p6_13.rom.
-        static const char* boot13Candidates[] = {
-            "roms/disk2_13.rom", "../roms/disk2_13.rom", "../../roms/disk2_13.rom"
-        };
-        for (const char* p : boot13Candidates) {
-            std::string r = pom2::findResource(p);
-            if (!r.empty()) { (void)card->loadBootRom13(r); break; }
-        }
-        static const char* lss13Candidates[] = {
-            "roms/diskii_p6_13.rom", "../roms/diskii_p6_13.rom",
-            "../../roms/diskii_p6_13.rom"
-        };
-        for (const char* p : lss13Candidates) {
-            std::string r = pom2::findResource(p);
-            if (!r.empty()) { (void)card->loadLssRom13(r); break; }
-        }
-        // Wire the CPU pointer for sub-instruction cycle accuracy on
-        // MMIO reads/writes (cycle-precise copy protections rely on the
-        // LSS state at the exact sub-cycle of the data fetch, not at
-        // instruction-start). See DiskIICard::setCpu doc for context.
+        // Construction + every ROM lookup belongs to the factory: four
+        // optional PROMs (boot, P6 LSS, and the 13-sector pair) each had their
+        // own hand-rolled {roms/, ../roms/, ../../roms/} candidate loop here,
+        // which is what `pom2::findResource` already does.
+        auto made = slotCardFactory_->create(
+            { "diskii", s, cpuIsCmosForSlots, activeProfile });
+        if (!made) return;
+        diskRomPath   = made.resourcePath;
+        diskRomStatus = made.status;
+        auto* card = static_cast<DiskIICard*>(made.card.get());
+
+        // Runtime wiring stays here — it is composition, not construction.
+        // Sub-instruction cycle accuracy on MMIO: cycle-precise copy
+        // protections read the LSS state at the exact sub-cycle of the data
+        // fetch, not at instruction start (DiskIICard::setCpu).
         card->setCpu(&st.cpu());
         card->setFloppySound(&controller->floppySound525());
-        // //c+ on-board IWM — only the slot-6 card pushes its drive
-        // pointer to the IWM, mirroring the //c+ wiring. Multi-instance
-        // Disk II (option C) lets the user plug a second Disk II in
-        // slot 4 etc.; that secondary card stays off the IWM path to
-        // avoid clobbering the //c+ flux mirror.
+        // //c+ on-board IWM — only the slot-6 card pushes its drive pointer to
+        // the IWM. A second Disk II (slot 4, say) stays off that path so it
+        // cannot clobber the //c+ flux mirror.
         if (s == 6) card->setIWM(&controller->iwm());
-        DiskIICard* raw = card.get();
-        // First plugged DiskII is the "primary" — its panel & state
-        // power the legacy menu paths (auto-turbo, AI control, top-
-        // bar Eject). plugSlotsFromSettings iterates slots ascending,
-        // so the lowest-numbered slot wins naturally.
-        // No alias list to append to: `diskIICards()` / `primaryDiskII()` read
-        // the bus, and plugSlotsFromSettings iterates slots ascending, so the
-        // lowest-numbered slot is the primary exactly as before.
-        // Media and write-back are NOT restored here. This lambda builds
-        // empty hardware; StorageCoordinator::restoreMediaFromSettings() runs
-        // once at the end of this function, against the finished topology.
-        // That ordering is the point: "is this the primary card" is a property
-        // of the whole bus, and asking it while the bus is half-built is what
-        // made the second Disk II drive and a moved primary HDV restore wrong.
-        (void)raw;
+
+        // Media and write-back are NOT restored here. This builds empty
+        // hardware; StorageCoordinator::restoreMediaFromSettings() runs once
+        // at the end of this function against the finished topology, because
+        // "is this the primary card" is a property of the whole bus.
         diskPanels.push_back(std::make_unique<pom2::DiskController_ImGui>());
         if (!diskPanel) diskPanel = diskPanels.front().get();
-        st.memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(made.card));
     };
 
     auto plugHdv = [&](int s) {
-        // Restore ONLY the image explicitly mounted in the previous
-        // session — mirrors the Disk II / 3.5" restore above (no folder
-        // scan). This used to fall back to auto-mounting the first
-        // .hdv/.2mg found under hdv/ when no path was saved, which
-        // silently re-mounted (and auto-booted) a hard disk the user had
-        // just ejected. An empty `hdv_path` now means "nothing mounted",
-        // consistent with every other storage type.
+        // Empty hardware only; the image and write-back opt-in arrive in the
+        // restore pass at the end of this function. `hdvPath` is seeded from
+        // settings here purely so the panel has something to show before that
+        // pass runs — an empty `hdv_path` means "nothing mounted", not "scan
+        // hdv/ and pick one", which is what it used to mean and what silently
+        // re-mounted a hard disk the user had just ejected.
         const std::string saved = settings->getString("hdv_path", "");
         std::error_code ec;
-        if (!saved.empty() && fs::is_regular_file(saved, ec)) {
-            hdvPath = saved;
-        }
+        if (!saved.empty() && fs::is_regular_file(saved, ec)) hdvPath = saved;
 
-        // Empty hardware only — see the note in plugDiskII. The image and the
-        // write-back opt-in arrive in the restore pass at the end.
-        auto card = std::make_unique<ProDOSHardDiskCard>(s);
-        st.memory().slotBus().plug(s, std::move(card));
+        auto made = slotCardFactory_->create(
+            { "hdv", s, cpuIsCmosForSlots, activeProfile });
+        if (!made) return;
+        st.memory().slotBus().plug(s, std::move(made.card));
     };
 
     auto plugCffa = [&](int s) {
-        // MAME-faithful CFFA 2.0: the real 4 KB firmware dump executed over an
-        // emulated ATA chip (CffaCard → AtaBlockDevice → Block512Backing).
-        // Pick the firmware variant matching the CPU (65C02 → eec02, else
-        // ee02), falling back to whichever dump is present. No ROM → the slot
-        // is left empty (the card type is also hidden in Slot Config then).
-        // findResource adds the executable-relative / FHS roots on top of
-        // the CWD + build/-relative ones, so the CFFA dumps resolve in a
-        // portable bundle / AppImage / install too. See ResourcePaths.h.
-        auto probe = [&](const char* a, const char* b) -> std::string {
-            for (const char* nm : { a, b }) {
-                std::string p = pom2::findResource(std::string("roms/") + nm);
-                if (!p.empty()) return p;
-            }
-            return std::string();
-        };
-        const bool cmos =
-            st.cpu().getCpuMode() == M6502::CpuMode::CMOS;
-        const std::string cffaRomPath = cmos
-            ? probe("cffa20eec02.bin", "cffa20ee02.bin")
-            : probe("cffa20ee02.bin", "cffa20eec02.bin");
-        if (cffaRomPath.empty()) {
-            pom2::log().warn("CFFA", "Slot " + std::to_string(s) +
-                " requested CFFA but no firmware ROM (roms/cffa20ee02.bin) — "
-                "leaving slot empty");
+        // The factory picks the firmware variant by CPU — the CFFA 2.0 ROM
+        // ships in an NMOS and a 65C02 build — and falls back to the other if
+        // only one is present. A missing or unloadable ROM clears the slot:
+        // a CFFA with no firmware is not a card, it is a hole at $Cn00.
+        auto made = slotCardFactory_->create(
+            { "cffa", s, cpuIsCmosForSlots, activeProfile });
+        if (!made) {
+            if (!made.warning.empty())
+                pom2::log().warn(made.warningCategory.c_str(), made.warning);
             slotCards[s] = "";
             return;
         }
-        auto card = std::make_unique<pom2::CffaCard>(s);
-        if (!card->loadRom(cffaRomPath)) { slotCards[s] = ""; return; }
-
         // Empty hardware only — the per-slot image and write-back arrive in
         // the restore pass at the end of this function.
-        st.memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(made.card));
     };
 
     auto plugChatMauve = [&](int s) {
@@ -1719,22 +1658,12 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // Orange Micro Grappler+ — ROM-gated parallel printer. Loads
         // roms/grappler_plus.bin if present; falls back to a synthetic
         // stub ROM (PR#n trampoline only) so the card always plugs.
-        auto card = std::make_unique<GrapplerCard>(s);
-        static const char* kCandidates[] = {
-            "roms/grappler_plus.bin",
-            "roms/grappler+.bin",
-            "roms/grappler.bin",
-        };
-        for (const char* c : kCandidates) {
-            std::string r = pom2::findResource(c);
-            if (!r.empty() && card->loadRom(r)) break;
-        }
-        if (!card->isRomLoaded()) {
-            pom2::log().warn("Grappler",
-                "Grappler+ plugged in slot " + std::to_string(s) +
-                " without a 4 KB ROM dump (roms/grappler_plus.bin) — "
-                "graphics dump commands unavailable, PR#n still works");
-        }
+        auto made = slotCardFactory_->create(
+            { "grappler", s, cpuIsCmosForSlots, activeProfile });
+        if (!made) return;
+        if (!made.warning.empty())
+            pom2::log().warn(made.warningCategory.c_str(), made.warning);
+        auto* card = static_cast<GrapplerCard*>(made.card.get());
         // S1 printer-type DIP. Default = Apple Dot Matrix / ImageWriter:
         // POM2's printer IS an ImageWriter II, and MAME's Epson default
         // makes the firmware emit Epson escape codes that this printer
@@ -1745,7 +1674,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 static_cast<int>(GrapplerCard::PrinterType::AppleDotMatrix))));
         card->setMsbSoftwareControl(
             settings->getBool("grappler_msb_software", true));
-        st.memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(made.card));
     };
 
     auto plugMockingboard = [&](int s, MockingboardCard::Variant variant) {
@@ -1789,20 +1718,21 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // unit 0 = 3.5", unit 1 = HDV) survive across launches. When
         // no setting exists, both units start empty — the user picks
         // a type via the SmartPort Configuration panel.
-        auto card = std::make_unique<pom2::SmartPortCard>(s);
-        // Mechanical sound: route to the dedicated 3.5" sound bank.
-        // Block-level transfers only — the card synthesises step / motor
-        // / click events from READBLOCK / WRITEBLOCK directly.
+        // The factory owns the Liron ROM rule: the real identity
+        // (roms/liron.rom, BMOW dump) goes on slot-having machines only —
+        // NEVER on //c-class, whose on-board $C500 stub must keep the
+        // synthetic $Cn07=$01 ProDOS-block identity, because a
+        // SmartPort-class byte there re-triggers the boot-scan confusion
+        // (project_iic_smartport_boot). That is why Request carries the
+        // profile.
+        auto made = slotCardFactory_->create(
+            { "smartport35", s, cpuIsCmosForSlots, activeProfile });
+        if (!made) return;
+        auto* card = static_cast<pom2::SmartPortCard*>(made.card.get());
+        // Mechanical sound: route to the dedicated 3.5" sound bank. Block-level
+        // transfers only — the card synthesises step / motor / click events
+        // from READBLOCK / WRITEBLOCK directly. Wiring, so it stays here.
         card->setFloppySound(&controller->floppySound35());
-        // Real Liron identity (roms/liron.rom, BMOW dump) on slot-having
-        // machines only — NEVER on //c-class, whose on-board $C500 stub
-        // must keep the synthetic $Cn07=$01 ProDOS-block identity (a
-        // SmartPort-class byte re-triggers the boot-scan confusion, see
-        // project_iic_smartport_boot).
-        if (!pom2::profileConfig(activeProfile).noPhysicalSlots) {
-            const std::string r = pom2::findResource("roms/liron.rom");
-            if (!r.empty()) card->loadLironRom(r);
-        }
 
         // Units are NOT built here. The card is plugged empty and
         // StorageCoordinator::restoreMediaFromSettings() creates each unit
@@ -1813,48 +1743,25 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         //   smartport_slotN_unitK_path      (image path, optional)
         //   smartport_slotN_unitK_writeback (bool)
         // No alias to seed: primarySmartPortCard() reads the bus.
-        st.memory().slotBus().plug(s, std::move(card));
+        st.memory().slotBus().plug(s, std::move(made.card));
     };
 
     auto plugMouse = [&](int s) {
-        // Mouse Card (MAME-faithful 68705P3 + 6821 PIA + Apple ROMs).
-        // Both Apple ROMs are required — without them the card has no
-        // firmware and refuses to plug.
-        std::string slotRomPath, mcuRomPath;
-        static const char* slotRomCandidates[] = {
-            "roms/mouse_341-0270-c.bin", "../roms/mouse_341-0270-c.bin",
-            "../../roms/mouse_341-0270-c.bin"
-        };
-        static const char* mcuRomCandidates[] = {
-            "roms/mouse_341-0269.bin", "../roms/mouse_341-0269.bin",
-            "../../roms/mouse_341-0269.bin"
-        };
-        for (const char* p : slotRomCandidates) {
-            std::string r = pom2::findResource(p);
-            if (!r.empty()) { slotRomPath = r; break; }
-        }
-        for (const char* p : mcuRomCandidates) {
-            std::string r = pom2::findResource(p);
-            if (!r.empty()) { mcuRomPath = r; break; }
-        }
-        if (slotRomPath.empty() || mcuRomPath.empty()) {
-            mouseRomStatus = "ROMs missing (need roms/mouse_341-0270-c.bin "
-                             "and roms/mouse_341-0269.bin)";
-            pom2::log().warn("Mouse",
-                "Mouse Card requested in slot " + std::to_string(s) +
-                " but " + mouseRomStatus + " — leaving slot empty");
+        // MAME-faithful 68705P3 + 6821 PIA. Both Apple ROMs are required —
+        // without them the card has no firmware and refuses to plug, which is
+        // why the slot is left empty rather than half-built.
+        auto made = slotCardFactory_->create(
+            { "mouse", s, cpuIsCmosForSlots, activeProfile });
+        mouseRomStatus = made.status;
+        if (!made) {
+            if (!made.warning.empty())
+                pom2::log().warn(made.warningCategory.c_str(), made.warning);
             return;
         }
-        auto card = std::make_unique<MouseCard>(s);
-        if (!card->loadRoms(slotRomPath, mcuRomPath)) {
-            mouseRomStatus = "ROM load failed (size mismatch?)";
-            return;
-        }
-        // IRQ routing is auto-wired by SlotBus (see Memory::setCpu).
-        // Mouse Card's MCU PB6 reaches the CPU via SlotPeripheral::
-        // assertIrq, which fans out through M6502::setIrqLine(slot, …).
-        mouseRomStatus = "loaded: " + slotRomPath + " + " + mcuRomPath;
-        st.memory().slotBus().plug(s, std::move(card));
+        // IRQ routing is auto-wired by SlotBus (Memory::setCpu): the MCU's
+        // PB6 reaches the CPU through SlotPeripheral::assertIrq, which fans
+        // out via M6502::setIrqLine(slot, …).
+        st.memory().slotBus().plug(s, std::move(made.card));
     };
 
     // Dispatch: walk slots 1..7 and plug whichever card the settings ask
@@ -1871,55 +1778,22 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         else if (kind == "softcard")    plugSoftCard(s);
         else if (kind == "chatmauve")   plugChatMauve(s);
         else if (kind == "mouse")       plugMouse(s);
-        else if (kind == "mouseaw")     {
-            // AppleWin HLE variant — only the slot EPROM is needed.
-            std::string slotRomPath;
-            static const char* slotRomCandidates[] = {
-                "roms/mouse_341-0270-c.bin", "../roms/mouse_341-0270-c.bin",
-                "../../roms/mouse_341-0270-c.bin"
-            };
-            for (const char* p : slotRomCandidates) {
-                std::string r = pom2::findResource(p);
-                if (!r.empty()) { slotRomPath = r; break; }
-            }
-            // Real //c always shipped with on-board mouse hardware, so on
-            // //c-class profiles a missing AppleWin EPROM is a worse UX
-            // than falling back to the MC68705 variant (which has its
-            // own ROM probe). Hand off to plugMouse() in that case.
-            if (slotRomPath.empty()) {
-                pom2::log().warn("MouseAW",
-                    "Mouse (AppleWin HLE) requested in slot " +
-                    std::to_string(s) +
-                    " but roms/mouse_341-0270-c.bin not found — "
-                    "falling back to MC68705 \"mouse\" card");
-                plugMouse(s);
-                continue;
-            }
-            auto card = std::make_unique<MouseCardAppleWin>(s);
-            if (!card->loadRom(slotRomPath)) {
-                pom2::log().warn("MouseAW",
-                    "ROM load failed for slot " + std::to_string(s) +
-                    " — falling back to MC68705 \"mouse\" card");
-                plugMouse(s);
-                continue;
-            }
-            // MODE_INT_VBL pacing follows the machine's VIDEO FRAME —
-            // scanlinesPerFrame × cyclesPerScanline (17030 NTSC / 20280
-            // PAL), NOT `cyclesPerFrame`. The latter is the worker's CPU
-            // budget per UI tick (17045 / 20313, = round(clock/refresh))
-            // and is deliberately decoupled from the beam geometry; using
-            // it drifted the mouse VBL 33 cycles/frame under PAL — a full
-            // frame of phase every ~12 s, so a //c PAL program using the
-            // mouse VBL IRQ as its 50 Hz raster timebase watched its sync
-            // point crawl down the screen. Also NOT the profile's
-            // defaultCyclesPerFrame, which on the //c+ carries the 4×
-            // accelerator budget while the beam still runs at 60 Hz.
-            {
-                const auto& vt = pom2VideoTiming(
-                    pom2::profileConfig(activeProfile).videoStandard);
-                card->setVblCycles(vt.scanlinesPerFrame * vt.cyclesPerScanline);
-            }
-            st.memory().slotBus().plug(s, std::move(card));
+        else if (kind == "mouseaw") {
+            // The factory owns the fallback: if the AppleWin HLE slot EPROM
+            // is missing or will not load, it builds the MC68705 "mouse" card
+            // instead and reports `fallback` with the reason, rather than
+            // leaving the slot empty. MODE_INT_VBL pacing follows the
+            // machine's VIDEO frame — scanlinesPerFrame × cyclesPerScanline
+            // (17030 NTSC / 20280 PAL), not the worker's cyclesPerFrame
+            // budget — which is why the Request carries the profile.
+            auto made = slotCardFactory_->create(
+                { "mouseaw", s, cpuIsCmosForSlots, activeProfile });
+            mouseRomStatus = made.status;
+            if (!made.warning.empty())
+                pom2::log().warn(made.warningCategory.c_str(), made.warning);
+            if (!made) continue;
+            if (made.fallback) slotCards[s] = made.actualKey;
+            st.memory().slotBus().plug(s, std::move(made.card));
         }
         else if (kind == "mockingboard")   plugMockingboard(s, MockingboardCard::Variant::AC);
         else if (kind == "mockingboard_c") plugMockingboard(s, MockingboardCard::Variant::SoundII);
@@ -5868,13 +5742,19 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
             // only for the 2IMG parse and the swap. This was the largest
             // single stall in the tree — 12.8 ms warm-cache, most of a PAL
             // frame with the machine and the window both stopped.
-            if (!pom2::mountBlockCard(*controller, *dev, path, errOut)) {
+            // Same two-phase read, and the coordinator writes hdv_path with
+            // the mount instead of leaving it for the next shutdown.
+            const int slot = dev->getSlot();
+            const auto r = storageCoordinator_->mountMediaBay(
+                *controller, *settings, slot, 0, path);
+            if (!r.ok) {
+                errOut = r.error;
                 hdvStatus = "no image mounted";
                 return false;
             }
             hdvPath = path;
             hdvStatus = "loaded: " + path;
-            bootSlotOut = dev->getSlot();
+            bootSlotOut = slot;
             return true;
         }
     }
@@ -7295,7 +7175,17 @@ void MainWindow::renderHdvPanelWindow()
         bool ok = false;
         std::string err;
         {
-            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(), path, err);
+            // Through the coordinator: same two-phase read (32 MiB off the
+            // lock), plus the hdv_path key written with the mount. The bare
+            // helper left the key stale, so the panel and settings disagreed
+            // until the next shutdown.
+            {
+                const auto r = storageCoordinator_->mountMediaBay(
+                    *controller, *settings, primaryHdvCard()->getSlot(), 0,
+                    path);
+                ok  = r.ok;
+                err = r.error;
+            }
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
@@ -7346,7 +7236,17 @@ void MainWindow::renderHdvPanelWindow()
                 hdvStatus = err;
             }
         } else {
-            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(), path, err);
+            // Through the coordinator: same two-phase read (32 MiB off the
+            // lock), plus the hdv_path key written with the mount. The bare
+            // helper left the key stale, so the panel and settings disagreed
+            // until the next shutdown.
+            {
+                const auto r = storageCoordinator_->mountMediaBay(
+                    *controller, *settings, primaryHdvCard()->getSlot(), 0,
+                    path);
+                ok  = r.ok;
+                err = r.error;
+            }
             if (ok) {
                 hdvPath   = path;
                 hdvStatus = std::string("loaded: ") + path;
@@ -7519,8 +7419,11 @@ void MainWindow::renderHdvFileDialog()
     ImGui::BeginDisabled(!canMount);
     if (ImGui::Button("Mount", ImVec2(120, 0))) {
         std::string mountErr;
-        if (pom2::mountBlockCard(*controller, *primaryHdvCard(), hdvPanel->dialogPath,
-                                 mountErr)) {
+        const auto r = storageCoordinator_->mountMediaBay(
+            *controller, *settings, primaryHdvCard()->getSlot(), 0,
+            hdvPanel->dialogPath);
+        mountErr = r.error;
+        if (r.ok) {
             hdvPath   = hdvPanel->dialogPath;
             hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;
             tapeStatusMessage = "HDV mounted: " + hdvPanel->dialogPath;
@@ -7536,8 +7439,11 @@ void MainWindow::renderHdvFileDialog()
         bool ok = false;
         {
             std::string mountErr;
-            ok = pom2::mountBlockCard(*controller, *primaryHdvCard(),
-                                      hdvPanel->dialogPath, mountErr);
+            const auto r = storageCoordinator_->mountMediaBay(
+                *controller, *settings, primaryHdvCard()->getSlot(), 0,
+                hdvPanel->dialogPath);
+            ok = r.ok;
+            mountErr = r.error;
             if (ok) {
                 hdvPath   = hdvPanel->dialogPath;
                 hdvStatus = std::string("loaded: ") + hdvPanel->dialogPath;

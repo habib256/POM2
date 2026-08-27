@@ -893,6 +893,26 @@ MediaBayInfo SmartPortCard::bayInfo(int bay) const
     return info;
 }
 
+bool SmartPortCard::adoptBay(int bay, Block512Backing::PreparedImage&& prepared,
+                             std::string& errOut)
+{
+    errOut.clear();
+    SmartPortUnit* u = unit(static_cast<size_t>(bay));
+    if (!u) {
+        errOut = "select a media type for this unit first";
+        return false;
+    }
+    // A unit whose kind has no block backing — the 3.5" unit — reports that
+    // by returning false without setting lastError(). Leave errOut empty so
+    // the caller falls back to the one-phase mountBay() for it, the same
+    // discrimination MediaMount.cpp's mountBlockLike makes.
+    if (!u->adoptImage(std::move(prepared))) {
+        errOut = u->lastError();
+        return false;
+    }
+    return true;
+}
+
 bool SmartPortCard::mountBay(int bay, const std::string& path,
                              std::string& errOut)
 {

@@ -85,12 +85,19 @@ def lock_still_open(lines, fn_start, call_idx):
             break
     if lock is None:
         return None
+    # Count braces CHARACTER by character, not per line. `} else {` closes the
+    # lock's block and opens another, netting zero — a per-line counter never
+    # sees the depth go negative and reports a scope that has in fact ended.
     depth = 0
     for j in range(lock, call_idx):
         code = lines[j].split('//')[0]
-        depth += code.count('{') - code.count('}')
-        if j > lock and depth < 0:
-            return None          # scope closed before the call
+        for ch in code:
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if j > lock and depth < 0:
+                    return None      # scope closed before the call
     return lock + 1
 
 bad = 0

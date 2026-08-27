@@ -536,6 +536,19 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::mountMediaBay(
 {
     MediaCommandResult result;
     std::vector<SettingUpdate> updates;
+
+    // Phase 1, NO lock: read the image. An HDV is up to 32 MiB and this ran
+    // under stateMutex before — 25.8 ms with the machine and the window both
+    // stopped, against a 20 ms PAL frame.
+    Block512Backing::PreparedImage prepared;
+    std::string prepareError;
+    const bool preparedOk =
+        Block512Backing::readImageFile(path, prepared, prepareError);
+
+    // Phase 2: re-resolve by SLOT — the bus can have been rebuilt while the
+    // read ran — then adopt. A bay with no block backing (the 3.5" SmartPort
+    // unit) reports that with an empty error, and falls back to the one-phase
+    // mountBay(), which is the only form it has.
     {
         auto state = controller.lockState();
         auto& bus = state.memory().slotBus();
@@ -547,7 +560,26 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::mountMediaBay(
         if (bay < 0 || bay >= media->bayCount())
             return commandError("invalid media bay " +
                                 std::to_string(bay + 1));
-        if (!media->mountBay(bay, path, result.error)) return result;
+
+        bool mounted = false;
+        if (preparedOk) {
+            std::string adoptError;
+            if (media->adoptBay(bay, std::move(prepared), adoptError))
+                mounted = true;
+        }
+        if (!mounted) {
+            // Fall back to the one-phase path on ANY adopt miss, not only on
+            // "this bay has no block backing". adoptBay takes the plain
+            // 512-byte-block route, while mountBay goes through each card's
+            // own loader, which accepts more than that (a 2MG header, an odd
+            // trailing partial block). Treating an adopt failure as fatal here
+            // would reject images the one-phase path mounts happily, so the
+            // fast path is an optimisation and mountBay stays authoritative.
+            if (!media->mountBay(bay, path, result.error)) {
+                if (result.error.empty()) result.error = prepareError;
+                return result;
+            }
+        }
         (void)appendMediaBaySettingUpdates(
             updates, *peripheral, slot, bay,
             autoHdvSlot_, autoSmartPortSlot_);
@@ -918,6 +950,14 @@ StorageCoordinator::RoutedMediaCommandResult StorageCoordinator::mountHdv(
 {
     RoutedMediaCommandResult result;
     std::vector<SettingUpdate> updates;
+
+    // Phase 1, NO lock — this is the 32 MiB case, the largest single stall the
+    // tree had (25.8 ms under the lock before v0.8.5 split it).
+    Block512Backing::PreparedImage prepared;
+    std::string prepareError;
+    const bool preparedOk =
+        Block512Backing::readImageFile(path, prepared, prepareError);
+
     {
         auto state = controller.lockState();
         auto& bus = state.memory().slotBus();
@@ -925,7 +965,16 @@ StorageCoordinator::RoutedMediaCommandResult StorageCoordinator::mountHdv(
         if (!smartPortOnly) {
             if (auto* card = cards.preferredBlock()) {
                 auto* peripheral = bus.peripheral(card->getSlot());
-                if (!card->mountBay(0, path, result.error)) return result;
+                bool mounted = false;
+                if (preparedOk) {
+                    std::string adoptError;
+                    if (card->adoptBay(0, std::move(prepared), adoptError))
+                        mounted = true;   // else fall through, see mountMediaBay
+                }
+                if (!mounted && !card->mountBay(0, path, result.error)) {
+                    if (result.error.empty()) result.error = prepareError;
+                    return result;
+                }
                 if (peripheral) {
                     (void)appendMediaBaySettingUpdates(
                         updates, *peripheral, card->getSlot(), 0,

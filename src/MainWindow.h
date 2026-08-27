@@ -51,6 +51,7 @@ namespace pom2 { class PrinterCoordinator; }
 namespace pom2 { class AudioCoordinator; }
 namespace pom2 { class DevicePanelCoordinator; }
 namespace pom2 { class StorageCoordinator; }
+namespace pom2 { class SlotCardFactory; }
 class JoystickInput;
 class LeChatMauveCard;
 class EchoPlusCard;
@@ -354,6 +355,12 @@ private:
     /// routes every mount / eject / write-back / conversion under the machine
     /// lock, persisting settings only after unlocking.
     std::unique_ptr<pom2::StorageCoordinator> storageCoordinator_;
+
+    /// Slot-card construction: resource lookup, ROM validation and the
+    /// Mouse implementation fallback for the keys it owns. MainWindow keeps
+    /// the runtime wiring (CPU pointer, sound sinks, IWM) and SlotBus
+    /// ownership — composition, not construction.
+    std::unique_ptr<pom2::SlotCardFactory> slotCardFactory_;
 
     // The storage aliases are gone. `diskIICards()` / `primaryDiskII()` /
     // `primaryHdvCard()` / `primaryCffaCard()` / `primarySmartPortCard()`
