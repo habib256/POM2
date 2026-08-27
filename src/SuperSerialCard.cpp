@@ -480,9 +480,24 @@ void SuperSerialCard::advanceCycles(int /*cycles*/)
 
 void SuperSerialCard::pushIrqLine()
 {
-    // Edge debounce + slot routing live in SlotPeripheral::assertIrq;
-    // this method just maps the mask down to a boolean line level.
-    assertIrq(irqState_ != 0);
+    // Edge debounce + slot routing live in SlotPeripheral::assertIrq; this
+    // method maps the mask down to a boolean line level — and applies SW2-6,
+    // which on real hardware sits between the 6551's IRQ output and the
+    // slot's IRQ pin. With it OFF the ACIA still raises its internal sources
+    // and still shows them in the status register's bit 7; what does not
+    // happen is the CPU interrupt. Modelling the source but not the gate made
+    // a card configured for polling behave like one configured for
+    // interrupts. MAME `a2ssc.cpp:373`.
+    assertIrq(irqState_ != 0 && irqDipEnabled());
+}
+
+void SuperSerialCard::setIrqDipEnabled(bool on)
+{
+    if (on) lastDip2 |=  DSW2_IRQ_ENABLE;
+    else    lastDip2 &= ~DSW2_IRQ_ENABLE;
+    // Flipping the switch takes effect on the line immediately, exactly as
+    // moving it on a powered card does — the 6551's own state is untouched.
+    pushIrqLine();
 }
 
 uint8_t SuperSerialCard::slotRomRead(uint8_t low8)

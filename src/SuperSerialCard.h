@@ -225,6 +225,9 @@ public:
     bool    dtrAsserted()    const { return dtrAsserted_;    }
     bool    echoMode()       const { return echoMode_;       }
     bool    rxIrqEnabled()   const { return rxIrqEnable_;    }
+    /// SW2-6: does the card's IRQ output reach the slot at all?
+    bool    irqDipEnabled()  const { return (lastDip2 & DSW2_IRQ_ENABLE) != 0; }
+    void    setIrqDipEnabled(bool on);
     uint8_t statusErrorBits()const { return statusErrors_;   }
     uint8_t irqState()       const { return irqState_;       }
     size_t  rxQueueDepth()   const;
@@ -288,6 +291,18 @@ private:
     static constexpr uint8_t SR_TDRE          = 0x10;
     static constexpr uint8_t SR_DCD           = 0x20;
     static constexpr uint8_t SR_DSR           = 0x40;
+    /// SW2-6, the interrupt-enable DIP. On a real Super Serial Card this
+    /// switch physically gates the 6551's IRQ output before it reaches the
+    /// slot's IRQ pin, so with it OFF an interrupt-driven driver simply never
+    /// fires however the ACIA's own command register is programmed — the two
+    /// are independent, which is exactly the confusion the switch causes on
+    /// real hardware. MAME `a2ssc.cpp:373`.
+    ///
+    /// POM2 reports the switch in DSW2 already; bit 5 is SW2-6 under the
+    /// usual switch-1-is-bit-0 numbering, and the shipped default (0x60) has
+    /// it ON, which is why nothing changes for existing configurations.
+    static constexpr uint8_t DSW2_IRQ_ENABLE = 0x20;
+
     static constexpr uint8_t SR_IRQ           = 0x80;
 
     // 6551 internal IRQ-source mask (MAME `mos6551.h:71-77`). RX IRQ +
@@ -303,7 +318,7 @@ private:
     uint8_t ctlReg     = 0x00;
     // Optional latches the ROM may probe but our model doesn't care about.
     uint8_t lastDip1   = 0xA8;     // 19200 8N1, full duplex
-    uint8_t lastDip2   = 0x60;     // CR + LF, no echo, etc.
+    uint8_t lastDip2   = 0x60;     // CR + LF, no echo, SW2-6 interrupts ON
 
     // Decoded command-register state (mirrors MAME `mos6551.cpp::write_command`).
     // dtrAsserted_  := cmd bit 0 == 1 (real DTR pin pulled low = device ready)

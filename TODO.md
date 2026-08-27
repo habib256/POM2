@@ -377,9 +377,19 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   inconsistent on the same card; CONTROL calls needing the control-list
   DATA (only code 0 works — the stub has no guest→device list copy);
   extended $4x calls return $01.
-- 🟢 **`$C05E/F` ignores IOUDIS on //c-class** (MAME gates DHIRES on
-  `m_ioudis`); II+ broadcasts `$C00C/D` on reads while IIe is write-only —
-  both flagged for awareness by the 2026-07-12 Chat Mauve review.
+- 🟢 **`$C05E/F` under IOUDIS is DONE — the entry was stale** (checked
+  2026-08-27). The 2026-07-30 IOUDIS work gates the whole `$C058-$C05F`
+  range on `iicProfile_ && !ioudis` (`Memory.cpp`, the branch above the
+  annunciator cases), which is MAME's `(m_isiic || m_isace500) && !m_ioudis`
+  split — so with IOUDIS clear those addresses are the IIc IOU's X0/Y0 edge
+  selects and never reach DHIRES, and with it set they are SETDHIRES /
+  CLRDHIRES again. Verified directly against all three //c ROMs.
+  **Not pinned by a test.** `vbl_ioudis_annunciator` covers the VBL half of
+  the same gate but not the DHGR half; an attempt to add it did not land
+  cleanly and was backed out rather than committed half-working. Worth a
+  focused case. *0.5 d.*
+- 🟢 **II+ broadcasts `$C00C/D` on reads while IIe is write-only** — the other
+  half of the 2026-07-12 Chat Mauve review, still unchecked.
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
   $Cs00-$Cs0F, enough for detection (`EchoPlusTMS5220Card.h:15-17`).
