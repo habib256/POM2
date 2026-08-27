@@ -8,6 +8,7 @@
 #include "CffaCard.h"
 #include "Disk35Image.h"
 #include "DiskIICard.h"
+#include "DiskImage.h"
 #include "EmulationController.h"
 #include "MountableMediaCard.h"
 #include "ProDOSBlockCard.h"
@@ -23,6 +24,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <utility>
 
 namespace pom2 {
@@ -430,17 +432,45 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::mountDiskII(
 {
     MediaCommandResult result;
     std::vector<SettingUpdate> updates;
+    if (!DiskIICard::validDrive(drive))
+        return commandError("invalid Disk II drive " +
+                            std::to_string(drive + 1));
+
+    // Phase 1, NO lock: read the file and run the nibble decode. Doing this
+    // under stateMutex is what MediaMount.h exists to prevent — the worker
+    // takes that lock every 4096 cycles and the UI takes it to paint, so a
+    // 12.8 ms warm-cache read freezes the machine and the window together.
+    //
+    // The write-back flag is read unlocked on purpose: prepareDisk only needs
+    // it to decide whether the decode keeps its write buffers, and phase 2
+    // re-checks the card it actually installs into.
+    bool writeBack = false;
+    {
+        auto state = controller.lockState();
+        auto* card = dynamic_cast<DiskIICard*>(
+            state.memory().slotBus().peripheral(slot));
+        if (!card)
+            return commandError("no Disk II card in slot " +
+                                std::to_string(slot));
+        writeBack = card->isWriteBackEnabled();
+    }
+    auto prepared = std::make_unique<DiskImage>();
+    if (!DiskIICard::prepareDisk(path, writeBack, *prepared, result.error))
+        return result;
+
+    // Phase 2 — re-resolve by SLOT, never through a pointer carried across
+    // the gap. This is the caller contract MediaMount.h spells out for
+    // anything that is not plain UI-thread code: the bus can have been
+    // rebuilt while the read was running.
     {
         auto state = controller.lockState();
         auto& bus = state.memory().slotBus();
         auto* card = dynamic_cast<DiskIICard*>(bus.peripheral(slot));
         if (!card)
-            return commandError("no Disk II card in slot " +
-                                std::to_string(slot));
-        if (!DiskIICard::validDrive(drive))
-            return commandError("invalid Disk II drive " +
-                                std::to_string(drive + 1));
-        if (!card->insertDisk(drive, path))
+            return commandError("Disk II card in slot " +
+                                std::to_string(slot) +
+                                " went away during the mount");
+        if (!card->installDisk(drive, std::move(*prepared)))
             return commandError(card->getLastError(drive));
         if (seekTrackZero) card->seekTrack0();
         appendDiskIIDriveSettingUpdates(updates, bus, *card, drive);

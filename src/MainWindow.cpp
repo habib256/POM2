@@ -906,18 +906,19 @@ MainWindow::~MainWindow()
     // the slot cards without ejecting), but doing it here keeps it ordered
     // before the settings write and inside the same teardown the user can
     // see in the log.
-    const auto flushList = diskIICards();
-    for (auto* c : flushList) if (c) (void)c->flushPendingWrites();
-    for (auto* c : flushList) {
-        if (!c) continue;
-        const std::string slotKey = "_slot" + std::to_string(c->getSlot());
-        const std::string p = c->isDiskLoaded() ? c->getDiskPath() : std::string();
-        settings->setString("disk_path"      + slotKey, p);
-        settings->setBool  ("disk_writeback" + slotKey, c->isWriteBackEnabled());
-        if (c == primaryDiskII()) {
-            settings->setString("disk_path",      p);
-            settings->setBool  ("disk_writeback", c->isWriteBackEnabled());
-        }
+    {
+        std::string flushError;
+        SlotBus& bus = controller->memory().slotBus();
+        if (!storageCoordinator_->flushAll(bus, flushError))
+            pom2::log().warn("Storage", "shutdown flush: " + flushError);
+
+        // Both drives, and the legacy unsuffixed aliases from the lowest-slot
+        // card so an older POM2 build reading this settings.ini still finds
+        // the disk. The loop this replaces called isDiskLoaded()/getDiskPath()
+        // with their default arguments, so drive 2's path was never written on
+        // exit — the last of the five places that mistake was made.
+        const auto snapshot = storageCoordinator_->captureRebuildSnapshot(bus);
+        storageCoordinator_->persistSessionSettings(*settings, snapshot);
     }
 
     // Persist mounted 3.5" disks across restarts AND flush any firmware-
