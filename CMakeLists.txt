@@ -215,6 +215,7 @@ set(SOURCES
     # half stays on the branch: it needs a real library target, which the
     # v0.8.5 tree does not have.
     src/Pom2Core.cpp
+    src/W5100HostSockets.cpp
     src/AudioCoordinator.cpp
     src/DebugCoordinator.cpp
     src/DevicePanelCoordinator.cpp
@@ -267,6 +268,7 @@ set(SOURCES
     src/Cs8900aDevice.cpp
     src/UthernetCard.cpp
     src/W5100Device.cpp
+    src/W5100HostSockets.cpp
     src/UthernetIICard.cpp
     src/SlirpNetworkBackend.cpp
     src/Uthernet_ImGui.cpp
@@ -725,6 +727,7 @@ add_library(pom2_core_test STATIC
     src/MachineSnapshot.cpp
     src/RewindBuffer.cpp
     src/AiControlServer.cpp
+    src/W5100HostSockets.cpp
     src/Pom2Core.cpp
     src/Apple2Display.cpp
     src/AppleWinNtsc.cpp
@@ -784,6 +787,7 @@ add_library(pom2_core_test STATIC
     src/Cs8900aDevice.cpp
     src/UthernetCard.cpp
     src/W5100Device.cpp
+    src/W5100HostSockets.cpp
     src/UthernetIICard.cpp
     src/SlirpNetworkBackend.cpp
     src/SmartPort35Unit.cpp
