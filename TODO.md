@@ -1,16 +1,87 @@
 # POM2 — TODO
 
-Status as of 2026-08-26 (v0.8.5). Resolved items → `CHANGELOG.md`. MAME refs →
-`DEV.md`. This file lists **open work only**: an item that ships is deleted
-here and its "why" is written up in `CHANGELOG.md`.
+Status as of 2026-08-28 (v0.8.5). This file lists **open work only**: an item
+that ships is deleted here and its "why" is written up in `CHANGELOG.md`. MAME
+refs → `DEV.md`.
 
 **Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
-effort in *italics*. File/line in `backticks`. Quick read:
-[Open and known to be open](#open-and-known-to-be-open--2026-08-22-bug-hunt)
-first, then [Architect attack order](#architect-attack-order) (sequencing),
-then [Quick wins](#quick-wins), then [Backlog by subsystem](#backlog).
+effort in *italics*. File/line in `backticks`.
 
-## Open, and known to be open — 2026-08-22 bug hunt
+**Read in this order**:
+
+1. [Priority order](#priority-order) — the 2026-08-28 architecture plan, P0→P3.
+   This is what to do next.
+2. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
+   currently gets wrong *on purpose*, with the reason.
+3. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
+4. [Backlog](#backlog) — everything else, by subsystem.
+
+The two items with the most leverage right now, both reopened or raised on
+2026-08-28: the [hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
+(a bug class that has already fired once, silently) and
+[real 3.5" boot through the IWM](#storage-disks--images) for //c, //c+ and a
+Liron card — no longer deferred past 1.0.
+
+## Priority order
+
+From the 2026-08-28 architecture assessment. **Not a second backlog** — feature
+items stay under [Backlog](#backlog); this says what to do *next* when choosing
+among them. Levels are sequential: P0 before anything else. Priorities that land
+are deleted here and written up in `CHANGELOG.md`.
+
+The assessment's finding in one line: POM2 is **well above average on the hard
+axes** (concurrency discipline, hardware fidelity, test density) and **below it
+on the easy ones** (one god-object, seven hand-assembled ROMs with no
+assembler). Both weak axes have already produced a silent bug.
+
+Standing rule while P1 is open: **do not grow the god-objects.** A new card gets
+its panel in its own `*_ImGui.cpp` and **zero** business logic in
+`MainWindow.cpp`.
+
+### P0 — close what is bleeding · *≈ 4 h, no regression risk*
+
+| # | Item | Why |
+| - | ---- | --- |
+| 0-1 | 🟠 **Bound the two remaining `emit()`** — `FujiNetCard.cpp:68`, `ProDOSHardDiskCard.cpp:31`. Exact transposition of the SmartPort fix: a limit argument, an overflow flag, a test that reads it. | Same mechanism that made ProDOS `STATUS` dead code for weeks. See [ProDOS STATUS family](#prodos-status-the-hand-assembled-rom-family). |
+| 0-2 | 🟠 **Audit the other five hand-assembled ROMs** — Disk II, Grappler+, printer, SSC, and re-check HDV. Confirm each region fits its budget and pin it. | The SmartPort bug was found only by looking. The others have not been looked at. |
+| 0-3 | 🟡 **Fix `tools/check_file_sizes.sh` for bash 3.2** — it uses `declare -A` (bash 4); macOS ships 3.2, so the script aborts on `invalid option` and checks nothing. | The ratchet guards the repo via CI (Ubuntu) but cannot run where the code is written, so it is discovered only after push. |
+| 0-4 | 🟡 **Close the layer-guard hole** — 13 translation units are in no manifest, so their own includes are never examined. Add them, then make configure *fail* on an unclassified `.cpp` instead of ignoring it. | Proven by mutation: `#include "MainWindow.h"` in `MediaMount.cpp` (MEDIA including FRONTEND) passes configure silently. Coverage 95 % → 100 %, and it can no longer decay. |
+| 0-5 | 🟢 **Delete `TnfsClient`** — `.cpp` + `.h` are included by nothing. Or wire and test it, but not leave it. | Dead code, and the only files entirely outside the layer model — the two facts go together. |
+
+### P1 — the two structural causes · *≈ 6-9 d, most of the gain*
+
+| # | Item | Why |
+| - | ---- | --- |
+| 1-1 | 🟠 **A compile-time 6502 mini-assembler** — symbolic labels, declared and bounded regions, branch offsets resolved automatically, plus a readable dump for diffing. ~100 lines of `constexpr` header. | Makes the P0-1 bug class **impossible by construction** rather than guarded against. Best value/effort ratio in the plan. |
+| 1-2 | 🟠 **Rewrite the seven ROMs on it** — one card at a time, each validated by its existing tests before moving on. | The tests already pin the behaviour, so the rewrite is verifiable step by step rather than a leap. |
+| 1-3 | 🟠 **Finish the `MainWindow` decomposition** — target &lt; 2 000 lines; it should keep only the frame loop, the dock and the coordinator wiring. | Detail: [Arch](#arch-refactor--tooling). Mechanical, not conceptual — the registry and the eleven coordinators did the design work. |
+| 1-4 | 🟡 **Lower the ratchet in the same commit.** | Without it the file regrows. It already has. |
+
+### P2 — make the holes visible · *≈ 3-4 d*
+
+| # | Item | Why |
+| - | ---- | --- |
+| 2-1 | 🟡 **Coverage in CI** — `llvm-cov` on the Linux job, report published, floor set at the first measured value. | Holes are found by hand today. That is how an untested HTTP parser survived. |
+| 2-2 | 🟡 **Test `FujiNetNetDevice`** — local server, truncated responses, malformed headers, deadline exceeded, body over the cap. | The only untested network *input parsing* in the repo, and the best fuzzer candidate. |
+| 2-3 | 🟢 **Warnings to zero, then `-Werror` on one CI leg** — 11 today (9 `-Wmissing-field-initializers`, 1 unused variable, 1 unused lambda capture). | An afternoon. |
+| 2-4 | 🟢 **A test for `FloppyEmuDevice`** — the last device with no pin that is not a declared stub. | |
+
+### P3 — rulings, not development
+
+| # | Item | Why |
+| - | ---- | --- |
+| 3-1 | 🟡 **Write-protect: one rule per card** — see [Storage](#storage-disks--images). | Two bays of the *same* SmartPort card answer "can I write?" differently. Either rule is defensible; one card doing both is not. |
+| 3-2 | 🟡 **Echo+ TMS5220: ship or hide** — see [Cards](#cards-slot-cards--peripherals). | A detect-only stub in the catalog is the wrong third option, and the backlog already says so. |
+| 3-3 | 🟡 **CI `ctest -L rom` + ROM Status "degraded"** — running the synthetic fallback is not "missing". | Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. |
+| 3-4 | 🟢 **One `Config`** (env → CLI → Settings → defaults), consistent `pom2::` namespace. | Hygiene for the second contributor. |
+
+**Explicitly not architecture** — do not pick these ahead of P0-P3. They stay in
+the backlog as features: the analog IIR composite pipeline (*5-10 d*), the
+Saturn 128K Language Card, ayumi-grade FIR resampling (a deliberate MAME
+departure plus WASM cost), and Apple IIgs (already a separate **pom2gs**
+project — see [Out of scope](#out-of-scope)).
+
+## Open, and known to be open
 
 Findings that are **deliberately not fixed**. They sit at the top because each
 is something POM2 currently gets wrong that somebody would otherwise rediscover
@@ -55,6 +126,17 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
     knowing the old medium could be written loses the user's changes).
   Deliberate and bounded, so listed for completeness rather than as a defect:
   the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms, `W5100Device.h`).
+
+## Quick wins
+
+High impact/effort ratio, and independent of the architecture work. When the
+two compete, [Priority order](#priority-order) wins — P0 is four hours and
+closes a bug class.
+
+| # | Item                                    | Effort  | Why                                |
+| - | --------------------------------------- | ------- | --------------------------------------- |
+| 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
+| 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 
 ## MAME ↔ POM2 parity (dashboard)
 
@@ -106,44 +188,6 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 23bis | UthernetIICard + W5100Device (key `uthernet2`) | AppleWin-faithful | AppleWin `source/Uthernet2.cpp` + `W5100.h` (MAME has no W5100 device) + WIZnet datasheet v1.2.8 | 🟡 `LISTEN` unimplemented (no inbound path); 🟢 virtual DNS is async, not blocking like AppleWin's |
 | 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path; 🟡 libslirp is Linux/macOS only, so Uthernet I has no transport on Windows |
 | 24 | FujiNetCard (key `fujinet`)    | POM2-original (relay) | No MAME device — published SmartPort/SP-over-SLIP spec + the FujiNet AppleWin fork | 🟢 not an emulation: the device is real and off-box, every SmartPort call is forwarded verbatim; no peer → bounded 250 ms stall then SmartPort `$27`; 🟡 **rewind cannot rewind it**; 🟡 not on //c-class (forced INTCXROM masks slot ROM); pinned `fujinet_card` |
-
-## Quick wins
-
-High impact/effort ratio. For **what to do next among architecture items**,
-see [Architect attack order](#architect-attack-order) (P0 freeze of
-`MainWindow.cpp` outranks every row here).
-
-| # | Item                                    | Effort  | Why                                |
-| - | --------------------------------------- | ------- | --------------------------------------- |
-| 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
-| 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
-
-## Architect attack order
-
-Sequencing constraint from a 2026-08-19 architecture pass — **not a second
-backlog**. Feature items stay under [Backlog](#backlog); this list says what
-to do **next when choosing among them**, and what not to pick instead.
-Cross-links point at the detailed items. Priorities that have landed are
-deleted rather than struck through — `CHANGELOG.md` is the audit trail.
-
-Standing rule while P0 is open: **do not grow the god-objects.** A new card
-gets its panel in its own `*_ImGui.cpp` and **zero** business logic in
-`MainWindow.cpp`.
-
-| Pri | Item | Status | Detail |
-| --- | ---- | ------ | ------ |
-| **P0** | Stop growing the god-objects, and **decompose** rather than relocate: the split into `MainWindow_<Area>.cpp` moves rows between files and leaves the coupling intact. Target &lt; 3000 lines/file, POM1 `MainWindow_*` discipline. | 🟢 **the UI half is done 2026-08-23.** `MainWindow.cpp` went 5 590 → 6 622 (the audit that set the target) → 11 511 → **11 154** — the first fall since the rule was written, and it came from removing the SIX parallel per-panel lists (settings load 32, save 32, palette 38, palette dispatch 38, menu rows 37, WASM chrome-light 28), then the 38 `bool showXxx` members, then the ~43 `renderXxxWindow()` calls. One catalog + one registry; adding a panel is a row and a `draw` line. `tools/check_file_sizes.sh` ratchets the ceiling, which now only falls. **Body extraction 2026-08-23**, all verbatim moves into `MainWindow_<Area>.cpp`: audio (mixer, Le Chat Mauve, Mockingboard, Phasor, Echo+), non-audio devices (Ethernet, SSC, printer, ImageWriter, AI server), settings/input (No-Slot Clock, voxel, NTSC, joystick, mouse) and misc (memory viewer, cassette, HGR paint + sprite, rewind) — **11 154 → 8 913 lines** (−2 241), ratchet lowered each step. **Left**: (a) the storage panels (Disk, Library, SmartPort, FujiNet, FloppyEmu, HDV) — they reference the `kProDOSHostSentinel` / `freePoNameFor` anonymous-namespace helpers, which must move with them; (b) the keyboard and welcome panels, which stay put deliberately — they load a texture via the `STB_IMAGE_STATIC` instance defined in `MainWindow.cpp`, whose symbols are internal to that TU; (c) `renderScreenWindow` (the main framebuffer, tightly coupled to the GL upload). | [Arch](#arch-refactor--tooling) `MainWindow.cpp` god-object; [DEV § Panel registry](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp) |
-| **P1** | TSan on the **GUI** half + remaining mutex grain. ASan cannot see UI races; audio jitter under disk-turbo is a product bug, not a micro-opt. Mockingboard SPSC handoff next **if** a profile still shows the per-instruction card mutex. | 🟡 open, but no longer unattended: a **nightly ASan+UBSan / TSan matrix** runs in `ci.yml` as of 2026-08-22 (`POM2_SANITIZE` had been a CMake option CI never used, so the "controller TSan clean 2026-08-17" result had nothing keeping it true). **The UI↔worker input contention now has a targeted pass (2026-08-23)**: `ui_worker_contention` drives the real worker while a second thread hammers it with MainWindow's exact input disciplines — paddles/buttons under `lockState()`, `queueKey` via `kbMutex`, Open/Solid-Apple via atomics — and the worker's loop reads `$C000`/`$C061`/`$C064` concurrently. TSan-clean locally and added to the nightly TSan matrix, so a future access that escapes those disciplines turns the leg red. **Still open**: `demodMutex` and slot re-plug under load (both need their own driver), and MainWindow itself cannot run under TSan headless (GLFW/GL). OE-CPU demod **already** runs after `stateMutex` release (2026-07-12). | [Arch](#arch-refactor--tooling) TSan; [Audio](#audio) mutex contention; [Display](#display-hgr--dhgr--80-col) demod |
-| **P3** | CI `ctest -L rom` + ROM Status **degraded** (running the synthetic fallback is not « missing »). Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. | 🟡 open |
-| **P4** | Hygiene for the second contributor: one `Config` (env → CLI → Settings → defaults), `pom2::` namespace, remaining atomic-write helper copies. | 🟡 open | [Arch](#arch-refactor--tooling) scattered config / namespace / `AtomicFileReplace.h` |
-
-**Explicitly not architecture** — do not pick these ahead of P0–P4. They stay
-in the backlog as features:
-
-- Analog IIR-on-signal composite pipeline (academic, *5–10 d*)
-- Saturn 128K Language Card
-- ayumi-grade FIR resampling (deliberate MAME departure + WASM cost)
-- Apple IIgs (already a separate **pom2gs** project — see [Out of scope](#out-of-scope))
 
 ## Backlog
 
@@ -275,7 +319,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   and PAL clocks its AYs 0.7 % fast. Now the only divergence from
   Mockingboard rather than a hidden one.
   Architect order: **P3** — until this lands, « verbatim » is an audio lie
-  ([Architect attack order](#architect-attack-order)).
+  ([Priority order](#priority-order)).
 - 🟢 **ayumi-grade resampling** (native clock/8 → 8× quadratic interp →
   192-tap FIR decimation + moving-average DC filter,
   `true-grue/ayumi`, MIT). Strictly better than the box filter and what
@@ -353,92 +397,97 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   still missing from `classifyDiskForSlot` / `accept525`.
 - 🟢 **Floppy Emu Dual-5.25" + Smartport-Unit-2 modes** — out of scope
   for v1 (4 main modes covered).
-- 🟡 **//c+ on-board 3.5" boot through the real IWM** — the pieces are all
-  there and individually pinned: `IWMDevice` is a verbatim MAME port
-  (dashboard #11) including the bit-cell read walker and the write windows,
-  `Sony35Drive` + `Sony35Gcr` serve zoned 800 K GCR, and the //c+ alt
-  firmware's MIG gate-array windows (`$CC00-$CCFF` / `$CE00-$CEFF`) are
-  decoded. What does **not** work is the //c+ ROM's own boot path *through*
-  them: a cold //c+ with only a 3.5" image mounted never reaches a bootable
-  disk. The supported route is the host-served SmartPort block device at
-  built-in slot 5 (`iic_onboard_smartport_smoke`), which boots 3.5"/HDV on
-  every //c-class profile — so this is a fidelity gap, not a functional one,
-  and it is **owned-out-of-scope for 1.0**. Referenced from `CLAUDE.md`
-  § System profiles and from [WASM](#wasm) below.
+- 🟠 **Real 3.5" boot through the IWM — //c, //c+ and a Liron card**
+  *(reopened 2026-08-28; no longer deferred to 1.0)* — one campaign, because
+  the three cases share a single unknown. Every piece is in the tree and
+  individually pinned:
+  `IWMDevice` is a verbatim MAME port (dashboard #11) including the bit-cell
+  read walker and the write windows; `Sony35Drive` + `Sony35Gcr` serve zoned
+  800 K GCR; `SmartPortHub` resolves the active drive
+  (`apple2e.cpp:638-679`); the //c+ alt firmware's MIG windows
+  (`$CC00-$CCFF` / `$CE00-$CEFF`) are decoded; and `roms/liron.rom` (the 4 KB
+  BMOW/Yellowstone dump) is in-repo, catalogued (`RomCatalog.h:75`), loaded by
+  `SmartPortCard` and pinned by `liron_smartport_dispatch`.
+
+  What does **not** work is any real firmware's boot path *through* them: a
+  cold //c+ with only a 3.5" image mounted never reaches a bootable disk.
+  POM2 boots 3.5"/HDV on every //c-class profile via the host-served SmartPort
+  block device at built-in slot 5 (`iic_onboard_smartport_smoke`), so this is
+  a fidelity gap rather than a functional one — but it is the **largest
+  remaining fidelity gap in the storage stack**, and the reason to close it is
+  that three separate features are blocked behind one unanswered question.
+
+  **Do this first, before writing any card**: find out where the GCR read path
+  diverges. Build a headless harness that drives `IWMDevice` + `Sony35Drive`
+  directly and dumps the bit-cell stream against a known-good 800 K image —
+  address-field sync, zone boundaries, the `$D5 $AA $96` prologue. Either the
+  firmware never gets a clean address field, or it does and the fault is
+  further up. That answer decides everything below, and building a card first
+  would only produce a card that does not boot. *~2-3 d.*
+
+  Then, in order:
+  1. **//c+ on-board** — the alt firmware already drives the IWM; if the read
+     path is right, this is the shortest path to a real boot. *~1 d after the
+     harness.*
+  2. **`LironCard : SlotPeripheral`** — the real IWM in a slot, driven by the
+     real `liron.rom`. `$Cn00` firmware, `$C0nX` → `IWMDevice::read/write`,
+     `advanceCycles` → `tick`, phases/devsel → `Sony35Drive`. The card is
+     small; the risk was never the card. *~8-12 h.*
+  3. **//c** — MAME has no 3.5"/SmartPort model for the plain //c at all, so
+     POM2 would be ahead of the oracle here and needs its own evidence: a real
+     UniDisk 3.5 boot disk read end to end.
+
+  Note the UniDisk 3.5 **drive-side** 65C02 firmware stays out of scope; this
+  is the controller side only. → `CLAUDE.md` § System profiles, [WASM](#wasm).
 
 ### [Cards] slot cards & peripherals
 
-- 🟢 **SmartPortCard leftovers** (2026-07-12 Liron audit follow-ups —
-  STATUS pre-flight, the SmartPort `$Cn0D` dispatch and the real-ROM
-  identity all landed same-day, see CHANGELOG). Two of the five are
-  **done** (2026-08-27), and closing the error-code one turned up a much
-  bigger defect underneath:
+- 🟠 **ProDOS `STATUS` — the hand-assembled ROM family** *(2026-08-28)* —
+  <a id="prodos-status-the-hand-assembled-rom-family"></a>the SmartPort case is
+  fixed and written up in `CHANGELOG.md`; what is left is that **the same shape
+  exists on other cards and has not been audited**.
 
-  - ✅ **empty-bay error codes** — READ answered `$27` "I/O error" (it fell
-    through to the transfer) and WRITE answered `$2B` "write protected" (it
-    tested WP before media). Both now pre-flight the bay through a shared
-    subroutine and answer `$28`, "no device connected". Write-protect still
-    reports `$2B`, pinned in the same test so testing media first cannot
-    quietly stop the card reporting WP at all.
-  - ✅ **…and the STATUS routine was dead code.** The slot ROM is 256
-    hand-assembled bytes and `emit()` had no bound, so the write-block
-    routine had grown straight *through* the STATUS pre-flight at `$CnC0`.
-    `JMP $CnC0` landed mid-instruction in the write loop, ran an illegal
-    opcode and fell into the I/O-error branch — every ProDOS STATUS call
-    answered `$27` on a healthy bay and no block count ever came back, so a
-    volume scanner could not size the device. Nothing failed because nothing
-    executed it. `emit()` is now bounded (`romLayoutOverflowed()`), and the
-    arithmetic that caused it is fixed rather than papered over: the slot
-    page wanted 208 bytes for the 195 that `$Cn20-$CnE2` holds, so the
-    pre-flight and STATUS moved to the **`$C800` bank** (1.5 KB free, and
-    already where the `$CE00` SmartPort handler lives). They cannot go in
-    the slot page's leftover gaps — with `roms/liron.rom` loaded,
-    `$Cn13-$Cn1F` and `$CnE3-$CnFF` are deliberately the real dump's
-    identity bytes, so a routine parked there executes real Liron firmware.
-    Pinned by `smartport_rom_layout`, which runs everything twice (synthetic
-    + real dump) and asserts the passes differ.
-  - 🟢 **extended `$4x` calls return `$01`** — *this is correct, not a gap.*
-    The card never advertises extended SmartPort (`$Cn07` = `$01`, a plain
-    ProDOS block device, deliberately — see the //c boot note in
-    `buildRom`), and `$01` BADCMD is what a non-extended controller answers.
-    Already pinned by `liron_smartport_dispatch`.
-  - 🟡 **still open**: boot failure is a silent `JMP $CnE0` loop (real
-    firmware prints an error); CONTROL calls needing the control-list DATA
-    (only code 0 works — the stub has no guest→device list copy).
-  - 🟡 **still open, needs a ruling**: 3.5-type units report
-    `fileWriteProtected || !writeBackEnabled` (WP until write-back is on,
-    the same rule `DiskImage` uses for 5.25") while HDV bays report only
-    `wpHeader_` and stay RAM-writable. Two bays on the *same* card answer
-    the guest's "can I write?" differently, decided by a host-side toggle
-    that models nothing on the machine. Physically, write-protect is a
-    property of the medium; the counter-argument is that accepting a write
-    with write-back off loses it silently. Whichever way it goes, one card
-    must not do both.
-- 🟢 **`$C05E/F` under IOUDIS is DONE — the entry was stale** (checked
-  2026-08-27). The 2026-07-30 IOUDIS work gates the whole `$C058-$C05F`
-  range on `iicProfile_ && !ioudis` (`Memory.cpp`, the branch above the
-  annunciator cases), which is MAME's `(m_isiic || m_isace500) && !m_ioudis`
-  split — so with IOUDIS clear those addresses are the IIc IOU's X0/Y0 edge
-  selects and never reach DHIRES, and with it set they are SETDHIRES /
-  CLRDHIRES again. Verified directly against all three //c ROMs.
-  **Now pinned** by `iic_ioudis_dhgr` (2026-08-27): reads AND writes to
-  $C05E/$C05F under both IOUDIS states, across all three //c dumps, skipping
-  when none is present so CI stays ROM-free. Mutation-checked — narrowing the
-  gate to $C05D makes it fail.
-- 🟢 **II+ `$C00C/D` on reads is CORRECT, and now pinned** (checked
-  2026-08-27, the other half of the 2026-07-12 Chat Mauve review). The
-  asymmetry is deliberate: a IIe's 80COL switch is genuinely write-only (a
-  read of `$C000-$C00F` returns the keyboard latch and never reaches the IOU),
-  while a II+ has no IOU and no 80COL signal at all — so POM2 synthesises the
-  RGB card's FIFO data line from the bus access itself, which is the only way
-  a Le Chat Mauve / Video-7 class card is usable there. The `display.eightyCol`
-  it sets is inert for rendering on a II+: every consumer in `Apple2Display`
-  gates on `mem.isIIE()`.
-  Pinned by `iiplus_rgb_data_line`, which checks both halves — the card sees
-  the data line and clocks its FIFO to COL140, AND `width()` stays 280 on the
-  II+ while a IIe with the same flag goes to 560. Mutation-checked both ways:
-  making the II+ branch write-only, or dropping the `isIIE()` gate in the
-  renderer, each make it fail.
+  The mechanism: seven cards hand-assemble a 256-byte slot ROM as a byte list,
+  with branch offsets computed by hand. `emit()` does `rom[pc++]` on a
+  `uint8_t`, so a routine that outgrows its budget wraps in silence and
+  overwrites its neighbour. On `SmartPortCard` the write-block routine had
+  grown straight through the STATUS pre-flight at `$CnC0`, so ProDOS STATUS
+  executed the middle of the write loop and answered `$27` on a healthy bay —
+  for weeks, with a green suite, because nothing executed it.
+
+  **`ProDOSHardDiskCard` carries both halves of that bug today**, verified by
+  reading the source:
+  - `ProDOSHardDiskCard.cpp:31` — the same unbounded `emit()`; and its own
+    layout comment puts the write block at `$C591..$C5BF` with STATUS at
+    `$C5C0`, i.e. **one byte of margin**. That is the exact margin SmartPort
+    ran out of.
+  - `ProDOSHardDiskCard.cpp:329` — the write path tests the write-protect bit
+    **before** asking whether media is present, so an empty bay answers `$2B`
+    "write protected" instead of `$28` "no device connected". Identical to the
+    SmartPort defect that has just been fixed.
+
+  `FujiNetCard.cpp:68` has the unbounded `emit()` too. The remaining five —
+  Disk II, Grappler+, printer, SSC — have not been checked at all.
+
+  Fix order is P0-1 / P0-2 (bound + audit), then P1-1 / P1-2 makes the class
+  impossible: a real assembler with declared regions and resolved branches.
+  → [Priority order](#priority-order)
+
+- 🟡 **SmartPortCard leftovers, still open** (2026-07-12 Liron audit
+  follow-ups) — two of the original five remain:
+  - boot failure is a silent `JMP $CnE0` loop; real firmware prints an error.
+  - CONTROL calls that need the control-list DATA: only code 0 works, because
+    the stub has no guest→device list copy. Everything else returns `$21`.
+
+- 🟡 **Write-protect: two bays of one card answer differently** — architect
+  **P3-1**. 3.5" units report `fileWriteProtected || !writeBackEnabled` (the
+  rule `DiskImage` uses for 5.25"), while HDV bays report only `wpHeader_` and
+  stay RAM-writable. On the *same* SmartPort card the guest's "can I write?"
+  is decided by media kind plus a host-side toggle that models nothing on the
+  machine. Physically, write-protect belongs to the medium; the counter-argument
+  is that accepting a write with write-back off loses it silently. Both are
+  defensible — one card doing both is not. **Needs a ruling, then ~1 h.**
+
 - 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
   $Cs00-$Cs0F, enough for detection (`EchoPlusTMS5220Card.h:15-17`).
@@ -457,13 +506,11 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you
   have it. The DOS 3.3 / Applesoft tools that pull the driver from
   `$C800` are still untested.
-- 🟡 **[P2] Real Liron / UniDisk 3.5 (IWM in a slot)** — stack already
-  there (`IWMDevice` verbatim, `Sony35Drive`, zoned GCR, `SmartPortHub`),
-  and the ROM is no longer a blocker: `roms/liron.rom` (4 KB BMOW dump)
-  is in-repo, catalogued (`RomCatalog.h:75`) and loaded by
-  `SmartPortCard` (`SmartPortCard.cpp:64-65`, loader `:665-711`), pinned
-  by `liron_smartport_dispatch`. Remaining: `LironCard : SlotPeripheral`
-  driving the real IWM in a slot. *~8-12 h.*
+- 🟠 **Real Liron / UniDisk 3.5 (IWM in a slot)** — folded into the single
+  3.5"-boot campaign under [Storage](#storage-disks--images), because it shares
+  its one unknown: whether the GCR read path feeds the firmware a clean
+  address field. Build the harness before the card.
+
 - 🟢 **[P3] Apple II SCSI / High-Speed SCSI + CHD** — MAME
   `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Big lift for a
   niche need (CFFA suffices). *~30-50 h.*
@@ -667,8 +714,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   **licensing**: shipping Apple ROM dumps + non-free media in a public web
   demo vs sourcing royalty-free replacements. A marketing prerequisite
   before pushing to r/apple2 + Hacker News; aim in parallel for a
-  **stable 1.0** (the //c+/IWM 3.5" boot stays owned-out-of-scope — see
-  [Storage](#storage-disks--images) above). *decision + media sourcing.*
+  **stable 1.0**. *decision + media sourcing.*
 
 ### [Arch] refactor & tooling
 
@@ -685,8 +731,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   loop (guard once at entry). Boot test could also pump a public
   controller slice hook instead of re-implementing arbitration.
 - 🟠 **ThreadSanitizer pass over `EmulationController` / `stateMutex` / the
-  audio thread** *(2026-08-02 bug-hunt follow-up)* — architect **P1**
-  ([Architect attack order](#architect-attack-order)). The highest-yield gap we
+  audio thread** *(2026-08-02 bug-hunt follow-up)* — architect **P2**
+  ([Priority order](#priority-order)). The highest-yield gap we
   know of. That sweep's ASan+UBSan build (156 test binaries, ~24 000
   hostile-input cases, ~6 M random instructions) returned **zero**
   diagnostics, yet code reading found a UI deadlock, two use-after-frees and
@@ -736,181 +782,36 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     clipping moved into (`dhgrExportRowBytes`, `extractDhgrPlanes`) — but
     `HgrSpriteEditor` itself is still only reachable through an ImGui frame,
     exactly like `HgrPaintEditor`. One seam would serve both.
-- 🟡 **`MainWindow.cpp` god-object (8 912 lines)** *(audit 2026-05-31 at
-  10 669; 11 495 before the panel work, 11 154 after the registry, 8 912 after
-  the first body extractions — the ceiling in `tools/file_size_budget.txt`
-  only falls)* — architect **P0**
-  ([Architect attack order](#architect-attack-order)). **The lesson of
-  2026-08-23: the file split was never the fix.** `_Slots` / `_MemoryMaps` /
-  `_ImGui` moved code without removing coupling — what hurt was that one panel
-  was described in six unlinked places, plus a `bool showXxx` member, plus a
-  hand-ordered render call. They had drifted: seven panels never persisted, the
-  WASM chrome-light block missed every panel added after it was written, and
-  one menu row wore another's tooltip. `PanelCatalog.h` + `PanelRegistry` +
-  `MainWindow_Panels.cpp` made all of that one table: the 38 members are gone
-  (`show(PanelId::X)`), the 43 render calls are one loop, and a forgotten
-  catalog row now fails the build rather than the UI.
-  **Left**: the storage panels (Disk, Library, SmartPort, FujiNet, FloppyEmu,
-  HDV — they reference the `kProDOSHostSentinel` / `freePoNameFor`
-  anonymous-namespace helpers, which must move with them); the keyboard and
+- 🟠 **`MainWindow.cpp` god-object (8 319 lines)** — architect **P1-3**
+  ([Priority order](#priority-order)). 111 includes, ~290 declarations in the
+  header; it is where rendering, input, media, profiles, panels and coordinator
+  wiring all cross. The panel registry and the eleven coordinators did the hard
+  part — what is left is **movement, not redesign**.
+  **Left**: (a) the storage panels (Disk, Library, SmartPort, FujiNet,
+  FloppyEmu, HDV) — they reference the `kProDOSHostSentinel` / `freePoNameFor`
+  anonymous-namespace helpers, which must move with them; (b) the keyboard and
   welcome panels, which stay put deliberately (they load a texture through the
-  `STB_IMAGE_STATIC` instance defined in `MainWindow.cpp`); and
-  `renderScreenWindow`, tightly coupled to the GL upload. Target is still
-  &lt; 3 000 lines/file. *1-2 d.*
+  `STB_IMAGE_STATIC` instance defined in `MainWindow.cpp`, whose symbols are
+  internal to that TU); (c) `renderScreenWindow`, tightly coupled to the GL
+  upload. Target &lt; 2 000 lines, ratchet lowered in the same commit. *2-3 d.*
   → [DEV](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp)
-- 🟠 **Wire the remaining coordinators into `MainWindow`** *(2026-08-26 merge;
-  in progress 2026-08-27)* — **done**: `MouseCoordinator`,
-  `PrinterCoordinator`, `AudioCoordinator`, `DevicePanelCoordinator`. 8 of the
-  18 card aliases gone (mouse ×2, printer ×2, audio ×4, Chat Mauve, Clock,
-  Uthernet ×2), and three real defects fixed on the way: a mixer that hid a
-  coexisting second Mockingboard (and let it inherit the other's persisted
-  level), an ImageWriter "not feeding" list that never named the FujiNet unit
-  so a FujiNet-only setup showed an unconnected printer, and a spool read with
-  no lock under a comment claiming the opposite.
-
-  **`StorageCoordinator` is wired** (2026-08-27, nine commits). All five
-  aliases gone; topology, media commands, two-phase construct-then-restore,
-  both rebuild paths, the SmartPort panel, the 3.5" panel and routing, the
-  flush and the shutdown persistence all go through it. Eleven defects fixed on
-  the way, most of them two shapes — a drive parameter defaulting to 0, or a
-  mutation that never wrote the key recording it:
-
-  | Defect | Was |
-  |---|---|
-  | drive 2 never restored at startup | ctor's own restore loop, `insertDisk(path)` |
-  | drive 2 lost on every profile switch | `isDiskLoaded()` / `getDiskPath()` in the snapshot |
-  | drive 2 dropped by Slot Config Apply | same, in the settings sync |
-  | drive 2 never persisted on exit | same, in the shutdown loop |
-  | eject-all left drive 2 mounted | `ejectDisk()` |
-  | eject-all reported success over a failed write-back | return value ignored |
-  | Eject disk / Eject HDV re-mounted next launch | key never cleared |
-  | Disk II + HDV write-back toggles forgotten | key never written |
-  | 3.5" on-board eject + write-back not persisted | only the SmartPort branch wrote keys |
-  | //c+ 3.5" panel showed the wrong drives | panel excluded //c+, mount did not |
-  | SmartPort unit reused across ~5 lock acquisitions | one `SmartPortUnit*` per frame |
-
-  Also removed a double restore (the ctor's loop ran after the plug pass, so
-  every image opened twice at startup), and made the coordinator's
-  `mountDiskII` two-phase — as written it read the file under `lockState()`,
-  which would have undone v0.8.5's fix.
-
-  **Left in `StorageCoordinator` — one item, and it is an interface change:**
-
-  **Left elsewhere:**
-
-  | Coordinator | Aliases | Note |
-  |---|---|---|
-  | ~~`SlotCardFactory`~~ ✅ 2026-08-27 | — | seven keys' construction + ROM policy left MainWindow |
-  | ~~`SlotRebuildCoordinator`~~ ✅ 2026-08-27 | — | one `stable → prepared → rebuilding → stable` transaction replaces the two hand-synced teardown copies |
-  | ~~`SlotConfigurationCoordinator`~~ ✅ 2026-08-27 | — | plan / draft / live are three maps again; a missing ROM or a session-only card no longer rewrites the user's config |
-  | ~~`SlotProvisioningCoordinator`~~ ✅ 2026-08-27 | — | one boot-target policy for CLI, drag-and-drop and Floppy Emu |
-  | `DebugCoordinator` | — | needs Dear ImGui, so frontend-only |
-  | `NetworkCoordinator` | `sscCards` `sscCard` `fujiNetCard` (~29 sites) | **blocked** on the device seams below |
-
-  → `CHANGELOG.md` 2026-08-26/27. *1-2 d left.*
 
 - 🟠 **No test drives the ImGui panels, so a UI-thread deadlock fails nothing**
-  *(found the hard way 2026-08-27)* — wiring `PrinterCoordinator` into
-  `renderFujiNetPanelWindow` put a `captureHost()` inside an existing
-  `lock_guard(stateMutex())` scope. Every coordinator capture/apply takes the
-  machine lock itself and `stateMutex` is **non-recursive**, so opening that
-  panel would have hung the UI thread and the emulator together — while the
-  full 207-test suite stayed green, because nothing drives the panels.
-
-  Mitigation in the tree now: **`tools/check_coordinator_locks.sh`**, run it
-  after touching any coordinator call site. It is falsifiable — checked out
-  against `44b715f` it reports the real bug and exits 1. Two working notes it
-  encodes, both learned by getting them wrong:
-  - it must match **both** `lockState()` and the bare `stateMutex()`; the
-    first version looked only for the former and missed this bug;
-  - a lock opened in a nested block that has since closed is NOT held —
-    naive brace counting produces false positives on `renderMenuBar`,
-    `renderStatusBar` and `applyProfile`, all of which are fine.
-
-  The real fix is still `tests/frontend_device_panel_concurrency` (a headless
-  ImGui frame driven while cards are replugged), which sits on
-  `refactor/core-boundaries-and-coordinators` waiting on the device seams.
-  *1 d, after the seams.*
-
-- 🟡 **The wiring pattern, so the remaining tranches match the done ones**
-  *(2026-08-27, working note)* — capture per call site rather than caching a
-  per-frame snapshot in `MainWindow` (that is what the branch does and what
-  its TSan pass covers); re-resolve the card inside the coordinator before
-  applying a command, because ImGui callbacks (`onCardDipChanged`) fire later
-  in the frame than the panel that installed them; bind panel-registry
-  availability + label to a snapshot, not to `card(&alias)` — the registry
-  takes the *address* of the member, so the alias cannot simply be deleted;
-  and replace alias-nulling in the two `MainWindow_Slots.cpp` teardown blocks
-  with an explicit invalidation where the coordinator holds identity across a
-  rebuild (`PrinterCoordinator::resetFeedCursor` — a rebuild can hand a
-  replacement card the same allocator address).
+  *(found the hard way 2026-08-27)* — a coordinator capture placed inside an
+  existing `lock_guard(stateMutex())` scope would have hung the UI thread and
+  the emulator together, while the full suite stayed green, because nothing
+  drives the panels. `stateMutex` is non-recursive and every coordinator
+  capture takes it itself.
+  **Mitigation in the tree**: `tools/check_coordinator_locks.sh`, run after
+  touching any coordinator call site — falsifiable against `44b715f`.
+  **Still open**: `tests/frontend_device_panel_concurrency`, a headless ImGui
+  frame driven while cards are replugged. That is the only thing that closes
+  the class rather than scanning for it. *1 d.*
 
 - 🟢 **W5100 name resolution is still inline** *(2026-08-27)* — deliberately
   left in `W5100Device` when the socket seam landed: an async mailbox with an
   in-flight cap, a bounded wait and its own cache, wired to register reads.
   Its own pass, and not on anything's critical path.
-- ✅ **FujiNetCard is a DEVICE again** *(done 2026-08-27)* — it was the one
-  card classified RUNTIME, and the reason was ownership rather than behaviour:
-  it held `SpOverSlipLink` (worker thread, sockets, helper process) and
-  `FujiNetNetDevice` (host sockets) **by value**. Two new device-layer
-  interfaces — `FujiNetTransport` (host lifecycle: arm a transport, start/stop
-  the worker, counters) and `FujiNetNetwork` (the `N:` device as the card sees
-  it) — join the existing `FujiNetLink` (protocol), with the concrete
-  implementations staying at RUNTIME and `makeFujiNetCard()` as the only place
-  that names them. Same seam shape as `SuperSerialTransport` and
-  `W5100Socket`. Two side effects worth more than the reclassification: the
-  `setLinkForTesting` hook is **gone** from the production header (injection
-  makes it redundant — seam-test cards now own a fake link plus the null
-  transport/network and *cannot* open a socket), and `NetworkCoordinator`'s
-  snapshot binds the protocol and lifecycle surfaces separately so the call
-  site shows which is which. Enforcement verified by mutation: adding
-  `<thread>` or `SocketCompat.h` to `FujiNetCard.h` now fails configure with a
-  layer violation — neither was catchable while the card lived at RUNTIME.
-
-- ✅ **The SDK install contract** *(done 2026-08-27)* — POM2 is now consumable
-  as a **dependency**, not only as a build. `pom2_core` is a real installable
-  STATIC target (the source list `POM2_CORE_SOURCES` is shared with
-  `pom2_core_test`, so the SDK can never drift from what the tests cover),
-  exported under a `pom2_core_sdk` component as `POM2::core` with `include/`
-  PUBLIC and `src/` PRIVATE — a consumer sees `<pom2/core.hpp>` and nothing
-  else. `set_target_properties(... EXPORT_NAME core)` is load-bearing: the
-  in-build `POM2::core` ALIAS does **not** survive into the installed package,
-  and without it consumers would have to write `POM2::pom2_core`.
-  `pom2_core_sdk_consumer` (ctest #215, label `slow`) is the only test that
-  exercises POM2 from the outside — it installs into a throwaway prefix,
-  configures `examples/pom2_core_consumer` as a standalone project through
-  `find_package`, builds it against the imported target and runs it (boots a
-  machine, renders a frame, pulls audio). Mutation-checked: deleting the
-  `EXPORT_NAME` line makes it fail. A broken export set, a missing header or a
-  dependency the package file forgets to re-find all pass an in-tree build and
-  fail here. The **layer guard landed separately** — it turned out to need only
-  source manifests, not the branch's object libraries.
-
-  With this, **nothing remains parked on the refactor branch that was wanted**;
-  the inventory below is now a record of what was deliberately left behind.
-- 🟢 **What is still parked on `refactor/core-boundaries-and-coordinators`**
-  *(inventory, 2026-08-27)* — so nobody re-derives it from the diff: the
-  branch's own `MainWindow`/`Memory` decompositions (superseded by v0.8.5's and
-  **not** wanted), the device seams `W5100Socket` / `SuperSerialTransport` /
-  `FujiNetLink` + `FujiNetHost` + `W5100HostSockets` + `SuperSerialTcpTransport`,
-  the three deterministic fakes and `tests/deterministic_adapter_injection`,
-  `NetworkCoordinator`, `tests/frontend_device_panel_concurrency`,
-  `tests/input_c0xx_contract`, `tests/mainwindow_tu_size.cmake`,
-  `cmake/Pom2Architecture.cmake` + the layer-guard tests,
-  `cmake/pom2_coreConfig.cmake.in` + `examples/pom2_core_consumer` +
-  `tests/pom2_core_sdk_consumer.cmake`, and `docs/ARCHITECTURE.md`. Everything
-  else from that branch is merged. Keep the branch until the seams item is
-  done; it is the only copy.
-- 🟢 **New headless tests link `pom2_core_test`** *(2026-08-26, working note)* —
-  the assertion-enabled core-minus-renderer archive added with the merge
-  (`CMakeLists.txt`), plus the `pom2_add_headless_test()` constructor in
-  `tests/cmake/Pom2Test.cmake`. Declare a new test with SOURCES + `LINK_LIBRARIES
-  pom2_core_test` instead of re-listing a private bundle of core sources. The
-  197 pre-existing tests deliberately keep their explicit bundles — the archive
-  is linked per target, not at directory scope, so converting them is optional
-  cleanup rather than a prerequisite. The archive excludes `JoystickInput.cpp`
-  (GLFW) and `DebugCoordinator.cpp` (Dear ImGui), the two core-list files that
-  do reach the renderer.
 - 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
   to centralize into a `Config` (env → CLI → Settings → defaults),
   list env vars in `--help`. *1 d.* Architect **P4**.

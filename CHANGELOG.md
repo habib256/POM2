@@ -5,6 +5,159 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — The SmartPort slot ROM was overwriting itself
+
+`SmartPortCard` hand-assembles a 256-byte slot ROM, and `emit()` did
+`rom[pc++]` on a `uint8_t` with no bound. A routine that outgrew its budget did
+not fail — it silently ate its neighbour, and one had.
+
+The write-block routine ran from `$Cn9C` to `$CnD5`, straight **through** the
+ProDOS STATUS pre-flight that was supposed to live at `$CnC0`. The dispatch's
+`JMP $CnC0` therefore landed mid-instruction inside the write loop:
+
+    C0: D3 C0 C8 D0 F8 C6 45 AD D4 C0 29 01 D0 04 ...
+
+which executed an illegal opcode, fell into the write routine's I/O-error
+branch and returned `$27`. **Every ProDOS STATUS call answered "I/O error" on a
+healthy bay**, and no block count ever came back, so a volume scanner (BITSY,
+ONLINE) could not size the device. The only surviving fragment of STATUS was
+its tail at `$CnD6`. The routine this file records as landed on 2026-07-12 had
+been dead code ever since the write path grew. Nothing failed, because nothing
+executed it.
+
+Two empty-bay error codes were wrong for the same underlying reason — neither
+transfer path asked "is there a disk here?" first:
+
+| call  | answered | why it was wrong |
+|---|---|---|
+| READ  | `$27` I/O error       | fell through to the transfer |
+| WRITE | `$2B` write protected | tested WP before media |
+
+An empty bay is neither. Both now call a shared pre-flight and answer `$28`,
+"no device connected" — the ProDOS driver error set the dispatch already
+speaks. Write-protect still reports `$2B`, and the test pins that half too:
+testing media first must not quietly stop the card reporting WP at all.
+
+**The placement was wrong the first time, and the second attempt is the
+interesting one.** The obvious homes for the new routines were the slot page's
+free gaps at `$Cn13-$Cn1F` and `$CnE3-$CnFF`. Both are in the set the
+real-Liron overlay *deliberately* leaves as the dump's own identity bytes, so
+with `roms/liron.rom` loaded — the production path — those calls would have
+executed real Liron firmware. The tests passed because nothing drove the ProDOS
+driver with the dump loaded.
+
+The real problem was arithmetic: boot (36) + dispatch (31) + read (51) + write
+(62) + halt (3) + STATUS (25) is 208 bytes for the 195 that `$Cn20-$CnE2`
+holds. The slot page had been over budget for a while, and squeezing routines
+into leftover gaps was treating the symptom. Both routines now live in the
+**`$C800` bank**, which has 1.5 KB free and is already where the SmartPort
+handler sits (`$CE00`), reached exactly this way: executing the dispatch in the
+slot page is itself what points `$C800` at this slot
+(`SlotBus::slotRomRead` sets the active expansion slot).
+
+`emit()` now takes a limit and trips `romLayoutOverflowed()` rather than
+writing past it. `smartport_rom_layout` pins both halves — the overflow flag
+*and* the behaviour of all three ProDOS entry points, since a relocation that
+fits but points somewhere wrong still has to fail. It runs its whole body twice,
+synthetic base and real dump, with the two passes asserted to differ
+(`$Cn07` = `$01` vs `$00`) so the second one is not vacuous. Mutation-checked
+three ways: STATUS back at `$CnC0` fails it, a shrunk region budget trips the
+overflow flag, and STATUS parked in the `$CnE3` gap fails *only* the real-dump
+pass — the bug the single-pass version could not see.
+
+Closed as correct rather than changed: **extended `$4x` SmartPort calls return
+`$01`**. The card never advertises extended SmartPort (`$Cn07` = `$01`, a plain
+ProDOS block device, deliberately — see the //c boot note in `buildRom`), and
+`$01` BADCMD is what a non-extended controller answers. Already pinned by
+`liron_smartport_dispatch`.
+
+## 2026-08-27 (latest) — FujiNetCard becomes a card again, and POM2 becomes a dependency
+
+**`FujiNetCard` was the one card classified RUNTIME**, and the reason was
+ownership rather than behaviour: it held `SpOverSlipLink` (worker thread,
+sockets, helper process) and `FujiNetNetDevice` (host sockets) **by value**.
+Including those headers pinned it to the top layer, and the practical cost was
+that the rule *a card may not own a thread* could not be enforced against the
+one card most likely to break it.
+
+Two seams, the shape already used for `SuperSerialCard` and `W5100Device` —
+interface at the device layer, implementation at runtime:
+
+- **`FujiNetTransport`** — how the *host* drives the link: arm a transport,
+  start and stop the worker, read counters. `Mode`, `Stats` and
+  `kDefaultTimeoutMs` moved onto it because the panel renders them and the
+  settings host persists them; they are contract, not implementation detail.
+- **`FujiNetNetwork`** — the `N:` device as the *card* sees it. Six calls, no
+  knowledge that the far end resolves a hostname and speaks HTTP. The `kNet*`
+  command bytes and the STATUS error codes moved with it, because the card
+  decodes them out of the guest's control list.
+
+`makeFujiNetCard()` is now the only place in the tree that names
+`SpOverSlipLink` or `FujiNetNetDevice`.
+
+Two side effects were worth more than the reclassification. The
+`setLinkForTesting` hook is **gone** from the production header — injection
+makes it redundant, and seam-test cards now own a fake link plus the null
+transport/network, so they *cannot* open a socket rather than merely declining
+to. And `NetworkCoordinator`'s snapshot binds the two surfaces separately, so
+the call site shows which reads are protocol (`isConnected`, `devices`) and
+which are host lifecycle (`mode`, `running`, counters); it was one binding
+before and read as if it were all one thing.
+
+Enforcement verified by mutation: adding `<thread>` or `SocketCompat.h` to
+`FujiNetCard.h` now fails configure with a layer violation. Neither was
+catchable while the card lived at RUNTIME.
+
+**POM2 is also consumable as a dependency now, not only as a build.** The core
+facade (`include/pom2/core.hpp`) had been in the tree for a while with nothing
+outside the build able to reach it, so "POM2 as a library" was an untested
+claim. `pom2_core` is a real installable STATIC library exported as
+`POM2::core` under a `pom2_core_sdk` component; its source list is shared with
+`pom2_core_test`, so the shipped archive cannot drift from what the suite
+covers. `include/` is PUBLIC and `src/` is PRIVATE — a consumer sees
+`<pom2/core.hpp>` and nothing else.
+
+`set_target_properties(... EXPORT_NAME core)` is load-bearing rather than
+cosmetic: the in-build `POM2::core` ALIAS does not survive into the installed
+package, which exports the target under its real name. Without it a consumer
+must write `POM2::pom2_core` and the two spellings diverge silently. This was a
+real failure, not a hypothetical — the first consumer build died on
+"target POM2::core not found" against an otherwise well-formed package.
+
+`pom2_core_sdk_consumer` is the only test that exercises POM2 from the
+**outside**: it installs into a throwaway prefix, configures
+`examples/pom2_core_consumer` as a standalone project through `find_package`,
+builds it against the imported target and runs it — booting a machine,
+rendering a frame and pulling audio. It catches a class of breakage an in-tree
+build is structurally blind to: a broken export set, an uninstalled header, a
+renamed target, or a transitive dependency the generated package file forgets
+to re-find.
+
+## 2026-08-27 (verification) — Two backlog entries were stale, and are now pinned
+
+Neither of these was a code change. Both were long-standing TODO entries
+claiming a defect that no longer existed; verifying them cost less than
+carrying them, and they are now pinned so they cannot silently regress.
+
+**`$C05E/F` under IOUDIS was already correct.** The 2026-07-30 IOUDIS work
+gates the whole `$C058-$C05F` range on `iicProfile_ && !ioudis`, which is
+MAME's `(m_isiic || m_isace500) && !m_ioudis` split — with IOUDIS clear those
+addresses are the IIc IOU's X0/Y0 edge selects and never reach DHIRES, and with
+it set they are SETDHIRES / CLRDHIRES again. Pinned by `iic_ioudis_dhgr` across
+all three //c dumps, reads *and* writes, skipping when no dump is present so CI
+stays ROM-free. Mutation-checked: narrowing the gate to `$C05D` fails it.
+
+**II+ `$C00C/D` on reads is deliberate, not a bug.** A IIe's 80COL switch is
+genuinely write-only (a read of `$C000-$C00F` returns the keyboard latch and
+never reaches the IOU), while a II+ has no IOU and no 80COL signal at all — so
+POM2 synthesises the RGB card's FIFO data line from the bus access itself,
+which is the only way a Le Chat Mauve / Video-7 class card is usable there. The
+`display.eightyCol` it sets is inert for rendering: every consumer in
+`Apple2Display` gates on `mem.isIIE()`. Pinned by `iiplus_rgb_data_line`, which
+checks both halves — the card clocks its FIFO to COL140, *and* `width()` stays
+280 on a II+ while a IIe with the same flag goes to 560. Mutation-checked both
+ways.
+
 ## 2026-08-27 (later) — Every alias gone, every coordinator wired
 
 The campaign that started with an unmergeable branch finishes here. All
