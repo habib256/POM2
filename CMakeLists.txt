@@ -439,6 +439,17 @@ set(POM2_FRONTEND_HEADERS
 
 set(POM2_FRONTEND_SOURCES
     src/AudioCoordinator.cpp
+    src/Debugger_ImGui.cpp
+    src/PanelRegistry.cpp
+    src/MainWindow_AudioPanels.cpp
+    src/MainWindow_MiscPanels.cpp
+    src/MainWindow_Panels.cpp
+    src/MainWindow_SettingsPanels.cpp
+    # The two other application roots. main.cpp is already here; a benchmark
+    # and a headless runner are composition roots too, and classifying them
+    # anywhere lower would just be a lie the guard then enforces.
+    src/pom2_bench.cpp
+    src/pom2_headless.cpp
     src/DebugCoordinator.cpp
     src/DevicePanelCoordinator.cpp
     src/MouseCoordinator.cpp
@@ -507,6 +518,7 @@ set(POM2_MACHINE_HEADERS
 
 set(POM2_MACHINE_SOURCES
     src/Keyboard.cpp
+    src/MemoryWatch.cpp
     src/M6502.cpp
     src/Z80.cpp
     src/Memory.cpp
@@ -525,7 +537,6 @@ set(POM2_MACHINE_SOURCES
 
 set(POM2_MEDIA_HEADERS
     src/AtomicFileReplace.h
-    src/MediaMount.h
     src/TwoImg.h
 )
 
@@ -543,6 +554,11 @@ set(POM2_MEDIA_SOURCES
 set(POM2_RUNTIME_HEADERS
     include/pom2/core.hpp
     src/Debugger.h
+    # MediaMount.h is pure contract — one <string> include and forward
+    # declarations — but its implementation reaches DiskIICard and
+    # EmulationController, so the pair is runtime. Nothing below the frontend
+    # includes it, which is what makes the move free.
+    src/MediaMount.h
     src/FujiNetCardFactory.h
     src/FujiNetNetDevice.h
     src/ImageWriterRom.h
@@ -558,6 +574,9 @@ set(POM2_RUNTIME_HEADERS
 
 set(POM2_RUNTIME_SOURCES
     src/AiControlServer.cpp
+    src/Debugger.cpp
+    src/MediaMount.cpp
+    src/TnfsClient.cpp
     src/Apple2Display.cpp
     src/AudioDevice.cpp
     src/CharRomCatalog.cpp
