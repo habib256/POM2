@@ -42,8 +42,10 @@ constexpr std::size_t kSaplingMaxBytes   = 131072;   // 256 blocks × 512
 constexpr std::size_t kBootBlocks        = 2;
 constexpr std::size_t kVolDirBlocks      = 4;
 constexpr std::size_t kBitmapBlock       = 6;
-constexpr std::size_t kFirstDataBlock    = kBootBlocks + kVolDirBlocks + 1; // = 7
-constexpr std::size_t kMaxVolumeBlocks   = 4096;     // 1 bitmap block × 512 × 8
+constexpr std::size_t kStructuralBeforeBitmap = kBootBlocks + kVolDirBlocks; // = 6
+constexpr std::size_t kMinFirstDataBlock = kStructuralBeforeBitmap + 1;      // = 7
+constexpr std::size_t kBlocksPerBitmap   = kBlockBytes * 8;                  // 4096
+constexpr std::size_t kMaxVolumeBlocks   = 65535; // ProDOS total_blocks is 16-bit
 
 constexpr std::uint8_t kStorageSeedling     = 0x1;
 constexpr std::uint8_t kStorageSapling      = 0x2;
@@ -249,7 +251,13 @@ void writeVolumeHeader(std::uint8_t* dst, const std::string& name,
     const std::uint8_t nameLen = static_cast<std::uint8_t>(name.size());
     dst[0x00] = static_cast<std::uint8_t>((kStorageVolDir << 4) | (nameLen & 0x0F));
     std::memcpy(dst + 1, name.data(), nameLen);
-    // reserved 0x10..0x17 = 0
+    // ProDOS requires this compatibility pattern in the eight reserved
+    // bytes; zeroes make real ProDOS reject directory traversal with I/O
+    // ERROR even though a permissive host-side decoder can still parse it.
+    static constexpr std::uint8_t kReserved[8] = {
+        0x75, 0x23, 0x00, 0x00, 0xC3, 0x27, 0x0D, 0x00
+    };
+    std::memcpy(dst + 0x10, kReserved, sizeof(kReserved));
     // creation date_time = 0
     dst[0x1C] = 0;
     dst[0x1D] = 0;
@@ -263,7 +271,7 @@ void writeVolumeHeader(std::uint8_t* dst, const std::string& name,
 
 // Subdirectory header sits at offset 4 of the subdir's first block. Layout
 // is parallel to writeVolumeHeader but with storage_type=$E + parent
-// pointers + the $75 sentinel byte at offset 0x14.
+// pointers and the ProDOS compatibility pattern in its reserved bytes.
 void writeSubdirHeader(std::uint8_t* dst, const std::string& name,
                        std::uint16_t fileCount,
                        std::uint16_t parentBlock,
@@ -273,7 +281,17 @@ void writeSubdirHeader(std::uint8_t* dst, const std::string& name,
     const std::uint8_t nameLen = static_cast<std::uint8_t>(name.size());
     dst[0x00] = static_cast<std::uint8_t>((kStorageSubdirHeader << 4) | (nameLen & 0x0F));
     std::memcpy(dst + 1, name.data(), nameLen);
-    dst[0x14] = 0x75;                                      // ProDOS reserved sentinel
+    // The subdirectory magic, and it goes at $14 — NOT at $10, where the
+    // reserved field starts. ProDOS 8 TRM §4.4.3 is specific: relative byte
+    // $14 of a subdirectory header must hold $75, and every ProDOS tool
+    // reproduces the whole eight-byte run ProDOS itself writes there. At $10
+    // the $75 lands four bytes early, which is what `prodos_volume_smoke`
+    // caught: its `hdr[0x14] == 0x75` assertion predates this pattern and is
+    // the contract the pattern was meant to satisfy, not replace.
+    static constexpr std::uint8_t kSubdirMagic[8] = {
+        0x75, 0x23, 0x00, 0x00, 0xC3, 0x27, 0x0D, 0x00
+    };
+    std::memcpy(dst + 0x14, kSubdirMagic, sizeof(kSubdirMagic));
     dst[0x1C] = 0;
     dst[0x1D] = 0;
     dst[0x1E] = 0xC3;
@@ -606,18 +624,27 @@ ProDOSBuildResult buildVolumeFromFolder(const std::string& hostFolder,
     root.numDirBlocks  = kVolDirBlocks;        // vol dir always 4 blocks (51 slots)
 
     // Phase 2: total block count.
-    std::size_t totalBlocks = kFirstDataBlock;     // 7 structural
-    totalBlocks += totalBlocksForTree(root, /*isVolumeRoot=*/true);
+    const std::size_t payloadBlocks = totalBlocksForTree(root, /*isVolumeRoot=*/true);
+    std::size_t bitmapBlocks = 1;
+    std::size_t totalBlocks = 0;
+    for (;;) {
+        totalBlocks = kStructuralBeforeBitmap + bitmapBlocks + payloadBlocks;
+        const std::size_t needed = (totalBlocks + kBlocksPerBitmap - 1) /
+                                   kBlocksPerBitmap;
+        if (needed == bitmapBlocks) break;
+        bitmapBlocks = needed;
+    }
     if (totalBlocks > kMaxVolumeBlocks) {
-        result.error = "synthesised volume exceeds 2 MB (1 bitmap block limit)";
+        result.error = "synthesised volume exceeds the 65535-block ProDOS limit";
         return result;
     }
-    if (totalBlocks < kFirstDataBlock) totalBlocks = kFirstDataBlock;
+    const std::size_t firstDataBlock = kStructuralBeforeBitmap + bitmapBlocks;
+    if (totalBlocks < firstDataBlock) totalBlocks = firstDataBlock;
 
     outImage.assign(totalBlocks * kBlockBytes, 0);
 
     // Bitmap: initialise all bits within total_blocks as FREE, then mark
-    // the 7 structural blocks USED. emitDir clears bits as it lays down
+    // every structural block USED. emitDir clears bits as it lays down
     // dir + file blocks.
     {
         std::uint8_t* bm = outImage.data() + kBitmapBlock * kBlockBytes;
@@ -627,11 +654,11 @@ ProDOSBuildResult buildVolumeFromFolder(const std::string& hostFolder,
             bm[byteIdx] |= static_cast<std::uint8_t>(1u << bitIdx);
         }
     }
-    markBitmapUsed(outImage, 0, kFirstDataBlock);
+    markBitmapUsed(outImage, 0, firstDataBlock);
 
     // Phase 3: emit. emitDir handles the linked-list prev/next chain for
     // the volume's 4 dir blocks AND the parallel chain for each subdir.
-    std::size_t nextBlock = kFirstDataBlock;
+    std::size_t nextBlock = firstDataBlock;
     emitDir(outImage, root, nextBlock,
             /*parentDirBlock=*/0, /*parentEntrySlot=*/0,
             /*isVolumeRoot=*/true, vname,
@@ -1007,9 +1034,9 @@ ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
 {
     ProDOSDecodeResult r;
 
-    if (image.size() < (kFirstDataBlock * kBlockBytes)) {
+    if (image.size() < (kMinFirstDataBlock * kBlockBytes)) {
         r.error = "volume image too small (need ≥ "
-                  + std::to_string(kFirstDataBlock * kBlockBytes) + " bytes)";
+                  + std::to_string(kMinFirstDataBlock * kBlockBytes) + " bytes)";
         return r;
     }
     if ((image.size() % kBlockBytes) != 0) {

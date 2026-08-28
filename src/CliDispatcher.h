@@ -111,10 +111,17 @@ struct CliPlan {
     /// GUI and `--kiosk` mode.
     std::string                     bootDiskPath;
 
+    /// `--prodos-folder <path>` synthesises a read-only /HOST/ ProDOS
+    /// block volume from a host directory and mounts it before the optional
+    /// positional boot disk starts.
+    std::string                     prodosFolderPath;
+
     /// `--kiosk`: launch chrome-free, full-screen, with no menus/panels —
     /// only the Apple II screen. Implies the positional disk auto-boot
     /// above. The window can only be closed via the OS (Alt-F4 / WM).
     bool                            kiosk = false;
+    bool                            aiControl = false;
+    int                             aiControlPort = 6503;
 
     /// `--fujinet[=PORT]` / `--fujinet-serial[=DEVICE]` / `--fujinet-slot N`.
     /// Plug a FujiNet relay card and arm its link before the machine boots,

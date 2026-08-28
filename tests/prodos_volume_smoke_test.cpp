@@ -552,6 +552,46 @@ static void testDecodeNeverMergesTwoEntriesOntoOneFile()
     std::printf("prodos_volume_smoke: colliding host names stay distinct OK\n");
 }
 
+// A SCOSWAMP-sized host tree exceeds the old single-bitmap 4096-block cap.
+// Pin two properties: synthesis succeeds beyond 2 MiB, and allocation starts
+// after every contiguous bitmap block rather than overwriting bitmap #2.
+static void testMultipleBitmapBlocks()
+{
+    const fs::path src = makeTempDir("multi_bitmap_src");
+    const fs::path big = src / "BIG";
+    fs::create_directories(big);
+    for (int n = 0; n < 40; ++n) {
+        std::vector<std::uint8_t> body(65536,
+            static_cast<std::uint8_t>(n + 1));
+        char name[16];
+        std::snprintf(name, sizeof(name), "F%02d.bin", n);
+        writeFile(big / name, body);
+    }
+
+    std::vector<std::uint8_t> image;
+    const auto br = pom2::buildVolumeFromFolder(src.string(), "HOST", image);
+    assert(br.ok);
+    assert(br.filesIncluded == 40 && br.filesSkipped == 0);
+    assert(br.totalBlocks > 4096);
+    assert(image.size() == br.totalBlocks * kBlockBytes);
+
+    // Root's first child is BIG. With two bitmap blocks (6 and 7), its
+    // directory key block must start at block 8 or later.
+    const std::uint8_t* entry = image.data() + 2 * kBlockBytes + 4 + 39;
+    assert((entry[0] >> 4) == 0xD); // subdirectory storage type
+    assert(rd16(entry + 0x11) >= 8);
+
+    const fs::path dst = makeTempDir("multi_bitmap_dst");
+    const auto dr = pom2::decodeVolumeToFolder(image, dst.string());
+    assert(dr.ok && dr.filesWritten == 40);
+    assert(fs::file_size(dst / "BIG" / "F39.bin") == 65536);
+
+    std::error_code ec;
+    fs::remove_all(src, ec);
+    fs::remove_all(dst, ec);
+    std::printf("prodos_volume_smoke: multiple bitmap blocks OK\n");
+}
+
 int main()
 {
     testEmptyFolder();
@@ -561,6 +601,7 @@ int main()
     testSubdirsBuildAndDecode();
     testMetadataTagParsing();
     testDecodeNeverMergesTwoEntriesOntoOneFile();
+    testMultipleBitmapBlocks();
     std::printf("prodos_volume_smoke: PASS\n");
     return 0;
 }

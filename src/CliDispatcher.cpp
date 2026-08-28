@@ -148,6 +148,7 @@ void printUsage()
         "  --ii-plus                  Force II+ mode (ignore roms/apple2e.rom)\n"
         "  --speed <cycles/frame>     Override CPU pacing (1x = 17045)\n"
         "  --cpu-max                  Run flat-out (~58 MHz emulated)\n"
+        "  --ai-control[=PORT]        Start loopback control + screen capture server\n"
         "  --tape <path>              Preload + auto-play tape\n"
         "  --35-disk1 <path>          Mount 800K 3.5\" image in //c+ internal drive\n"
         "  --35-disk2 <path>          Mount 800K 3.5\" image in //c+ external drive\n"
@@ -218,11 +219,27 @@ std::optional<CliPlan> parseCli(int argc, char* argv[], bool& helpRequestedOut)
         else if (a == "--cpu-max") {
             plan.cpuMax = true;
         }
+        else if (a == "--ai-control" || a.rfind("--ai-control=", 0) == 0) {
+            plan.aiControl = true;
+            const auto eq = a.find('=');
+            if (eq != std::string::npos) {
+                const int p = std::atoi(a.c_str() + eq + 1);
+                if (p <= 0 || p > 65535) {
+                    pom2::log().error("CLI", "--ai-control port out of range");
+                    return std::nullopt;
+                }
+                plan.aiControlPort = p;
+            }
+        }
         else if (a == "--ii-plus" || a == "--ii+") {
             plan.forceIIPlus = true;
         }
         else if (a == "--kiosk") {
             plan.kiosk = true;
+        }
+        else if (a == "--prodos-folder") {
+            const char* v = needArg(i, "--prodos-folder"); if (!v) return std::nullopt;
+            plan.prodosFolderPath = v;
         }
         else if (a == "--fujinet" || a.rfind("--fujinet=", 0) == 0) {
             plan.fujiNet = CliPlan::FujiNetTransport::Tcp;

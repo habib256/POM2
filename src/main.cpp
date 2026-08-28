@@ -614,6 +614,13 @@ int main(int argc, char* argv[])
     if (plan->executionSpeed) {
         mainWindow.emul().setCyclesPerFrame(*plan->executionSpeed);
     }
+    if (plan->aiControl) {
+        std::string err;
+        if (!mainWindow.startAiControlFromCli(
+                static_cast<unsigned short>(plan->aiControlPort), err)) {
+            pom2::log().error("CLI", "--ai-control: " + err);
+        }
+    }
     if (plan->displayMode != pom2::CliDisplayMode::NoHint) {
         Apple2Display::HiResMode m = Apple2Display::HiResMode::ColorNTSC;
         const char* label = "ntsc";
@@ -779,7 +786,7 @@ int main(int argc, char* argv[])
     // small frame countdown keeps this on the UI thread between frames, so
     // the SlotBus mutation in insertAndBootImage() doesn't race the worker.
     // Works in both GUI and --kiosk mode (bare `POM2 disk` boots in GUI).
-    int cliBootCountdown = plan->bootDiskPath.empty() ? -1 : 30;
+    int cliBootCountdown = (plan->bootDiskPath.empty() && plan->prodosFolderPath.empty()) ? -1 : 30;
 
     // Loop iteration packaged as a function so the native path can stay a
     // plain `while`, and the WASM path can hand it to
@@ -789,6 +796,7 @@ int main(int argc, char* argv[])
         GLFWwindow*         window;
         MainWindow*         mainWindow;
         std::string         bootDiskPath;
+        std::string         prodosFolderPath;
         int                 cliBootCountdown;
         std::atomic<bool>*  autoBootRequested;
         std::atomic<bool>*  autoQuitRequested;
@@ -800,7 +808,7 @@ int main(int argc, char* argv[])
         bool                firstFrameReadySignaled;
 #endif
     } frameCtx{
-        window, &mainWindow, plan->bootDiskPath, cliBootCountdown,
+        window, &mainWindow, plan->bootDiskPath, plan->prodosFolderPath, cliBootCountdown,
         &autoBootRequested, &autoQuitRequested, &bootDiskSettled
 #ifdef __EMSCRIPTEN__
         , false
@@ -819,7 +827,14 @@ int main(int argc, char* argv[])
 
         if (c.cliBootCountdown > 0 && --c.cliBootCountdown == 0) {
             std::string err;
-            if (c.mainWindow->insertAndBootImage(c.bootDiskPath, err)) {
+            if (!c.prodosFolderPath.empty() &&
+                !c.mainWindow->mountProDOSFolder(c.prodosFolderPath, err)) {
+                pom2::log().warn("CLI", "ProDOS folder mount failed: " + err);
+            }
+            err.clear();
+            if (c.bootDiskPath.empty()) {
+                pom2::log().info("CLI", "ProDOS host folder mounted without boot disk");
+            } else if (c.mainWindow->insertAndBootImage(c.bootDiskPath, err)) {
                 pom2::log().info("CLI", "booted disk: " + c.bootDiskPath);
             } else {
                 pom2::log().warn("CLI", "disk boot failed: " + err);
