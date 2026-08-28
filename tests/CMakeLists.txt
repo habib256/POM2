@@ -2761,10 +2761,14 @@ set_tests_properties(diskii_empty_drive PROPERTIES TIMEOUT 60)
 # TNFS client against an in-process stub server (no network needed): session
 # id adopted from the MOUNT response header, multi-chunk reads, a READ reply
 # split across TCP segments, and the UDP fallback when TCP is refused.
-# Phase 1 of the built-in FujiNet — see TODO § [Network].
+#
+# Plus the WIRING on top of it (TnfsMedia): the URL parser, which is where a
+# command line or a text field reaches this, and fetch-to-cache including the
+# second call that must NOT go back to the server.
 add_executable(test_tnfs_client
     tnfs_client_test.cpp
     ${CMAKE_SOURCE_DIR}/src/TnfsClient.cpp
+    ${CMAKE_SOURCE_DIR}/src/TnfsMedia.cpp
 )
 target_include_directories(test_tnfs_client PRIVATE ${CMAKE_SOURCE_DIR}/src)
 if(UNIX AND NOT APPLE)

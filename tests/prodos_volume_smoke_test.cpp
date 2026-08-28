@@ -397,7 +397,15 @@ static void testSubdirsBuildAndDecode()
     assert((hdr[0] >> 4) == 0xE);                                 // subdir header
     assert((hdr[0] & 0x0F) == 5);                                 // "GAMES"
     assert(std::memcmp(hdr + 1, "GAMES", 5) == 0);
-    assert(hdr[0x14] == 0x75);                                    // sentinel
+    // The subdirectory marker, at ENTRY offset $10. The ProDOS 8 TRM calls it
+    // byte $14, counting from the start of the BLOCK — a directory block
+    // opens with a 4-byte prev/next pair, so the header entry begins at block
+    // offset 4. This test asserted $14 entry-relative for as long as the
+    // encoder wrote it there, and both were wrong: 84 real subdirectory
+    // headers across the images in this tree carry $75 or $76 at entry $10,
+    // and $00 at entry $14.
+    assert(hdr[0x10] == 0x75);
+    assert(hdr[0x14] == 0x00);   // and nothing here, which is what ProDOS does
     assert(rd16(hdr + 0x21) == 2);                                // 2 children
     assert(rd16(hdr + 0x23) == 2);                                // parent block = vol dir block 2
     assert(hdr[0x25] == gamesParentSlot);                         // 1-based parent slot

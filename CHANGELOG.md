@@ -5,6 +5,83 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — TnfsClient gets a caller, and ProDOS gets its marker back
+
+Two things, and the second is a bug the first went looking for.
+
+### `POM2 tnfs://host/path/image.po`
+
+`TnfsClient` was 716 lines of tested code that nothing called — TODO P0-5's
+"wire it or delete it". It is wired.
+
+`TnfsMedia` fetches an image from a TNFS server (`tnfs.fujinet.online` carries
+a large Apple II library) into a local cache, and the positional argument then
+behaves like any other disk: `classifyDiskForSlot` picks the drive, the
+two-phase mount moves it in off the state mutex, and writes go to the local
+copy — the only honest place for them, since TNFS is served read-only here.
+Nothing downstream learns a new concept.
+
+Three decisions worth recording:
+
+* **A file, not a buffer.** Handing bytes straight to a card would mean a
+  second mount path beside the one every other image uses, and a write-back
+  story with nowhere to write.
+* **The cache hit touches no socket.** Existence is the whole test, because
+  every fetch lands through `writeFileAtomic` — a file that is there is a
+  *complete* previous fetch, and a half-written one cannot survive to be
+  mounted as a truncated disk. That is what makes it work offline: a boot disk
+  fetched yesterday still boots on a train today. The trade is staleness, and
+  TNFS offers no ETag to do better without re-reading the whole file.
+* **The `tnfs://` scheme is required for the positional.** The parser accepts a
+  bare `host/path` too — convenient in a text field — but `disks/foo.po` is a
+  relative filename, and the positional argument may not guess between them.
+
+It needed a socket-less path before it could enter the build at all: the file
+referenced `disableSigpipe`, `socklen_c` and `closeHostSocketValue` unguarded,
+which is how a translation unit in no `SOURCES` list drifts out of compiling
+for one of POM2's two targets with nobody noticing.
+
+### The ProDOS subdirectory marker was in the wrong place, twice
+
+ProDOS refuses to traverse a subdirectory whose header lacks a marker byte —
+an I/O ERROR on a volume a permissive host-side decoder parses happily, which
+is why POM2's own round-trip test never saw it.
+
+The marker goes at **entry offset `$10`**. The ProDOS 8 TRM calls it byte
+`$14`, and that is the whole of a confusion which produced two wrong versions
+of one line: a directory block opens with a 4-byte prev/next pair, so the
+header entry starts at *block* offset 4 and the TRM's `$14` is this entry's
+`$10`. POM2 wrote `dst[0x14] = 0x75` for as long as the synthesiser has
+existed, and a first attempt at a fix replaced it with an eight-byte "magic
+pattern" at `$14` — no better.
+
+Settled by measurement rather than recall, against the ProDOS images in the
+tree:
+
+| | |
+|---|---|
+| subdirectory headers sampled | 84 |
+| carrying `$75` at entry `$10` | 61 |
+| carrying `$76` | 23 |
+| carrying anything at entry `$14` | **0** |
+| volume headers with a marker at `$10` | **0 of 10** |
+
+So: one byte, `$75`, at entry `$10`, with the reserved bytes after it left
+zero — and the volume header keeps none, because real ones never have one. The
+seven bytes after the marker are zero in all but a handful of real
+subdirectories, where they hold a stale copy of the neighbouring
+access/entry_length/entries_per_block trio; that is where the folklore
+"pattern" came from.
+
+`prodos_volume_smoke` asserted the old wrong offset, so it now pins both:
+`$75` at `$10`, and `$00` at `$14`.
+
+The TNFS stub server learned that a path can be missing, too. It answered OPEN
+and STAT for anything, which made "a missing file must fail the fetch rather
+than produce an empty disk" untestable.
+
+217/217 ctest, zero warnings.
+
 ## 2026-08-28 — A coverage number, because reading got it wrong three times
 
 TODO P2-1, and the reason it was worth doing is the three items above it.
