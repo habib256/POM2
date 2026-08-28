@@ -5,6 +5,56 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — A coverage number, because reading got it wrong three times
+
+TODO P2-1, and the reason it was worth doing is the three items above it.
+
+The architecture plan asserted that three subsystems had no tests:
+`TnfsClient`, `FujiNetNetDevice`, `FloppyEmuDevice`. **All three had test
+suites.** Holes were being found by reading the tree, and reading got it wrong
+three times out of three — twice in a direction that would have had somebody
+write tests that already existed, once (`TnfsClient`) in a direction that
+nearly justified deleting 716 lines of tested code.
+
+`tools/coverage.sh` measures instead. Clang **source-based** coverage rather
+than gcov: it counts regions, so a half-taken `a && b` and an untaken `else`
+show as uncovered instead of reading as covered.
+
+**First measurement: 78.90 %**, and on its first run it named five
+first-party files at **0 %** — `CharRomCatalog.cpp`, `RomLoader.cpp`,
+`SlirpNetworkBackend.cpp`, `SpSerialTransport.cpp`,
+`SuperSerialTcpTransport.cpp`. The first two are the path every boot takes.
+That list is now the backlog, in place of guessing.
+
+Three decisions worth recording, because each has an alternative that looks
+reasonable and is worse:
+
+* **The denominator is the code the tests LINK, not the whole program.**
+  `POM2` links the ImGui frontend, which no headless test can exercise;
+  including it would put ~15 000 unreachable lines in the denominator, report
+  ~27 %, and make the floor a measure of how much UI exists. The number
+  answers "of the code POM2's tests are built against, how much do they
+  actually run?" — the question a ratchet can act on.
+* **The floor is recorded half a point below the measurement.** Two runs of
+  the same tree differ by ~0.1 % (tests that fork, a timing-shaped case taking
+  a different branch). A floor pinned to the exact reading fails on noise, and
+  a ratchet that fails on noise is one somebody switches off. Half a point
+  absorbs the jitter; adding one untested file moves the number by far more.
+* **`pom2_core_sdk_consumer` is excluded, and not because it is slow.** It
+  configures a separate CMake project against the installed `POM2::core` and
+  links it with plain flags — against an instrumented archive, which needs
+  `-fprofile-instr-generate` at link time. Teaching the exported package about
+  it would bake a build-mode flag into what consumers install. It measures the
+  install/export contract, not POM2's code.
+
+The floor may go UP freely and may not go down — the same ratchet shape as
+`tools/check_file_sizes.sh`, for the same reason that script's header records.
+Mutation-checked: it passes at 78.40 and fails at 85.00.
+
+`FloppyEmuDevice` (P2-4) needed nothing: its smoke test already covers the
+mode round-trip, per-mode format filtering, SD navigation bounded to the root
+including the symlink escape, and `favdisks.txt` parsing.
+
 ## 2026-08-28 — Zero warnings, and a leg that keeps it that way
 
 TODO P2-3, plus the gaps in P2-2. Two of the fourteen warnings cleared were

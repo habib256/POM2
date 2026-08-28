@@ -4633,6 +4633,32 @@ The split that matters most is **Media vs StoragePanels**: one decides what
 happens to a disk image, the other draws. The panels call in; nothing in
 `MainWindow_Media.cpp` calls back out to ImGui.
 
+### Coverage, and its floor
+
+`tools/coverage.sh` measures line coverage with clang **source-based**
+coverage (regions, not gcov lines: a half-taken `a && b` shows). It exists
+because the 2026-08-28 plan named three subsystems as untested —
+`TnfsClient`, `FujiNetNetDevice`, `FloppyEmuDevice` — and all three had test
+suites. Reading the tree got it wrong three times out of three.
+
+```
+tools/coverage.sh              # measure, report, check the floor
+tools/coverage.sh --update     # re-record the floor
+tools/coverage.sh --html DIR   # browsable per-line report
+```
+
+The denominator is **the code the tests link**, not the whole program:
+including the ImGui frontend that no headless test can reach would put ~15 000
+unreachable lines in it and make the floor a measure of how much UI exists.
+The floor is recorded half a point below the measurement, because two runs of
+the same tree differ by ~0.1 % and a ratchet that fails on noise is one
+somebody switches off.
+
+First measurement 78.90 %. `pom2_core_sdk_consumer` is excluded: it links a
+separate project against the installed archive with plain flags, which cannot
+work against an instrumented one, and it measures the export contract rather
+than POM2's code.
+
 Two mechanisms keep it this way, and they are different on purpose:
 
 * `tools/check_file_sizes.sh` is the general ratchet — a recorded ceiling per

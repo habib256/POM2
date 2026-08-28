@@ -741,6 +741,27 @@ set(HEADERS
 # case for the flag, in one line.
 option(POM2_WERROR "Treat warnings in first-party sources as errors" OFF)
 
+# ─── Coverage instrumentation ────────────────────────────────────────────
+# Clang source-based coverage (not gcov): it counts REGIONS rather than
+# lines, so a half-taken `a && b` and an untaken `else` show up instead of
+# reading as covered. Applied to the whole build rather than to first-party
+# sources alone — the counters have to exist in every TU that links, and
+# vendored code is filtered out at report time by tools/coverage.sh instead.
+#
+# Why this exists: the 2026-08-28 plan asserted that three subsystems had no
+# tests. All three did. Guessing at whole files is what a coverage number
+# replaces, and it names LINES.
+option(POM2_COVERAGE "Build with clang source-based coverage instrumentation" OFF)
+if(POM2_COVERAGE)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR
+            "POM2_COVERAGE needs clang (source-based coverage); this is "
+            "${CMAKE_CXX_COMPILER_ID}. Use a clang toolchain or drop the option.")
+    endif()
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    add_link_options(-fprofile-instr-generate)
+endif()
+
 if(MSVC)
     set(POM2_WARN_FLAGS "/W4")
     if(POM2_WERROR)
