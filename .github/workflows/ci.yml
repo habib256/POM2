@@ -455,6 +455,12 @@ jobs:
   # `a && b` and an untaken `else` are visible rather than reading as covered.
   # Its own job because it needs a clang toolchain and a full instrumented
   # rebuild, neither of which the GCC leg should be made to carry.
+  #
+  # It is also, incidentally, the only leg that builds CLANG AGAINST LIBSTDC++.
+  # macOS is clang+libc++ and the Linux leg is gcc+libstdc++; this third
+  # combination found a missing <algorithm> the first time it ran, in a file
+  # both the others had been compiling happily for months. Worth knowing when
+  # this job goes red: the failure may have nothing to do with coverage.
   coverage:
     name: Line coverage (floor)
     runs-on: ubuntu-latest
