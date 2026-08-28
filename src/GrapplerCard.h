@@ -75,6 +75,10 @@ public:
 
     int getSlot() const { return slot_; }
 
+    /// True when the hand-assembled FALLBACK stub did not fit its layout.
+    /// A real Grappler+ dump is copied verbatim and cannot trip this.
+    bool romLayoutError() const { return romLayoutError_; }
+
     // ─── ROM loading ─────────────────────────────────────────────────────
     /// Load the 4 KB Grappler+ ROM dump. Must be exactly 4096 bytes.
     /// Without it the card falls back to a minimal synthetic slot ROM
@@ -174,6 +178,9 @@ private:
     int slot_;
     std::array<uint8_t, kRomBytes> rom_{};
     std::array<uint8_t, 256>       stubRom_{};      // used until loadRom
+    /// Set by buildStubRom() when a region overran its budget. Only the STUB
+    /// is hand-assembled; a real roms/ dump is copied verbatim.
+    bool                           romLayoutError_ = false;
     bool romLoaded_ = false;
     std::string romSource_;
 

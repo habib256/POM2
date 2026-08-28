@@ -7,6 +7,21 @@
 
 function(pom2_enforce_source_layers root_dir)
     set(_pom2_layers FOUNDATION MEDIA MACHINE DEVICES RUNTIME FRONTEND)
+
+    # The foundation layer holds two different kinds of thing: pure contracts
+    # (AudioSource.h, Logger.h) and the PLATFORM PRIMITIVES that wrap the host
+    # on everyone else's behalf — ChildProcess and SerialPort, the same
+    # category as SocketCompat.h. The host-API ban below exists to funnel
+    # machine and device code through exactly those wrappers, so the wrappers
+    # themselves cannot be subject to it: <poll.h> in SerialPort.cpp is where
+    # the polling is SUPPOSED to be. (Nobody had noticed, because foundation
+    # SOURCES were not being read at all — see the FOUNDATION branch below.)
+    #
+    # Named one by one rather than exempting the layer, so a <thread> added to
+    # a foundation CONTRACT still fails.
+    set(_pom2_host_api_exempt
+        src/ChildProcess.cpp
+        src/SerialPort.cpp)
     set(_pom2_rank_FOUNDATION 0)
     set(_pom2_rank_MEDIA      1)
     set(_pom2_rank_MACHINE    2)
@@ -68,7 +83,13 @@ function(pom2_enforce_source_layers root_dir)
     foreach(_layer IN LISTS _pom2_layers)
         set(_rank "${_pom2_rank_${_layer}}")
         if(_layer STREQUAL "FOUNDATION")
-            set(_source_var "")
+            # POM2_FOUNDATION_SOURCES used to be skipped here. It is not empty
+            # — ChildProcess.cpp and SerialPort.cpp are in it, with a comment
+            # explaining why they belong to foundation — and they were the two
+            # files the completeness check above found were never examined
+            # despite being listed. The manifest said one thing and the guard
+            # read another.
+            set(_source_var "POM2_FOUNDATION_SOURCES")
             set(_header_var POM2_FOUNDATION_HEADERS)
         else()
             set(_source_var "POM2_${_layer}_SOURCES")
@@ -93,6 +114,43 @@ function(pom2_enforce_source_layers root_dir)
     endforeach()
 
     list(REMOVE_DUPLICATES _pom2_classified_files)
+
+    # ── Every first-party .cpp must be in a manifest ──────────────────────
+    # The guard only ever examined the includes of files it had been TOLD
+    # about, and silently ignored the rest — so twelve translation units,
+    # MediaMount.cpp and the four MainWindow panel TUs among them, were
+    # outside the model entirely. Proven by mutation: adding
+    # `#include "MainWindow.h"` to MediaMount.cpp (a media-layer file
+    # reaching the frontend) passed configure without a word.
+    #
+    # An unclassified file is now an error, not a gap. That is the part that
+    # makes the coverage stay at 100 %: a new .cpp cannot be added without
+    # someone deciding which layer it belongs to.
+    file(GLOB_RECURSE _pom2_all_sources
+        RELATIVE "${root_dir}"
+        "${root_dir}/src/*.cpp")
+    set(_pom2_unclassified "")
+    foreach(_src IN LISTS _pom2_all_sources)
+        if(_src MATCHES "(^|/)third_party/")
+            continue()
+        endif()
+        string(MAKE_C_IDENTIFIER "${_src}" _path_key)
+        if(NOT DEFINED _pom2_owner_${_path_key})
+            list(APPEND _pom2_unclassified "${_src}")
+        endif()
+    endforeach()
+    if(_pom2_unclassified)
+        string(REPLACE ";" "\n    " _pom2_unclassified_text
+               "${_pom2_unclassified}")
+        message(FATAL_ERROR
+            "POM2 architecture: these translation units are in no layer "
+            "manifest, so their includes are never checked:\n"
+            "    ${_pom2_unclassified_text}\n"
+            "Add each to the POM2_<LAYER>_SOURCES list in CMakeLists.txt that "
+            "matches where it sits: foundation <- media <- machine <- devices "
+            "<- runtime <- frontend.")
+    endif()
+
     foreach(_rel IN LISTS _pom2_classified_files)
         set(_abs "${root_dir}/${_rel}")
         string(MAKE_C_IDENTIFIER "${_rel}" _path_key)
@@ -136,7 +194,8 @@ function(pom2_enforce_source_layers root_dir)
         # direct escapes around those wrappers: deterministic machine/device
         # code may not acquire worker-thread or host-network APIs by including
         # a system header directly.
-        if(_owner_rank LESS_EQUAL _pom2_rank_DEVICES)
+        if(_owner_rank LESS_EQUAL _pom2_rank_DEVICES
+           AND NOT "${_rel}" IN_LIST _pom2_host_api_exempt)
             file(STRINGS "${_abs}" _system_include_lines
                  REGEX "^[ \t]*#[ \t]*include[ \t]*<[^>]+>")
             foreach(_line IN LISTS _system_include_lines)

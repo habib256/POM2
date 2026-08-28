@@ -17,6 +17,7 @@
 // PrinterCard — see header for ROM layout + protocol notes.
 
 #include "PrinterCard.h"
+#include "SlotRom.h"
 
 #include <algorithm>
 #include <initializer_list>
@@ -127,12 +128,17 @@ void PrinterCard::buildRom()
     const uint8_t slotHi = static_cast<uint8_t>(0xC0 + slot_);
     const uint8_t dataLo = static_cast<uint8_t>(0x80 + slot_ * 16 + 1);
 
-    auto putAt = [&](uint8_t addr, std::initializer_list<uint8_t> bytes) {
-        for (uint8_t b : bytes) rom_[addr++] = b;
-    };
+    // Hand-assembled, so every region is bounded (SlotRom.h). The budgets
+    // here are the addresses the NEXT thing occupies:
+    //
+    //   $Cn00-$Cn04  PR#n entry, jumping over the signature bytes
+    //   $Cn05-$Cn0C  Pascal 1.1 autodetect bytes, poked individually
+    //   $Cn20-$Cn30  PR#n trampoline  (9 B used of 17)
+    //   $Cn31-$CnFF  output handler   (4 B used)
+    pom2::SlotRomBuilder b(rom_);
 
     // PR#n entry at $Cn00 — jump past the Pascal signature region.
-    putAt(0x00, { 0x4C, 0x20, slotHi });       // JMP $Cn20
+    b.put(0x00, 0x05, { 0x4C, 0x20, slotHi });       // JMP $Cn20
 
     // Pascal 1.1 autodetect signature — ProDOS scans for these to publish
     // the card in its device list. Apple Pascal also recognises this
@@ -148,7 +154,7 @@ void PrinterCard::buildRom()
     // PR#n trampoline at $Cn20 — hook CSWL/CSWH ($36/$37) to point at our
     // output handler at $Cn31. The next COUT call lands there instead of
     // the standard screen routine.
-    putAt(0x20, {
+    b.put(0x20, 0x31, {
         0xA9, 0x31,            // LDA #$31           (low byte of $Cn31)
         0x85, 0x36,            // STA CSWL
         0xA9, slotHi,          // LDA #slotHi        (= $C0+s)
@@ -159,8 +165,10 @@ void PrinterCard::buildRom()
     // Output handler at $Cn31 — write A to the data port; A is preserved
     // (STA does not modify it), satisfying COUT's "A unchanged on exit"
     // convention. The CPU's existing flags/X/Y are untouched.
-    putAt(0x31, {
+    b.put(0x31, pom2::kSlotRomBytes, {
         0x8D, dataLo, 0xC0,    // STA $C0(8+s)1
         0x60                   // RTS
     });
+
+    romLayoutError_ = b.layoutError();
 }

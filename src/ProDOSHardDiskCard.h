@@ -64,6 +64,10 @@ public:
 
     int getSlot() const override { return slot; }
 
+    /// True when the hand-assembled slot ROM did not fit its declared layout.
+    /// Always false in a healthy build — `hdv_rom_layout` asserts it.
+    bool romLayoutError() const { return romLayoutError_; }
+
     bool loadImage(const std::string& path) override;
     /// Two-phase mount, phase 2 — forwards to the backing store.
     bool adoptImage(pom2::Block512Backing::PreparedImage&& p) override
@@ -127,6 +131,9 @@ public:
 private:
     int slot;
     std::array<uint8_t, 256> rom{};
+    /// Set by buildRom() when a hand-assembled region overran its budget or
+    /// stopped ending where the dispatch table's branch offsets assume.
+    bool                     romLayoutError_ = false;
     pom2::Block512Backing backing_;
 
     uint16_t selectedBlock = 0;

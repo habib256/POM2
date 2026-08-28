@@ -145,10 +145,24 @@ set(POM2_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # re-runs whenever CMakeLists.txt changes, so a version bump rebuilds every
 # consumer (main.cpp banner/title, MainWindow About + runtime title).
 set(POM2_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+#
+# The OUTPUT must name the file, not the directory. It used to name both — the
+# directory as the output and `include/Version.h` as a third argument — and
+# configure_file takes exactly two paths, so CMake wrote the header to a FILE
+# called `generated` and dropped the third argument with an author warning
+# nobody reads. Two consequences, and the second is why it survived:
+#
+#   * a clean checkout would not compile at all. `generated` is a file, so
+#     -I it resolves nothing and MainWindow.cpp:27 fails with "'Version.h'
+#     file not found". Every CI job except Linux's died there.
+#   * an EXISTING build tree kept working, on a build/generated/Version.h left
+#     behind by the previous arrangement. It said 0.8.3. So the banner, the
+#     window title and the About box have been reporting a two-release-old
+#     version out of a header the build no longer generates — from the very
+#     mechanism introduced to make the version have one source of truth.
 configure_file(
     ${POM2_SRC_DIR}/Version.h.in
-    ${POM2_GENERATED_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/Version.h
+    ${POM2_GENERATED_DIR}/Version.h
     @ONLY)
 
 set(SOURCES
@@ -328,6 +342,7 @@ set(POM2_DEVICES_HEADERS
     src/FujiNetTransport.h
     src/MountableMediaCard.h
     src/ProDOSBlockCard.h
+    src/SlotRom.h
     src/SuperSerialTransport.h
     src/Via6522.h
     src/W5100Resolver.h
@@ -424,6 +439,17 @@ set(POM2_FRONTEND_HEADERS
 
 set(POM2_FRONTEND_SOURCES
     src/AudioCoordinator.cpp
+    src/Debugger_ImGui.cpp
+    src/PanelRegistry.cpp
+    src/MainWindow_AudioPanels.cpp
+    src/MainWindow_MiscPanels.cpp
+    src/MainWindow_Panels.cpp
+    src/MainWindow_SettingsPanels.cpp
+    # The two other application roots. main.cpp is already here; a benchmark
+    # and a headless runner are composition roots too, and classifying them
+    # anywhere lower would just be a lie the guard then enforces.
+    src/pom2_bench.cpp
+    src/pom2_headless.cpp
     src/DebugCoordinator.cpp
     src/DevicePanelCoordinator.cpp
     src/MouseCoordinator.cpp
@@ -492,6 +518,7 @@ set(POM2_MACHINE_HEADERS
 
 set(POM2_MACHINE_SOURCES
     src/Keyboard.cpp
+    src/MemoryWatch.cpp
     src/M6502.cpp
     src/Z80.cpp
     src/Memory.cpp
@@ -510,7 +537,6 @@ set(POM2_MACHINE_SOURCES
 
 set(POM2_MEDIA_HEADERS
     src/AtomicFileReplace.h
-    src/MediaMount.h
     src/TwoImg.h
 )
 
@@ -528,6 +554,11 @@ set(POM2_MEDIA_SOURCES
 set(POM2_RUNTIME_HEADERS
     include/pom2/core.hpp
     src/Debugger.h
+    # MediaMount.h is pure contract — one <string> include and forward
+    # declarations — but its implementation reaches DiskIICard and
+    # EmulationController, so the pair is runtime. Nothing below the frontend
+    # includes it, which is what makes the move free.
+    src/MediaMount.h
     src/FujiNetCardFactory.h
     src/FujiNetNetDevice.h
     src/ImageWriterRom.h
@@ -543,6 +574,9 @@ set(POM2_RUNTIME_HEADERS
 
 set(POM2_RUNTIME_SOURCES
     src/AiControlServer.cpp
+    src/Debugger.cpp
+    src/MediaMount.cpp
+    src/TnfsClient.cpp
     src/Apple2Display.cpp
     src/AudioDevice.cpp
     src/CharRomCatalog.cpp
@@ -778,7 +812,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${POM2_SRC_DIR}/hgrpaint   # portable HGR Paint editor (shared with POM1)
     ${POM2_SRC_DIR}/hgrsprite  # portable HGR sprite editor (same host seam)
     ${POM2_GENERATED_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include   # generated Version.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include   # the SDK's <pom2/core.hpp>
 )
 
 # ─── Platform deps ───────────────────────────────────────────────────────
@@ -1239,7 +1273,7 @@ add_executable(pom2_headless
 target_include_directories(pom2_headless PRIVATE
     ${POM2_SRC_DIR}
     ${POM2_GENERATED_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include   # generated Version.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include   # the SDK's <pom2/core.hpp>
     ${IMGUI_DIR}     # only for miniaudio.h location, no ImGui linkage
 )
 if(UNIX AND NOT APPLE)

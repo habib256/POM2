@@ -317,6 +317,13 @@ void testRomSignature()
 {
     Machine m;
 
+    // The 256-byte page is hand-assembled, and every region declares where it
+    // ends (SlotRom.h). A routine that outgrew its budget used to overwrite
+    // its neighbour in silence — that is how SmartPortCard's ProDOS STATUS
+    // became dead code. The flag says nothing here fits by accident; the byte
+    // checks below say the layout is also the layout the callers assume.
+    assert(!m.card->romLayoutError());
+
     // The ProDOS block-device signature POM2's own bootFromSlot validates.
     assert(m.mem.memRead(kSlotRom + 0x01) == 0x20);
     assert(m.mem.memRead(kSlotRom + 0x03) == 0x00);

@@ -16,11 +16,23 @@ effort in *italics*. File/line in `backticks`.
 3. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
 4. [Backlog](#backlog) — everything else, by subsystem.
 
-The two items with the most leverage right now, both reopened or raised on
-2026-08-28: the [hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
-(a bug class that has already fired once, silently) and
+The two items with the most leverage right now: the
+[hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
+(bounded on 2026-08-28, but the *cure* — P1-1's assembler — is still open, and
+one HDV error code with it) and
 [real 3.5" boot through the IWM](#storage-disks--images) for //c, //c+ and a
 Liron card — no longer deferred past 1.0.
+
+**A note on what the 2026-08-28 P0 pass actually found.** Three of the four
+items landed, and every one of them turned up something the plan had not
+predicted, always the same shape: *a mechanism that reported success while
+doing nothing.* The version header was generated to the wrong path, and a
+stale copy kept local builds compiling against a two-release-old version while
+no clean checkout could build at all. The file-size ratchet aborted on macOS's
+bash 3.2 **with exit status 0**. `POM2_FOUNDATION_SOURCES` was written down,
+commented, and never read. None of these fail loudly; all three were found by
+running the guard rather than by reading it. Worth remembering the next time a
+guard is added: write the test that makes it FAIL.
 
 ## Priority order
 
@@ -38,15 +50,17 @@ Standing rule while P1 is open: **do not grow the god-objects.** A new card gets
 its panel in its own `*_ImGui.cpp` and **zero** business logic in
 `MainWindow.cpp`.
 
-### P0 — close what is bleeding · *≈ 4 h, no regression risk*
+### P0 — close what is bleeding · *mostly landed 2026-08-28*
 
 | # | Item | Why |
 | - | ---- | --- |
-| 0-1 | 🟠 **Bound the two remaining `emit()`** — `FujiNetCard.cpp:68`, `ProDOSHardDiskCard.cpp:31`. Exact transposition of the SmartPort fix: a limit argument, an overflow flag, a test that reads it. | Same mechanism that made ProDOS `STATUS` dead code for weeks. See [ProDOS STATUS family](#prodos-status-the-hand-assembled-rom-family). |
-| 0-2 | 🟠 **Audit the other five hand-assembled ROMs** — Disk II, Grappler+, printer, SSC, and re-check HDV. Confirm each region fits its budget and pin it. | The SmartPort bug was found only by looking. The others have not been looked at. |
-| 0-3 | 🟡 **Fix `tools/check_file_sizes.sh` for bash 3.2** — it uses `declare -A` (bash 4); macOS ships 3.2, so the script aborts on `invalid option` and checks nothing. | The ratchet guards the repo via CI (Ubuntu) but cannot run where the code is written, so it is discovered only after push. |
-| 0-4 | 🟡 **Close the layer-guard hole** — 13 translation units are in no manifest, so their own includes are never examined. Add them, then make configure *fail* on an unclassified `.cpp` instead of ignoring it. | Proven by mutation: `#include "MainWindow.h"` in `MediaMount.cpp` (MEDIA including FRONTEND) passes configure silently. Coverage 95 % → 100 %, and it can no longer decay. |
-| 0-5 | 🟢 **Delete `TnfsClient`** — `.cpp` + `.h` are included by nothing. Or wire and test it, but not leave it. | Dead code, and the only files entirely outside the layer model — the two facts go together. |
+| 0-5 | 🟢 **`TnfsClient`: wire it or delete it** — a product call, not an architecture one. The plan's premise was wrong on the detail: it is not untested (`tests/tnfs_client_test.cpp`, 370 lines, two ctest targets, written against a stub server after a bug hunt). What it has no caller for is `src/`. It is now classified RUNTIME so the layer model covers it; what remains is the decision. | 716 lines of hardened, tested code for mounting `tnfs.fujinet.online`, reachable from nothing. Deleting it throws the tests away too. |
+
+**0-1 to 0-4 landed on 2026-08-28** — see `CHANGELOG.md`. Doing them turned up
+three things the plan did not know about, all recorded there: the version
+header was never generated (no clean checkout could build); the ratchet had
+never run on macOS *and reported success*; and `POM2_FOUNDATION_SOURCES` was
+listed but never read, so the layer hole was 14 files, not 13.
 
 ### P1 — the two structural causes · *≈ 6-9 d, most of the gain*
 
@@ -442,35 +456,43 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Cards] slot cards & peripherals
 
-- 🟠 **ProDOS `STATUS` — the hand-assembled ROM family** *(2026-08-28)* —
-  <a id="prodos-status-the-hand-assembled-rom-family"></a>the SmartPort case is
-  fixed and written up in `CHANGELOG.md`; what is left is that **the same shape
-  exists on other cards and has not been audited**.
+- 🟠 **ProDOS `STATUS` — the hand-assembled ROM family** *(audited 2026-08-28)* —
+  <a id="prodos-status-the-hand-assembled-rom-family"></a>every hand-assembled
+  slot ROM is now bounded (`SlotRom.h`, `CHANGELOG.md`). One half of the
+  `ProDOSHardDiskCard` finding is still open, and it is the interesting half.
 
-  The mechanism: seven cards hand-assemble a 256-byte slot ROM as a byte list,
-  with branch offsets computed by hand. `emit()` does `rom[pc++]` on a
-  `uint8_t`, so a routine that outgrows its budget wraps in silence and
-  overwrites its neighbour. On `SmartPortCard` the write-block routine had
-  grown straight through the STATUS pre-flight at `$CnC0`, so ProDOS STATUS
-  executed the middle of the write loop and answered `$27` on a healthy bay —
-  for weeks, with a green suite, because nothing executed it.
+  **Open: an empty HDV bay answers `$2B` "write protected".**
+  `ProDOSHardDiskCard.cpp`'s write path tests the write-protect bit *before*
+  asking whether media is present — the same defect fixed on `SmartPortCard`,
+  where the honest answer is `$28` "no device connected". READ already
+  pre-flights correctly; only WRITE does not.
 
-  **`ProDOSHardDiskCard` carries both halves of that bug today**, verified by
-  reading the source:
-  - `ProDOSHardDiskCard.cpp:31` — the same unbounded `emit()`; and its own
-    layout comment puts the write block at `$C591..$C5BF` with STATUS at
-    `$C5C0`, i.e. **one byte of margin**. That is the exact margin SmartPort
-    ran out of.
-  - `ProDOSHardDiskCard.cpp:329` — the write path tests the write-protect bit
-    **before** asking whether media is present, so an empty bay answers `$2B`
-    "write protected" instead of `$28` "no device connected". Identical to the
-    SmartPort defect that has just been fixed.
+  It was not fixed with the bound because **the write routine has no room**:
+  it runs `$Cn91-$CnBF` and STATUS starts at `$CnC0`, so there is *zero* slack
+  — one byte from repeating the SmartPort bug exactly. Doing it properly means
+  moving bytes, not adding them. The shape that works: one `BIT $C0n3` answers
+  both questions (N = no media, V = write-protected) as it does on SmartPort,
+  and the shared error tail moves into the 11 free bytes at `$Cn45-$Cn4F`
+  between boot and the driver. That makes both transfer routines *shorter*.
+  Unlike SmartPort, this ROM has no authentic dump overlaid on it, so the page
+  gaps really are free. *~1 h, and `hdv_status_driver` now drives WRITE through
+  the ROM, so the move is verifiable.*
 
-  `FujiNetCard.cpp:68` has the unbounded `emit()` too. The remaining five —
-  Disk II, Grappler+, printer, SSC — have not been checked at all.
+  What the audit settled, so nobody re-derives it:
+  - `ClockCard` writes nine fixed bytes with no cursor — nothing to bound.
+  - `DiskIICard`'s boot PROM is a verbatim dump, not assembled.
+  - `GrapplerCard` only hand-assembles its *fallback stub*; a real `roms/` dump
+    is copied verbatim.
+  - `SuperSerialCard` was the tightest of the rest: `$Cn0D-$Cn10` are the low
+    bytes of four Pascal routines, so a routine pushed down lands the Pascal
+    interpreter mid-instruction. Bounded, and PSTATUS's two hand-computed
+    branch targets are now pinned where they land.
 
-  Fix order is P0-1 / P0-2 (bound + audit), then P1-1 / P1-2 makes the class
-  impossible: a real assembler with declared regions and resolved branches.
+  P1-1 / P1-2 still makes the class impossible rather than guarded: a real
+  assembler with symbolic labels and resolved branches. `SlotRom.h` is the
+  stepping stone, not the destination — it detects both failure modes
+  (a region that grows, and one that *shrinks* under a hand-computed branch),
+  which is the specification P1-1 has to satisfy by construction.
   → [Priority order](#priority-order)
 
 - 🟡 **SmartPortCard leftovers, still open** (2026-07-12 Liron audit

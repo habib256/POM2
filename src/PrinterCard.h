@@ -103,6 +103,9 @@ public:
 
     int getSlot() const { return slot_; }
 
+    /// True when the hand-assembled slot ROM did not fit its declared layout.
+    bool romLayoutError() const { return romLayoutError_; }
+
     // ─── SlotPeripheral overrides ────────────────────────────────────────
     std::string_view name() const override { return "Printer (Parallel)"; }
     uint8_t deviceSelectRead (uint8_t low4) override;
@@ -139,6 +142,8 @@ public:
 private:
     int slot_;
     std::array<uint8_t, 256> rom_{};
+    /// Set by buildRom() when a hand-assembled region overran its budget.
+    bool                     romLayoutError_ = false;
 
     mutable std::mutex bufferMtx_;
     std::deque<uint8_t> spool_;

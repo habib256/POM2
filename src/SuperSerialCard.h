@@ -86,6 +86,9 @@ public:
 
     int getSlot() const { return slot; }
 
+    /// True when the hand-assembled slot ROM did not fit its declared layout.
+    bool romLayoutError() const { return romLayoutError_; }
+
     /// Start listening on 127.0.0.1:port. Returns false if the bind fails;
     /// the card stays plugged but `clientConnected()` will always be false.
     bool startListening(uint16_t port);
@@ -263,6 +266,9 @@ public:
 private:
     int slot;
     std::array<uint8_t, 256> rom{};
+    /// Set by buildRom() when a hand-assembled region overran its budget or
+    /// stopped ending where the Pascal entry table / branch targets assume.
+    bool                     romLayoutError_ = false;
     /// The host bridge. Null until startListening() creates the default TCP
     /// transport, or a test injects one. The card keeps `listening` as a
     /// mirror so the existing ACIA/status paths are unchanged.

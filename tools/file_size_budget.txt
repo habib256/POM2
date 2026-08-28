@@ -9,6 +9,18 @@
 # accounted for ~4. That is licence text, not code, and it is why six ceilings
 # moved up by ~11 in one commit. Code growth still may not raise them.
 #
+# The 2026-08-28 bump is the second, and it is the one the rule was written to
+# make visible: src/MainWindow.cpp 8300 -> 8316. The growth is real code — the
+# host-seam injections the layer guard required (SuperSerial transport, W5100
+# socket factory + resolver) plus three includes. It went unnoticed for a day
+# because tools/check_file_sizes.sh aborted on bash 3.2 (macOS) with exit
+# status 0, so the only place it ran was CI, where it has been failing since.
+#
+# Answering the question the rule asks: yes, that code belongs elsewhere. Card
+# construction with its runtime seam wired is what pom2::makeFujiNetCard()
+# already does for FujiNet, and the SSC and Uthernet II want the same
+# treatment. TODO P1-3 owns it; this ceiling is the receipt.
+#
 # Regenerate with: tools/check_file_sizes.sh --update
 
 src/Apple2Display.cpp                    2711
@@ -16,5 +28,5 @@ src/DiskImage.cpp                        2835
 src/hgrpaint/HgrPaintEditor.cpp          2525
 src/ImageWriter.cpp                      2152
 src/M6502.cpp                            2159
-src/MainWindow.cpp                       8300
+src/MainWindow.cpp                       8316
 src/Memory.cpp                           2402
