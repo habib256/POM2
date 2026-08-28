@@ -31,9 +31,10 @@
 //
 // Two things are pinned here, because the layout is only half the fix:
 //
-//   1. No region overflows its budget (`romLayoutOverflowed`). emit() is now
-//      bounded, so a routine that outgrows its space trips this instead of
-//      eating whatever follows it.
+//   1. The page assembles at all (`romLayoutError`). It is written with
+//      SlotRomAsm now, so a region over budget, two regions overlapping, a
+//      branch that cannot reach its target and a reference to an undefined
+//      label are all errors rather than bytes.
 //   2. The three ProDOS entry points BEHAVE, which is what actually says the
 //      routines are where the dispatch thinks they are. A relocation that
 //      compiles and fits but points somewhere wrong still fails here.
@@ -141,7 +142,7 @@ int main()
     }
 
     // ── 1. Nothing overflowed ────────────────────────────────────────────
-    expect(!craw->romLayoutOverflowed(),
+    expect(!craw->romLayoutError(),
            tag + "a slot-ROM region overflowed its budget");
 
     // Caller: JSR $Cn50, capture A, X, Y and the carry flag.

@@ -129,7 +129,7 @@ int main()
     // ── 0. The hand-assembled page fits its declared layout ─────────────
     // The write routine below has ZERO slack: it ends at $CnBF and STATUS
     // starts at $CnC0. One extra byte and it eats STATUS — which is exactly
-    // what happened to SmartPortCard (see SlotRom.h). The flag catches a
+    // what happened to SmartPortCard (see SlotRomAsm.h). The flag catches a
     // region growing OR shrinking; the calls below say the routines are also
     // still where the dispatch table's hand-computed BEQ offsets point.
     if (raw->romLayoutError()) {

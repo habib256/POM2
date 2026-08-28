@@ -17,7 +17,7 @@
 // PrinterCard — see header for ROM layout + protocol notes.
 
 #include "PrinterCard.h"
-#include "SlotRom.h"
+#include "SlotRomAsm.h"
 
 #include <algorithm>
 #include <initializer_list>
@@ -125,50 +125,43 @@ void PrinterCard::buildRom()
 {
     rom_.fill(0xEA);     // NOP padding — see header for layout
 
-    const uint8_t slotHi = static_cast<uint8_t>(0xC0 + slot_);
     const uint8_t dataLo = static_cast<uint8_t>(0x80 + slot_ * 16 + 1);
 
-    // Hand-assembled, so every region is bounded (SlotRom.h). The budgets
-    // here are the addresses the NEXT thing occupies:
-    //
-    //   $Cn00-$Cn04  PR#n entry, jumping over the signature bytes
-    //   $Cn05-$Cn0C  Pascal 1.1 autodetect bytes, poked individually
-    //   $Cn20-$Cn30  PR#n trampoline  (9 B used of 17)
-    //   $Cn31-$CnFF  output handler   (4 B used)
-    pom2::SlotRomBuilder b(rom_);
+    pom2::SlotRomAsm a(rom_, slot_, "PrinterCard");
 
-    // PR#n entry at $Cn00 — jump past the Pascal signature region.
-    b.put(0x00, 0x05, { 0x4C, 0x20, slotHi });       // JMP $Cn20
+    // PR#n entry at $Cn00 — jump over the Pascal signature region.
+    a.region("entry", 0x00, 0x05).jmp("prn");
 
     // Pascal 1.1 autodetect signature — ProDOS scans for these to publish
     // the card in its device list. Apple Pascal also recognises this
     // shape; we don't implement the full PINIT/PREAD/PWRITE/PSTATUS
     // entry table because BASIC PR#n is the only documented use case
     // for a printer card and Pascal printer drivers were rare in the
-    // POM2 software corpus.
-    rom_[0x05] = 0x38;     // SEC
-    rom_[0x07] = 0x18;     // CLC
-    rom_[0x0B] = 0x01;     // Pascal firmware revision
-    rom_[0x0C] = 0x00;     // device class = printer
+    // POM2 software corpus. These addresses are mandated, hence poke()
+    // inside a declared region rather than emit().
+    a.region("pascalId", 0x05, 0x0D)
+     .poke(0x05, 0x38)      // SEC
+     .poke(0x07, 0x18)      // CLC
+     .poke(0x0B, 0x01)      // Pascal firmware revision
+     .poke(0x0C, 0x00);     // device class = printer
 
-    // PR#n trampoline at $Cn20 — hook CSWL/CSWH ($36/$37) to point at our
-    // output handler at $Cn31. The next COUT call lands there instead of
-    // the standard screen routine.
-    b.put(0x20, 0x31, {
-        0xA9, 0x31,            // LDA #$31           (low byte of $Cn31)
-        0x85, 0x36,            // STA CSWL
-        0xA9, slotHi,          // LDA #slotHi        (= $C0+s)
-        0x85, 0x37,            // STA CSWH
-        0x60                   // RTS
-    });
+    // PR#n trampoline — hook CSWL/CSWH ($36/$37) to point at the output
+    // handler. The next COUT call lands there instead of the standard
+    // screen routine. The handler's address is a LABEL: it used to be the
+    // literal $31 written twice, here and in the region below it.
+    a.region("prn", 0x20, 0x31)
+     .emit({ 0xA9 }).byteOf("cout")   // LDA #<cout
+     .emit({ 0x85, 0x36,              // STA CSWL
+             0xA9, a.pageHi(),        // LDA #>cout
+             0x85, 0x37,              // STA CSWH
+             0x60 });                 // RTS
 
-    // Output handler at $Cn31 — write A to the data port; A is preserved
-    // (STA does not modify it), satisfying COUT's "A unchanged on exit"
-    // convention. The CPU's existing flags/X/Y are untouched.
-    b.put(0x31, pom2::kSlotRomBytes, {
-        0x8D, dataLo, 0xC0,    // STA $C0(8+s)1
-        0x60                   // RTS
-    });
+    // Output handler — write A to the data port. A is preserved (STA does
+    // not modify it), satisfying COUT's "A unchanged on exit" convention.
+    // The CPU's existing flags/X/Y are untouched.
+    a.region("cout", 0x31, pom2::kSlotRomBytes)
+     .emit({ 0x8D, dataLo, 0xC0,      // STA $C0(8+s)1
+             0x60 });                 // RTS
 
-    romLayoutError_ = b.layoutError();
+    romLayoutError_ = !a.finish();
 }

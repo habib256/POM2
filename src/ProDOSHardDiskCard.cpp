@@ -16,7 +16,7 @@
 
 #include "ProDOSHardDiskCard.h"
 #include "Logger.h"
-#include "SlotRom.h"
+#include "SlotRomAsm.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -25,10 +25,10 @@
 namespace {
 
 // ── 256-byte slot ROM layout (offsets from $Cn00) ─────────────────────────
-// Hand-assembled, so every region is bounded and the ones whose length is
-// hard-coded elsewhere also declare where they end. See SlotRom.h for the
-// SmartPort bug this guards against; the write routine below was ONE byte
-// from repeating it — it ended at $CnBF with STATUS starting at $CnC0.
+// The page is assembled (SlotRomAsm.h): regions declare where they start and
+// end, and every address in the code is a label. Before that, the write
+// routine here was ONE byte from the SmartPort failure — it ended at $CnBF
+// with STATUS starting at $CnC0.
 constexpr uint8_t  kBootOff    = 0x20;
 /// Shared error tail, in the free bytes between the boot routine (which ends
 /// at $Cn44) and the ProDOS driver at $Cn50. Both transfer routines BRANCH
@@ -36,14 +36,11 @@ constexpr uint8_t  kBootOff    = 0x20;
 /// buys the room for WRITE to pre-flight the bay at all — see the layout note
 /// in buildRom().
 constexpr uint8_t  kErrNoDev   = 0x45;   // → A = $28, SEC, RTS
-constexpr uint8_t  kErrWProt   = 0x49;   // → A = $2B, SEC, RTS
 constexpr uint8_t  kDriverOff  = 0x50;
-constexpr uint8_t  kReadOff    = 0x66;   // dispatch's BEQ lands here
-constexpr uint8_t  kWriteOff   = 0x8D;   // dispatch's BEQ lands here
-constexpr uint8_t  kStatusOff  = 0xC0;   // dispatch's JMP $CnC0
+constexpr uint8_t  kReadOff    = 0x66;
+constexpr uint8_t  kWriteOff   = 0x8D;
+constexpr uint8_t  kStatusOff  = 0xC0;
 constexpr uint8_t  kHaltOff    = 0xE0;   // boot-failure halt loop
-
-using pom2::slotRomRel;
 
 // Block-level I/O trace, gated by POM2_TRACE_HDV=1 (mirrors the env-var
 // diagnostics in DiskIICard.cpp / Memory.cpp). One line per 512-byte block
@@ -214,48 +211,58 @@ void ProDOSHardDiskCard::buildRom()
     rom.fill(0xEA); // NOP padding
 
     const uint16_t kDeviceBase = static_cast<uint16_t>(0xC080 + slot * 16);
-    const uint8_t  kSlotRomHi  = static_cast<uint8_t>(0xC0 + slot);
     const uint8_t  kUnitNumber = static_cast<uint8_t>(slot << 4);
+    const uint8_t  dataReg = static_cast<uint8_t>(kDeviceBase + 0x02);
+    const uint8_t  statReg = static_cast<uint8_t>(kDeviceBase + 0x03);
+
+    // ── Layout ──────────────────────────────────────────────────────────
+    //   $Cn00..$Cn07  ProDOS signature + the PR#n entry
+    //   $Cn20..$Cn44  boot
+    //   $Cn45..$Cn4C  shared error tail
+    //   $Cn50..$Cn65  ProDOS driver dispatch
+    //   $Cn66..$Cn8C  read block
+    //   $Cn8D..$CnB7  write block
+    //   $CnC0..$CnC9  STATUS
+    //   $CnE0..$CnE2  boot-failure halt
+    //   $CnFE..$CnFF  capability + driver-entry bytes
+    //
+    // Every address in the page below is a LABEL. The dispatch's three
+    // displacements used to be hand-computed literals, and the middle one
+    // carried a comment recording that somebody had already re-counted it
+    // once ("read grew 9 B"); $CnFF was the driver's offset typed a second
+    // time. Both are now derived, so moving a routine cannot leave anything
+    // pointing at where it used to be.
+    pom2::SlotRomAsm a(rom, slot, "ProDOSHardDiskCard");
 
     // Entry used by PR#n / direct boot: load block 0 at $0800, then jump to
     // the universal ProDOS boot loader's real entry at $0801 with X=unit.
-    rom[0x00] = 0x4C;        // JMP $Cn20
-    rom[0x01] = kBootOff;    // ProDOS signature byte: $Cn01 = $20
-    rom[0x02] = kSlotRomHi;
-    rom[0x03] = 0x00;        // ProDOS signature byte: $Cn03 = $00
-    rom[0x05] = 0x03;        // ProDOS signature byte: $Cn05 = $03
-    rom[0x07] = 0x01;        // non-zero: plain ProDOS block device, not SmartPort
-    rom[0xFE] = 0x03;        // read/write/status flags; high nibble = one fixed unit
-    rom[0xFF] = kDriverOff;  // ProDOS driver entry offset
+    // The signature bytes ProDOS scans for are $Cn01/$Cn03/$Cn05/$Cn07, and
+    // $Cn01 doubles as the JMP's low byte — which is exactly why boot lives
+    // at $Cn20 and not somewhere more convenient.
+    a.region("entry", 0x00, 0x08)
+     .jmp("boot")                 // $Cn01 = $20 falls out of the JMP operand
+     .poke(0x03, 0x00)            // ProDOS signature byte
+     .poke(0x05, 0x03)            // ProDOS signature byte
+     .poke(0x07, 0x01);           // non-zero: plain block device, not SmartPort
 
-    pom2::SlotRomBuilder b(rom);
-
-    b.region(kBootOff, kDriverOff).emit({
-        0xA9, 0x01,       // LDA #$01        ; read command
-        0x85, 0x42,       // STA $42
-        0xA9, kUnitNumber,
-        0x85, 0x43,       // STA $43         ; slot N, drive 1
-        0xA9, 0x00,
-        0x85, 0x44,       // STA $44         ; buffer low = $00
-        0xA9, 0x08,
-        0x85, 0x45,       // STA $45         ; buffer high = $08
-        0xA9, 0x00,
-        0x85, 0x46,       // STA $46         ; block low = 0
-        0x85, 0x47,       // STA $47         ; block high = 0
-        0x20, kDriverOff, kSlotRomHi, // JSR $Cn50
-        0xB0, 0x07,       // BCS error
-        0xA2, kUnitNumber,// LDX #unit
-        0xA9, 0x00,       // LDA #$00
-        0x4C, 0x01, 0x08, // JMP $0801
-        0x4C, kHaltOff, kSlotRomHi // error: JMP $CnE0 (stable halt)
-    });
-
-    // Boot error handler at $CnE0: simple infinite loop.
-    // We deliberately avoid calling monitor routines here: a failed HD boot
-    // should be safe even if the main ROM isn't fully initialised yet.
-    rom[kHaltOff + 0] = 0x4C; // JMP $CnE0
-    rom[kHaltOff + 1] = kHaltOff;
-    rom[kHaltOff + 2] = kSlotRomHi;
+    a.region("boot", kBootOff, kErrNoDev)
+     .emit({ 0xA9, 0x01,       // LDA #$01        ; read command
+             0x85, 0x42,       // STA $42
+             0xA9, kUnitNumber,
+             0x85, 0x43,       // STA $43         ; slot N, drive 1
+             0xA9, 0x00,
+             0x85, 0x44,       // STA $44         ; buffer low = $00
+             0xA9, 0x08,
+             0x85, 0x45,       // STA $45         ; buffer high = $08
+             0xA9, 0x00,
+             0x85, 0x46,       // STA $46         ; block low = 0
+             0x85, 0x47 })     // STA $47         ; block high = 0
+     .jsr("driver")
+     .branch(0xB0, "bootErr")  // BCS bootErr
+     .emit({ 0xA2, kUnitNumber,// LDX #unit
+             0xA9, 0x00,       // LDA #$00
+             0x4C, 0x01, 0x08 })                  // JMP $0801
+     .label("bootErr").jmp("halt");
 
     // ── Shared error tail ($Cn45) ──────────────────────────────────────
     // Two entry points into one exit. Both transfer routines branch here
@@ -265,22 +272,24 @@ void ProDOSHardDiskCard::buildRom()
     // with STATUS at $CnC0 — so the pre-flight had to be paid for by
     // removing bytes, not by finding room.
     //
-    // Lives in the gap the boot routine leaves ($Cn45-$Cn4F). Unlike
-    // SmartPortCard, whose identical first attempt had to be undone, this
-    // ROM has no authentic dump overlaid on it, so the gap really is free.
-    b.region(kErrNoDev, kDriverOff).emit({
-        0xA9, 0x28,                             // LDA #$28  no device
-        0xD0, slotRomRel(kErrNoDev + 2, kErrWProt + 2),  // BNE (always: A≠0)
-        0xA9, 0x2B,                             // LDA #$2B  write protected
-        0x38,                                   // SEC
-        0x60                                    // RTS
-    }).expectEnd(kErrWProt + 4);
+    // Lives in the gap the boot routine leaves. Unlike SmartPortCard, whose
+    // identical first attempt had to be undone, this ROM has no authentic
+    // dump overlaid on it, so the gap really is free.
+    a.region("errNoDev", kErrNoDev, kDriverOff)
+     .emit({ 0xA9, 0x28 })          // LDA #$28  no device connected
+     .branch(0xD0, "errExit")       // BNE errExit  (always: A != 0)
+     .label("errWProt")
+     .emit({ 0xA9, 0x2B })          // LDA #$2B  write protected
+     .label("errExit")
+     .emit({ 0x38,                  // SEC
+             0x60 });               // RTS
 
-    // Driver dispatch table (22 bytes), commands:
-    //   $00 status → JMP $CnC0 (returns block count in X/Y — see below)
-    //   $01 read   → branches to read block (43 bytes)
-    //   $02 write  → branches to write block (47 bytes)
+    // ── ProDOS driver dispatch ($Cn50) ─────────────────────────────────
+    //   $00 status → JMP $CnC0 (returns the block count in X/Y)
+    //   $01 read   → read block
+    //   $02 write  → write block
     //   any other  → A=$01 (bad command), SEC, RTS
+    //
     // Both transfer routines PRE-FLIGHT the bay before touching anything,
     // through a single `BIT $C0n3`: the status byte puts "no media" at bit 7
     // and "write protected" at bit 6 precisely so N and V answer both
@@ -288,117 +297,94 @@ void ProDOSHardDiskCard::buildRom()
     // $28 "no device connected" — not $27 "I/O error" and not $2B "write
     // protected", which is what WRITE used to say because it tested the WP
     // bit and never tested media at all.
-    //
-    // Layout, as offsets from $Cn00 (the constants at the top of the file):
-    //   $Cn20..$Cn44  boot                (37 B, budget 37)
-    //   $Cn45..$Cn4C  shared error tail   ( 8 B, budget 11)
-    //   $Cn50..$Cn65  dispatch            (22 B, exact — its three branch
-    //                                      displacements come from the
-    //                                      layout constants, and both ends
-    //                                      are pinned with expectEnd)
-    //   $Cn66..$Cn8C  read block          (39 B, exact)
-    //   $Cn8D..$CnB7  write block         (43 B, budget 51)
-    //   $CnC0..$CnC9  STATUS              (10 B, budget 32)
-    //   $CnE0..$CnE2  boot-failure halt
-    //
-    // Before the shared tail, write ran $Cn91-$CnBF against a STATUS routine
-    // starting at $CnC0: zero slack, one byte from the failure SlotRom.h
-    // exists to describe. Branching to one exit instead of carrying two
-    // inline ones is what paid for the pre-flight AND left eight bytes of
-    // margin behind.
-    b.region(kDriverOff, kReadOff).emit({
-        0xA5, 0x42,       // LDA $42         ; command
-        0xC9, 0x01,       // CMP #$01
-        0xF0, slotRomRel(kDriverOff + 0x04, kReadOff),   // BEQ read
-        0xC9, 0x02,       // CMP #$02
-        // These three displacements used to be hand-computed literals, and
-        // the comment on the middle one recorded a previous re-count ("read
-        // grew 9 B"). They come from the layout constants now, so moving a
-        // routine cannot leave the dispatch pointing at where it used to be.
-        0xF0, slotRomRel(kDriverOff + 0x08, kWriteOff),  // BEQ write
-        0xC9, 0x00,       // CMP #$00
-        0xF0, slotRomRel(kDriverOff + 0x0C, kDriverOff + 0x12),  // BEQ status
-        0xA9, 0x01,       // LDA #$01    ; bad-command error
-        0x38,             // SEC
-        0x60,             // RTS
-        // status: jump to the full STATUS routine at $CnC0 (returns the
-        // block count in X/Y). Kept 4 bytes (JMP + NOP pad) so the BEQ
-        // read/write offsets above stay valid — mirrors the identical
-        // arrangement (and the BITSY crash it fixed) in
-        // SmartPortCard::buildRom.
-        0x4C, kStatusOff, kSlotRomHi, // status: JMP $CnC0
-        0xEA                          // pad
-    }).expectEnd(kReadOff);
+    a.region("driver", kDriverOff, kReadOff)
+     .emit({ 0xA5, 0x42,       // LDA $42         ; command
+             0xC9, 0x01 })     // CMP #$01
+     .branch(0xF0, "read")
+     .emit({ 0xC9, 0x02 })     // CMP #$02
+     .branch(0xF0, "write")
+     .emit({ 0xC9, 0x00 })     // CMP #$00
+     .branch(0xF0, "dispStatus")
+     .emit({ 0xA9, 0x01,       // LDA #$01    ; bad-command error
+             0x38,             // SEC
+             0x60 })           // RTS
+     // The STATUS arm is a JMP rather than the routine itself because
+     // STATUS lives above the transfer routines; keeping it 4 bytes (JMP +
+     // pad) is what the BITSY crash in SmartPortCard::buildRom cost to
+     // learn. The pad is no longer load-bearing — the branches above are
+     // computed — but removing it would change the page for no reason.
+     .label("dispStatus").jmp("status").emit({ 0xEA });
 
-    // ── STATUS routine ($CnC0) ─────────────────────────────────────────
-    // ProDOS STATUS (cmd $00) must return total blocks in X (low) /
-    // Y (high) so a volume scanner (BITSY, ProDOS ONLINE) can size the
-    // device. The count comes from $C0n4/$C0n5 (deviceSelectRead 0x4/0x5,
-    // clamped to $FFFF).
-    {
-        b.region(kStatusOff, kHaltOff).emit({
-            0xAE, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // LDX $C0n4
-            0xAC, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDY $C0n5
-            0xA9, 0x00,        // LDA #$00
-            0x18,              // CLC
-            0x60               // RTS
-        });
-    }
+    a.region("read", kReadOff, kWriteOff)
+     .emit({ 0x2C, statReg, 0xC0 })   // BIT $C0n3   ; N = no media, V = WP
+     .branch(0x30, "errNoDev")        // BMI → $28
+     .emit({ 0xA5, 0x46,              // LDA $46     ; block low
+             0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
+             0xA5, 0x47,              // LDA $47     ; block high
+             0x8D, static_cast<uint8_t>(kDeviceBase + 0x01), 0xC0,
+             0xA0, 0x00 })            // LDY #$00
+     .label("readPage1")
+     .emit({ 0xAD, dataReg, 0xC0,     // LDA $C0n2
+             0x91, 0x44,              // STA ($44),Y
+             0xC8 })                  // INY
+     .branch(0xD0, "readPage1")
+     .emit({ 0xE6, 0x45 })            // INC $45
+     .label("readPage2")
+     .emit({ 0xAD, dataReg, 0xC0,     // LDA $C0n2
+             0x91, 0x44,              // STA ($44),Y
+             0xC8 })                  // INY
+     .branch(0xD0, "readPage2")
+     .emit({ 0xC6, 0x45,              // DEC $45
+             0x18,                    // CLC
+             0x60 });                 // RTS
 
-    const uint8_t dataReg = static_cast<uint8_t>(kDeviceBase + 0x02);
-    const uint8_t statReg = static_cast<uint8_t>(kDeviceBase + 0x03);
-    b.region(kReadOff, kWriteOff).emit({
-        0x2C, statReg, 0xC0, // read: BIT $C0n3  ; N = no media, V = WP
-        0x30, slotRomRel(kReadOff + 3, kErrNoDev),  // BMI → $28
-        0xA5, 0x46,       // ok: LDA $46     ; block low
-        0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
-        0xA5, 0x47,       // LDA $47         ; block high
-        0x8D, static_cast<uint8_t>(kDeviceBase + 0x01), 0xC0,
-        0xA0, 0x00,       // LDY #$00
-        0xAD, dataReg, 0xC0, // page 1: LDA $C0D2
-        0x91, 0x44,       // STA ($44),Y
-        0xC8,             // INY
-        0xD0, 0xF8,       // BNE page 1
-        0xE6, 0x45,       // INC $45
-        0xAD, dataReg, 0xC0, // page 2: LDA $C0D2
-        0x91, 0x44,       // STA ($44),Y
-        0xC8,             // INY
-        0xD0, 0xF8,       // BNE page 2
-        0xC6, 0x45,       // DEC $45
-        0x18,             // CLC
-        0x60              // RTS
-    }).expectEnd(kWriteOff);
+    a.region("write", kWriteOff, kStatusOff)
+     .emit({ 0x2C, statReg, 0xC0 })   // BIT $C0n3   ; N = no media, V = WP
+     .branch(0x30, "errNoDev")        // BMI → $28   ; media FIRST
+     .branch(0x70, "errWProt")        // BVS → $2B
+     .emit({ 0xA5, 0x46,              // LDA $46
+             0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
+             0xA5, 0x47,              // LDA $47
+             0x8D, static_cast<uint8_t>(kDeviceBase + 0x01), 0xC0,
+             0xA0, 0x00 })            // LDY #$00
+     .label("writePage1")
+     .emit({ 0xB1, 0x44,              // LDA ($44),Y
+             0x8D, dataReg, 0xC0,     // STA $C0n2
+             0xC8 })                  // INY
+     .branch(0xD0, "writePage1")
+     .emit({ 0xE6, 0x45 })            // INC $45
+     .label("writePage2")
+     .emit({ 0xB1, 0x44,              // LDA ($44),Y
+             0x8D, dataReg, 0xC0,     // STA $C0n2
+             0xC8 })                  // INY
+     .branch(0xD0, "writePage2")
+     .emit({ 0xC6, 0x45,              // DEC $45
+             0xA9, 0x00,              // LDA #$00
+             0x18,                    // CLC
+             0x60 });                 // RTS
 
-    b.region(kWriteOff, kStatusOff).emit({
-        // One BIT answers both questions, and asks them in the right order.
-        // The old head tested the write-protect bit FIRST and never tested
-        // media at all, so an empty bay came back $2B "write protected" —
-        // which is not true of a bay with nothing in it. Media first, then
-        // WP, exactly as SmartPortCard does since 2026-08-27.
-        0x2C, statReg, 0xC0, // write: BIT $C0n3   ; N = no media, V = WP
-        0x30, slotRomRel(kWriteOff + 3, kErrNoDev),  // BMI → $28
-        0x70, slotRomRel(kWriteOff + 5, kErrWProt),  // BVS → $2B
-        0xA5, 0x46,          // ok: LDA $46
-        0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
-        0xA5, 0x47,          // LDA $47
-        0x8D, static_cast<uint8_t>(kDeviceBase + 0x01), 0xC0,
-        0xA0, 0x00,          // LDY #$00
-        0xB1, 0x44,          // page 1: LDA ($44),Y
-        0x8D, dataReg, 0xC0, // STA $C0D2
-        0xC8,                // INY
-        0xD0, 0xF8,          // BNE page 1
-        0xE6, 0x45,          // INC $45
-        0xB1, 0x44,          // page 2: LDA ($44),Y
-        0x8D, dataReg, 0xC0, // STA $C0D2
-        0xC8,                // INY
-        0xD0, 0xF8,          // BNE page 2
-        0xC6, 0x45,          // DEC $45
-        0xA9, 0x00,          // LDA #$00
-        0x18,                // CLC
-        0x60                 // RTS
-    });
+    // ── STATUS ($CnC0) ─────────────────────────────────────────────────
+    // ProDOS STATUS (cmd $00) must return total blocks in X (low) / Y (high)
+    // so a volume scanner (BITSY, ProDOS ONLINE) can size the device. The
+    // count comes from $C0n4/$C0n5 (deviceSelectRead 0x4/0x5, clamped to
+    // $FFFF).
+    a.region("status", kStatusOff, kHaltOff)
+     .emit({ 0xAE, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // LDX $C0n4
+             0xAC, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDY $C0n5
+             0xA9, 0x00,        // LDA #$00
+             0x18,              // CLC
+             0x60 });           // RTS
 
-    romLayoutError_ = b.layoutError();
+    // Boot failure: a plain infinite loop. Monitor routines are deliberately
+    // avoided — a failed HD boot must be safe even if the main ROM is not
+    // fully initialised yet.
+    a.region("halt", kHaltOff, kHaltOff + 3).jmp("halt");
+
+    a.region("tail", 0xFE, pom2::kSlotRomBytes)
+     .emit({ 0x03 })      // read/write/status flags; high nibble = one unit
+     .byteOf("driver");   // ProDOS driver entry offset
+
+    romLayoutError_ = !a.finish();
 }
 
 // ── Snapshot / rewind ─────────────────────────────────────────────────────

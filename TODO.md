@@ -16,11 +16,12 @@ effort in *italics*. File/line in `backticks`.
 3. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
 4. [Backlog](#backlog) — everything else, by subsystem.
 
-The two items with the most leverage right now: the
-[hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
-(bounded on 2026-08-28; the *cure* — P1-1's assembler — is still open) and
+The item with the most leverage right now is
 [real 3.5" boot through the IWM](#storage-disks--images) for //c, //c+ and a
-Liron card — no longer deferred past 1.0.
+Liron card — no longer deferred past 1.0. The
+[hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family), the
+other one, closed on 2026-08-28 when the last of the six pages moved onto the
+assembler.
 
 **A note on what the 2026-08-28 P0 pass actually found.** Three of the four
 items landed, and every one of them turned up something the plan had not
@@ -61,12 +62,19 @@ header was never generated (no clean checkout could build); the ratchet had
 never run on macOS *and reported success*; and `POM2_FOUNDATION_SOURCES` was
 listed but never read, so the layer hole was 14 files, not 13.
 
-### P1 — the two structural causes · *≈ 6-9 d, most of the gain*
+### P1 — the two structural causes · *half landed 2026-08-28*
+
+**1-1 and 1-2 landed** — `SlotRomAsm.h`, and all six hand-written ROMs rewritten
+on it, each verified **byte-identical** to what it produced before. Details in
+`CHANGELOG.md`. Two corrections to the plan, recorded because they are the kind
+of thing that gets re-proposed: it is *not* `constexpr` (a slot page is
+parameterised by the slot, which comes from settings at runtime, so there is no
+constant to fold), and there were **six** hand-written ROMs, not seven —
+`ClockCard` writes nine fixed bytes with no cursor and `DiskIICard`'s boot PROM
+is a verbatim dump.
 
 | # | Item | Why |
 | - | ---- | --- |
-| 1-1 | 🟠 **A compile-time 6502 mini-assembler** — symbolic labels, declared and bounded regions, branch offsets resolved automatically, plus a readable dump for diffing. ~100 lines of `constexpr` header. | Makes the P0-1 bug class **impossible by construction** rather than guarded against. Best value/effort ratio in the plan. |
-| 1-2 | 🟠 **Rewrite the seven ROMs on it** — one card at a time, each validated by its existing tests before moving on. | The tests already pin the behaviour, so the rewrite is verifiable step by step rather than a leap. |
 | 1-3 | 🟠 **Finish the `MainWindow` decomposition** — target &lt; 2 000 lines; it should keep only the frame loop, the dock and the coordinator wiring. | Detail: [Arch](#arch-refactor--tooling). Mechanical, not conceptual — the registry and the eleven coordinators did the design work. |
 | 1-4 | 🟡 **Lower the ratchet in the same commit.** | Without it the file regrows. It already has. |
 
@@ -455,35 +463,27 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Cards] slot cards & peripherals
 
-- 🟠 **ProDOS `STATUS` — the hand-assembled ROM family** *(audited 2026-08-28)* —
-  <a id="prodos-status-the-hand-assembled-rom-family"></a>every hand-assembled
-  slot ROM is now bounded (`SlotRom.h`, `CHANGELOG.md`) and both halves of the
-  `ProDOSHardDiskCard` finding are closed. What is still open is the **cure**
-  rather than the fence — P1-1's assembler — which is why the item stays here.
-
-  The empty-bay WRITE error code —
-  `$2B` "write protected" where the honest answer is `$28` "no device
-  connected" — was fixed on 2026-08-28 by making the routine *shorter*: one
-  `BIT $C0n3` answers both questions (N = no media, V = write-protected) and
-  both transfer routines branch to a shared error tail in the gap after boot.
-  It went from zero slack to eight bytes. → `CHANGELOG.md`
+- 🟢 **ProDOS `STATUS` — the hand-written ROM family** *(closed 2026-08-28)* —
+  <a id="prodos-status-the-hand-assembled-rom-family"></a>kept as a record, not
+  as work. All six pages are written with `SlotRomAsm.h`: an address is a
+  label, so a mistyped displacement and a routine that moved out from under one
+  are both unrepresentable, and two regions claiming the same bytes — the
+  SmartPort bug in its purest form — is an error before a byte is written.
+  Both halves of the `ProDOSHardDiskCard` finding are fixed, the second by
+  making the write routine *shorter*: one `BIT $C0n3` answers "is there media?"
+  and "is it locked?" at once, and both transfer routines branch to a shared
+  error tail in the gap after boot. Zero slack became eight bytes.
+  → `CHANGELOG.md`
 
   What the audit settled, so nobody re-derives it:
-  - `ClockCard` writes nine fixed bytes with no cursor — nothing to bound.
-  - `DiskIICard`'s boot PROM is a verbatim dump, not assembled.
-  - `GrapplerCard` only hand-assembles its *fallback stub*; a real `roms/` dump
-    is copied verbatim.
-  - `SuperSerialCard` was the tightest of the rest: `$Cn0D-$Cn10` are the low
-    bytes of four Pascal routines, so a routine pushed down lands the Pascal
-    interpreter mid-instruction. Bounded, and PSTATUS's two hand-computed
-    branch targets are now pinned where they land.
-
-  P1-1 / P1-2 still makes the class impossible rather than guarded: a real
-  assembler with symbolic labels and resolved branches. `SlotRom.h` is the
-  stepping stone, not the destination — it detects both failure modes
-  (a region that grows, and one that *shrinks* under a hand-computed branch),
-  which is the specification P1-1 has to satisfy by construction.
-  → [Priority order](#priority-order)
+  - `ClockCard` writes nine fixed bytes with no cursor — nothing to assemble.
+  - `DiskIICard`'s boot PROM is a verbatim dump.
+  - `GrapplerCard` hand-writes only its *fallback stub*; a real `roms/` dump is
+    copied verbatim.
+  - `SuperSerialCard` was the tightest of the six, for a reason the others did
+    not share: `$Cn0D-$Cn10` are the low bytes of four Pascal routines, so a
+    routine pushed down lands the interpreter mid-instruction. Those four bytes
+    are `byteOf()` now, and cannot disagree with where the routines are.
 
 - 🟡 **SmartPortCard leftovers, still open** (2026-07-12 Liron audit
   follow-ups) — two of the original five remain:

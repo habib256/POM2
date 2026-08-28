@@ -15,7 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "SuperSerialCard.h"
-#include "SlotRom.h"
+#include "SlotRomAsm.h"
 
 #include "SuperSerialTransport.h"
 #include "Pom2Build.h"
@@ -737,68 +737,34 @@ void SuperSerialCard::buildRom()
 {
     rom.fill(0xEA);     // NOP padding
 
-    const uint8_t slotHi = static_cast<uint8_t>(0xC0 + slot);
-    const uint8_t devLo  = static_cast<uint8_t>(0x80 + slot * 16);
-    const uint8_t statusReg = static_cast<uint8_t>(devLo + 0x9);
-    const uint8_t dataReg   = static_cast<uint8_t>(devLo + 0x8);
+    const uint8_t devLo      = static_cast<uint8_t>(0x80 + slot * 16);
+    const uint8_t statusReg  = static_cast<uint8_t>(devLo + 0x9);
+    const uint8_t dataReg    = static_cast<uint8_t>(devLo + 0x8);
     const uint8_t cmdRegAddr = static_cast<uint8_t>(devLo + 0xA);
 
-    // Hand-assembled, so every region declares its budget (SlotRom.h) — the
-    // limit is where the NEXT routine starts. Layout:
-    //
-    //   $Cn00-$Cn04  PR#n entry (JMP $Cn20, over the signature bytes)
-    //   $Cn05-$Cn07  Pascal signature, poked individually
-    //   $Cn08-$Cn0A  IN#n entry (JMP $Cn40)
-    //   $Cn0B-$Cn10  Pascal revision/class + the four entry OFFSETS
-    //   $Cn20-$Cn3F  PR#n bind       (14 B)
-    //   $Cn40-$Cn4F  IN#n bind       (14 B)
-    //   $Cn50-$Cn5F  PINIT           ( 8 B)
-    //   $Cn60-$Cn6F  PREAD           (15 B)
-    //   $Cn70-$Cn7F  PWRITE          (15 B of 16 — the tightest region here)
-    //   $Cn80-$CnAF  PSTATUS         (18 B; contains two hand-computed
-    //                                 branch targets, hence expectEnd)
-    //   $CnB0-$CnDF  output routine  (13 B)
-    //   $CnE0-$CnFF  input routine   (13 B)
-    //
-    // The four Pascal entry offsets at $Cn0D-$Cn10 are literally the low
-    // bytes of $Cn50/$Cn60/$Cn70/$Cn80, so a routine that moved would send
-    // the Pascal interpreter into NOP fill with nothing to show for it.
-    pom2::SlotRomBuilder b(rom);
+    pom2::SlotRomAsm a(rom, slot, "SuperSerialCard");
 
-    // Apple-II PR#n / IN#n auto-config protocol:
-    //   $Cn00: JSR'd by `PR#n` to install the output hook in CSWL/CSWH.
-    //   $Cn00+1 byte alone is enough; we just JMP to a "real" entry past
-    //   the signature bytes so the autodetect bytes ($Cn05, $Cn07,
-    //   $Cn0B, $Cn0C) don't get executed.
-    //
-    // SSC autodetection signature — checked by Apple-PSCAN style firmware
-    // and by ProDOS for its character-device probe. These bytes MUST sit
-    // at fixed positions, so we route execution around them with a JMP.
+    // Apple-II PR#n / IN#n auto-config protocol. The autodetect bytes sit at
+    // addresses the platform mandates ($Cn05, $Cn07, $Cn0B, $Cn0C), so
+    // execution is routed AROUND them with a JMP rather than through them.
     //   $Cn05 = $38   (sig 1)
     //   $Cn07 = $18   (sig 2)
     //   $Cn0B = $01   (firmware revision)
     //   $Cn0C = $31   (device class: serial-port aka "Communications")
+    a.region("prEntry", 0x00, 0x05).jmp("prBind");
 
-    // PR#n entry at $Cn00 — jump past the signature region.
-    b.put(0x00, 0x05, { 0x4C, 0x20, slotHi });   // JMP $Cn20 (PR#n_entry)
+    // IN#n entry at $Cn08. Apple BASIC calls $Cn00 for both PR# and IN# but
+    // distinguishes by zero-page contents; many ROMs publish IN#n at $Cn00+8.
+    a.region("inEntry", 0x08, 0x0B).jmp("inBind");
 
-    // IN#n entry at $Cn08 (dispatched by the IN# command). Apple BASIC
-    // calls $Cn00 for both PR# and IN# but distinguishes by zero-page
-    // contents; many ROMs publish IN#n at $Cn00+8. We jump to a separate
-    // input-bind routine.
-    b.put(0x08, 0x0B, { 0x4C, 0x40, slotHi });   // JMP $Cn40 (IN#n_entry)
-
-    rom[0x05] = 0x38;
-    rom[0x07] = 0x18;
-    rom[0x0B] = 0x01;
-    rom[0x0C] = 0x31;
+    a.region("pascalSig", 0x05, 0x08).poke(0x05, 0x38).poke(0x07, 0x18);
 
     // ── Pascal 1.1 firmware protocol entry block ─────────────────────────
-    // Apple II Pascal recognises a Pascal-1.1 card by $Cn05/$Cn07/$Cn0B/$Cn0C
-    // above, then dispatches through four single-byte entry OFFSETS at
-    // $Cn0D-$Cn10 (each is the LOW byte of a routine in this $Cn page; the
-    // interpreter forms $Cn00|offset). Layout + calling convention verified
-    // against the real SSC ROM disassembly (6502disassembly.com/a2-rom/SSC):
+    // Apple II Pascal recognises a Pascal-1.1 card by the ID bytes above,
+    // then dispatches through four single-byte entry OFFSETS at $Cn0D-$Cn10
+    // (each the LOW byte of a routine in this page; the interpreter forms
+    // $Cn00|offset). Layout + calling convention verified against the real
+    // SSC ROM disassembly (6502disassembly.com/a2-rom/SSC):
     //   PINIT   X = error (0 = OK)
     //   PREAD   returns char in A, high bit cleared
     //   PWRITE  char to send in A
@@ -806,119 +772,120 @@ void SuperSerialCard::buildRom()
     //           carry SET = ready, X = 0.
     // Without this block POM2's SSC published the ID bytes but no entry
     // table, so a Pascal program detected the card then jumped into NOP fill.
-    rom[0x0D] = 0x50;     // <PINIT   ($Cn50)
-    rom[0x0E] = 0x60;     // <PREAD   ($Cn60)
-    rom[0x0F] = 0x70;     // <PWRITE  ($Cn70)
-    rom[0x10] = 0x80;     // <PSTATUS ($Cn80)
-
-    // PINIT $Cn50 — assert DTR + RTS-low/TX-IRQ-off (cmd=$0B) so the port
-    // can transmit, then return success (X=0).
-    b.put(0x50, 0x60, {
-        0xA9, 0x0B,            // LDA #$0B
-        0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
-        0xA2, 0x00,            // LDX #$00    (no error)
-        0x60                   // RTS
-    });
-
-    // PREAD $Cn60 — spin until RDRF, return the byte in A with the high bit
-    // cleared (Pascal wants 7-bit ASCII), X=0.
-    b.put(0x60, 0x70, {
-        0xAD, statusReg, 0xC0, // LDA $C0n9        (loop)
-        0x29, 0x08,            // AND #$08  (RDRF)
-        0xF0, 0xF9,            // BEQ -7 → loop
-        0xAD, dataReg, 0xC0,   // LDA $C0n8
-        0x29, 0x7F,            // AND #$7F  (strip high bit)
-        0xA2, 0x00,            // LDX #$00
-        0x60                   // RTS
-    });
-
-    // PWRITE $Cn70 — spin until TDRE, send the char in A, X=0.
-    b.put(0x70, 0x80, {
-        0x48,                  // PHA
-        0xAD, statusReg, 0xC0, // LDA $C0n9        (loop)
-        0x29, 0x10,            // AND #$10  (TDRE)
-        0xF0, 0xF9,            // BEQ -7 → loop
-        0x68,                  // PLA
-        0x8D, dataReg, 0xC0,   // STA $C0n8
-        0xA2, 0x00,            // LDX #$00
-        0x60                   // RTS
-    });
-
-    // PSTATUS $Cn80 — A=0 → output-ready (TDRE), A=1 → input-avail (RDRF).
-    // LSR moves the request code into carry; CMP #$01 maps "masked bit set"
-    // back into the carry flag (ready). X=0.
-    b.put(0x80, 0xB0, {
-        0x4A,                  // LSR A            (C=0 output, C=1 input)
-        0xAD, statusReg, 0xC0, // LDA $C0n9
-        0xB0, 0x05,            // BCS $Cn8B  (input path)
-        0x29, 0x10,            // AND #$10   (TDRE)
-        0x4C, 0x8D, slotHi,    // JMP $Cn8D  (PS_TST)
-        0x29, 0x08,            // $Cn8B: AND #$08  (RDRF)
-        0xC9, 0x01,            // $Cn8D: CMP #$01  (A!=0 → C set = ready)
-        0xA2, 0x00,            // LDX #$00
-        0x60                   // RTS
-    }).expectEnd(0x92);
-
-    // PR#n entry at $Cn20 — initialise the ACIA, then patch CSWL/CSWH to
-    // point at the output routine at $CnB0 and RTS so the BASIC
-    // interpreter resumes.
     //
-    // The ACIA init (cmd=$0B: DTR asserted, RX IRQ off, RTS low) mirrors
-    // what the real SSC firmware does on first entry — it programs the
-    // 6551 from the DIP switches before any I/O (see the BASICINIT path
-    // in the real ROM disassembly, 6502disassembly.com/a2-rom/SSC).
-    // Without it a plain `PR#n : PRINT` writes the TDR with DTR
+    // These four bytes are why the page is assembled rather than typed. They
+    // are addresses of routines defined LOWER DOWN this function, and each
+    // used to be a literal repeated at both ends; a routine that moved left
+    // the interpreter dispatching into the middle of an instruction, with
+    // nothing to notice it.
+    a.region("pascalId", 0x0B, 0x0D)
+     .poke(0x0B, 0x01)      // generic Pascal 1.1 signature
+     .poke(0x0C, 0x31);     // device signature (comms, class 3)
+
+    a.region("pascalTable", 0x0D, 0x11)
+     .byteOf("pinit").byteOf("pread").byteOf("pwrite").byteOf("pstatus");
+
+    // PR#n bind — initialise the ACIA, then patch CSWL/CSWH to point at the
+    // output routine and RTS so the BASIC interpreter resumes.
+    //
+    // The ACIA init (cmd=$0B: DTR asserted, RX IRQ off, RTS low) mirrors what
+    // the real SSC firmware does on first entry — it programs the 6551 from
+    // the DIP switches before any I/O (the BASICINIT path in the real ROM
+    // disassembly). Without it a plain `PR#n : PRINT` writes the TDR with DTR
     // de-asserted and the transmitter (correctly, per MAME
     // `mos6551.cpp:317-321`) drops every byte on the floor — only Pascal,
     // whose PINIT does the same $0B write, could ever transmit.
-    b.put(0x20, 0x40, {
-        0xA9, 0x0B,            // LDA #$0B    (DTR on, RX IRQ off)
-        0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
-        0xA9, 0xB0,            // LDA #<output_routine
-        0x85, 0x36,            // STA $36   (CSWL)
-        0xA9, slotHi,          // LDA #>output_routine
-        0x85, 0x37,            // STA $37   (CSWH)
-        0x60                   // RTS
-    });
+    a.region("prBind", 0x20, 0x40)
+     .emit({ 0xA9, 0x0B,             // LDA #$0B    (DTR on, RX IRQ off)
+             0x8D, cmdRegAddr, 0xC0, // STA $C0nA   (command register)
+             0xA9 }).byteOf("cout")  // LDA #<cout
+     .emit({ 0x85, 0x36,             // STA $36   (CSWL)
+             0xA9, a.pageHi(),       // LDA #>cout
+             0x85, 0x37,             // STA $37   (CSWH)
+             0x60 });                // RTS
 
-    // IN#n entry at $Cn40 — same ACIA init, then patch KSWL/KSWH (input
-    // vector). Ends at $Cn4D — just under the PINIT routine at $Cn50.
-    b.put(0x40, 0x50, {
-        0xA9, 0x0B,            // LDA #$0B    (DTR on, RX IRQ off)
-        0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
-        0xA9, 0xE0,            // LDA #<input_routine
-        0x85, 0x38,            // STA $38   (KSWL)
-        0xA9, slotHi,          // LDA #>input_routine
-        0x85, 0x39,            // STA $39   (KSWH)
-        0x60                   // RTS
-    });
+    // IN#n bind — same ACIA init, then patch KSWL/KSWH (input vector).
+    a.region("inBind", 0x40, 0x50)
+     .emit({ 0xA9, 0x0B,
+             0x8D, cmdRegAddr, 0xC0,
+             0xA9 }).byteOf("cin")   // LDA #<cin
+     .emit({ 0x85, 0x38,             // STA $38   (KSWL)
+             0xA9, a.pageHi(),
+             0x85, 0x39,             // STA $39   (KSWH)
+             0x60 });
 
-    // Output routine at $CnB0 — Apple monitor convention: the byte to
-    // write is in A (high bit set per the OUT vector spec). PHA once,
-    // spin on TDRE (BEQ branches back to the LDA *after* PHA so we
-    // don't push extra stack frames each iteration), then PLA + write.
-    b.put(0xB0, 0xE0, {
-        0x48,                  // PHA               $CnB0
-        0xAD, statusReg, 0xC0, // LDA $C0n9         $CnB1  (loop target)
-        0x29, 0x10,            // AND #$10  (TDRE)  $CnB4
-        0xF0, 0xF9,            // BEQ -7 → $CnB1    $CnB6
-        0x68,                  // PLA               $CnB8
-        0x8D, dataReg, 0xC0,   // STA $C0n8         $CnB9
-        0x60                   // RTS               $CnBC
-    });
+    // PINIT — assert DTR + RTS-low/TX-IRQ-off (cmd=$0B) so the port can
+    // transmit, then return success (X=0).
+    a.region("pinit", 0x50, 0x60)
+     .emit({ 0xA9, 0x0B,             // LDA #$0B
+             0x8D, cmdRegAddr, 0xC0, // STA $C0nA   (command register)
+             0xA2, 0x00,             // LDX #$00    (no error)
+             0x60 });                // RTS
 
-    // Input routine at $CnE0 — spin until RDRF, return byte in A with
-    // bit 7 set (Apple keyboard convention).
-    b.put(0xE0, pom2::kSlotRomBytes, {
-        0xAD, statusReg, 0xC0, // LDA $C0n9
-        0x29, 0x08,            // AND #$08  (RDRF)
-        0xF0, 0xF9,            // BEQ -7 → loop
-        0xAD, dataReg, 0xC0,   // LDA $C0n8
-        0x09, 0x80,            // ORA #$80  (Apple keys are high-bit-set)
-        0x60                   // RTS
-    });
+    // PREAD — spin until RDRF, return the byte in A with the high bit
+    // cleared (Pascal wants 7-bit ASCII), X=0.
+    a.region("pread", 0x60, 0x70)
+     .label("preadWait")
+     .emit({ 0xAD, statusReg, 0xC0,  // LDA $C0n9
+             0x29, 0x08 })           // AND #$08  (RDRF)
+     .branch(0xF0, "preadWait")      // BEQ preadWait
+     .emit({ 0xAD, dataReg, 0xC0,    // LDA $C0n8
+             0x29, 0x7F,             // AND #$7F  (strip high bit)
+             0xA2, 0x00,             // LDX #$00
+             0x60 });                // RTS
 
-    romLayoutError_ = b.layoutError();
+    // PWRITE — spin until TDRE, send the char in A, X=0.
+    a.region("pwrite", 0x70, 0x80)
+     .emit({ 0x48 })                 // PHA
+     .label("pwriteWait")
+     .emit({ 0xAD, statusReg, 0xC0,  // LDA $C0n9
+             0x29, 0x10 })           // AND #$10  (TDRE)
+     .branch(0xF0, "pwriteWait")     // BEQ pwriteWait
+     .emit({ 0x68,                   // PLA
+             0x8D, dataReg, 0xC0,    // STA $C0n8
+             0xA2, 0x00,             // LDX #$00
+             0x60 });                // RTS
+
+    // PSTATUS — A=0 → output-ready (TDRE), A=1 → input-avail (RDRF).
+    // LSR moves the request code into carry; CMP #$01 maps "masked bit set"
+    // back into the carry flag (ready). X=0.
+    a.region("pstatus", 0x80, 0xB0)
+     .emit({ 0x4A,                   // LSR A       (C=0 output, C=1 input)
+             0xAD, statusReg, 0xC0 })// LDA $C0n9
+     .branch(0xB0, "psInput")        // BCS psInput
+     .emit({ 0x29, 0x10 })           // AND #$10    (TDRE)
+     .jmp("psTest")
+     .label("psInput").emit({ 0x29, 0x08 })   // AND #$08  (RDRF)
+     .label("psTest").emit({ 0xC9, 0x01,      // CMP #$01  (A!=0 → C = ready)
+                             0xA2, 0x00,      // LDX #$00
+                             0x60 });         // RTS
+
+    // Output routine — Apple monitor convention: the byte to write is in A
+    // (high bit set per the OUT vector spec). PHA once, spin on TDRE (the
+    // branch goes back to the LDA *after* the PHA so we don't push a stack
+    // frame per iteration), then PLA + write.
+    a.region("cout", 0xB0, 0xE0)
+     .emit({ 0x48 })                 // PHA
+     .label("coutWait")
+     .emit({ 0xAD, statusReg, 0xC0,  // LDA $C0n9
+             0x29, 0x10 })           // AND #$10  (TDRE)
+     .branch(0xF0, "coutWait")       // BEQ coutWait
+     .emit({ 0x68,                   // PLA
+             0x8D, dataReg, 0xC0,    // STA $C0n8
+             0x60 });                // RTS
+
+    // Input routine — spin until RDRF, return the byte in A with bit 7 set
+    // (Apple keyboard convention).
+    a.region("cin", 0xE0, pom2::kSlotRomBytes)
+     .label("cinWait")
+     .emit({ 0xAD, statusReg, 0xC0,  // LDA $C0n9
+             0x29, 0x08 })           // AND #$08  (RDRF)
+     .branch(0xF0, "cinWait")        // BEQ cinWait
+     .emit({ 0xAD, dataReg, 0xC0,    // LDA $C0n8
+             0x09, 0x80,             // ORA #$80  (Apple keys are high-bit-set)
+             0x60 });                // RTS
+
+    romLayoutError_ = !a.finish();
 }
 
 // ── Snapshot / rewind ─────────────────────────────────────────────────────

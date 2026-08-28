@@ -17,7 +17,7 @@
 // GrapplerCard — see header for ROM layout + protocol notes.
 
 #include "GrapplerCard.h"
-#include "SlotRom.h"
+#include "SlotRomAsm.h"
 
 #include "Logger.h"
 
@@ -281,36 +281,32 @@ void GrapplerCard::buildStubRom()
     // card (matches "no Grappler installed" detection paths). Padding
     // is $EA (NOP) so a sloppy probe walking through doesn't hit garbage.
     stubRom_.fill(0xEA);
-    const uint8_t slotHi = static_cast<uint8_t>(0xC0 + slot_);
     // Data port = $C0(8+s)0 — the MAME-faithful data latch offset
     // (!(offset & 3)). The stub used to print through offset 1, which on
     // the real card (and now in deviceSelectWrite) is the ROM bank select.
     const uint8_t dataLo = static_cast<uint8_t>(0x80 + slot_ * 16);
 
-    // Bounded like every other hand-assembled page — see SlotRom.h. Layout:
-    //   $Cn00-$Cn04  PR#n entry (JMP $Cn20)
-    //   $Cn05-$Cn0C  Pascal 1.1 autodetect bytes, poked individually
-    //   $Cn20-$Cn30  CSWL/CSWH install (9 B)
-    //   $Cn31-$CnFF  output handler    (4 B)
-    pom2::SlotRomBuilder b(stubRom_);
+    pom2::SlotRomAsm a(stubRom_, slot_, "GrapplerCard stub");
 
-    // $Cn00: JMP $Cn20 (skip Pascal sig).
-    b.put(0x00, 0x05, { 0x4C, 0x20, slotHi });
+    a.region("entry", 0x00, 0x05).jmp("prn");   // $Cn00: skip the Pascal sig
+
     // Pascal 1.1 autodetect — same shape as PrinterCard.
-    stubRom_[0x05] = 0x38;     // SEC
-    stubRom_[0x07] = 0x18;     // CLC
-    stubRom_[0x0B] = 0x01;     // Pascal firmware rev
-    stubRom_[0x0C] = 0x00;     // device class = printer
-    // PR#n CSWL/CSWH install.
-    b.put(0x20, 0x31, {
-        0xA9, 0x31, 0x85, 0x36,
-        0xA9, slotHi, 0x85, 0x37,
-        0x60
-    });
-    // Output handler: STA $C0(8+s)0 / RTS.
-    b.put(0x31, pom2::kSlotRomBytes, { 0x8D, dataLo, 0xC0, 0x60 });
+    a.region("pascalId", 0x05, 0x0D)
+     .poke(0x05, 0x38)      // SEC
+     .poke(0x07, 0x18)      // CLC
+     .poke(0x0B, 0x01)      // Pascal firmware rev
+     .poke(0x0C, 0x00);     // device class = printer
 
-    romLayoutError_ = b.layoutError();
+    // PR#n CSWL/CSWH install.
+    a.region("prn", 0x20, 0x31)
+     .emit({ 0xA9 }).byteOf("cout")
+     .emit({ 0x85, 0x36, 0xA9, a.pageHi(), 0x85, 0x37, 0x60 });
+
+    // Output handler: STA $C0(8+s)0 / RTS.
+    a.region("cout", 0x31, pom2::kSlotRomBytes)
+     .emit({ 0x8D, dataLo, 0xC0, 0x60 });
+
+    romLayoutError_ = !a.finish();
 }
 
 void GrapplerCard::appendSnapshotState(std::vector<uint8_t>& out) const

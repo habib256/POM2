@@ -1488,54 +1488,97 @@ Mockingboard keeps `cpu_` for `getCycleCountNow()` lazy-sync only;
 Disk II keeps `cpu_` for sub-instruction LSS accuracy on Q6L reads.
 MouseCard and SSC dropped `cpu_`.
 
-### Hand-assembled slot ROMs (`SlotRom.h`)
+### Hand-written slot ROMs (`SlotRomAsm.h`)
 
-Six cards do not have a ROM dump and synthesise their `$Cn00` page as a list of
-6502 opcode bytes: `SmartPortCard`, `ProDOSHardDiskCard`, `FujiNetCard`,
-`PrinterCard`, `SuperSerialCard`, and `GrapplerCard`'s fallback stub.
-(`ClockCard` writes nine fixed signature bytes with no cursor at all;
-`DiskIICard`'s boot PROM is a verbatim dump.)
+Six cards have no ROM dump and synthesise their `$Cn00` page: `SmartPortCard`,
+`ProDOSHardDiskCard`, `FujiNetCard`, `PrinterCard`, `SuperSerialCard`, and
+`GrapplerCard`'s fallback stub. (`ClockCard` writes nine fixed signature bytes;
+`DiskIICard`'s boot PROM is a verbatim dump. Neither is assembled.)
 
-Every one of them used to append the same unchecked way:
+Until 2026-08-28 all six wrote the page as a byte list with every **address in
+it computed by hand**:
 
 ```cpp
-for (uint8_t b : bytes) rom[pc++] = b;
+0xF0, 0x37,              // BEQ write   (+55 -> $Cn91)
+0x4C, 0xC0, kSlotRomHi,  // JMP $CnC0
+rom[0xFF] = 0x50;        // ProDOS driver entry offset
 ```
 
-`pc` is a `uint8_t` and the page is exactly 256 bytes, so a routine that
-outgrows its budget does not fail — it overwrites its neighbour, and wraps to
-`$Cn00` rather than trapping. That is how `SmartPortCard`'s ProDOS STATUS
-became dead code for weeks (2026-08-27; the write-block routine had grown
-straight through it). `ProDOSHardDiskCard` was one byte from the same fate.
+Three ways to be wrong, all of which fired: a region outgrew its budget and
+overwrote its neighbour (SmartPortCard's write routine ate its own ProDOS
+STATUS, which answered `$27` on a healthy bay for weeks); a region *shrank* and
+left a displacement pointing past the routine it named, changing no byte a
+hexdump would flag; or a displacement was simply mistyped — `BEQ +55` carried a
+comment recording that somebody had already re-counted it once.
 
-`pom2::SlotRomBuilder` replaces it. A region declares where it **ends**, and
-two things are caught:
+`pom2::SlotRomAsm` removes the cause rather than guarding the symptom. **An
+address is never typed. It is a label, and the assembler computes the byte.**
 
-| flag | meaning | why it matters |
+```cpp
+pom2::SlotRomAsm a(rom_, slot_, "ProDOSHardDiskCard");
+
+a.region("entry", 0x00, 0x08)
+ .jmp("boot")                       // $Cn01 = $20 falls out of the operand
+ .poke(0x03, 0x00);                 // platform-mandated signature byte
+
+a.region("driver", 0x50, 0x66)
+ .emit({ 0xA5, 0x42, 0xC9, 0x01 })
+ .branch(0xF0, "read")              // displacement resolved in finish()
+ .label("dispStatus").jmp("status");
+
+a.region("tail", 0xFE, pom2::kSlotRomBytes)
+ .emit({ 0x03 }).byteOf("driver");  // ProDOS driver entry offset
+
+romLayoutError_ = !a.finish();
+```
+
+| call | emits | replaces |
 |---|---|---|
-| `overflowed()`  | a region ran past its limit | it used to eat its neighbour |
-| `misaligned()`  | a region no longer ends at the offset `expectEnd()` declares | these ROMs are full of hand-computed branch displacements (`BEQ +55` to reach the next routine) and dispatch tables holding raw low bytes; a routine that **shrinks** breaks those exactly as thoroughly as one that grows, and changes no byte a hexdump would flag |
+| `region(name, start, limit)` | nothing; opens a bounded span and defines `name` at its start | a comment claiming where a routine lives |
+| `label(name)` | nothing | a hand-counted offset |
+| `emit({…})` | raw bytes, bounded | the same, unbounded |
+| `branch(op, label)` | opcode + displacement | `0xF0, 0x37` |
+| `jmp/jsr(label)` | opcode + lo + `$Cn` | `0x4C, kStatusOff, kSlotRomHi` |
+| `byteOf(label)` | one byte = the label's offset | `rom[0xFF] = kDriverOff;` |
+| `poke(offset, v)` | one byte at a mandated address, inside the open region | a bare `rom[0x05] = 0x38;` |
 
-```cpp
-pom2::SlotRomBuilder b(rom_);
-b.region(kBootOff, kDriverOff).emit({ ... }).expectEnd(kDriverOff);
-b.put(0x31, pom2::kSlotRomBytes, { 0x8D, dataLo, 0xC0, 0x60 });
-romLayoutError_ = b.layoutError();
+`finish()` resolves every reference and returns false on: a region over budget,
+**two regions claiming the same bytes** (the SmartPort bug in its purest form —
+the previous bounded builder checked each region against its own limit and
+never against the others), a branch outside the −128..+127 window, a reference
+to an undefined label, a duplicate label, a poke outside the open region, or a
+byte emitted with no region open. The first error is kept, with a message that
+names the region; cards publish it as `romLayoutError()` and every card's smoke
+test asserts it is clear.
+
+**It is not `constexpr`, and the reason matters**: a slot page is parameterised
+by the slot it is plugged into (every absolute reference carries `$Cn`) and the
+slot comes from settings at runtime, so there is no constant to fold. What
+TODO P1-1 actually asked for — symbolic labels, declared regions, resolved
+branches, a diffable listing — is all here; the checking is at build time of
+the *page*, which happens once at card construction.
+
+**The listing.** `POM2_DUMP_SLOT_ROM=1` makes every card print its page as it
+is built, which is the form you want — one file per build, diffable against the
+last one:
+
+```
+; ProDOSHardDiskCard — page $C500
+
+driver  $050..$066  22 of 22 bytes
+    $062  dispStatus:
+    $050  A5 42 C9 01 F0 10 C9 02
+    $058  F0 33 C9 00 F0 04 A9 01
+    $060  38 60 4C C0 C5 EA
+
+write  $08D..$0C0  43 of 51 bytes
 ```
 
-Each card publishes `romLayoutError()` and its smoke test asserts it is clear.
-`slot_rom_builder` tests the *builder*, because a card test can only ever
-assert the flag is false — which a guard hard-wired to `return false` would
-also satisfy.
+The occupancy column is the point: `43 of 51` is how you see a routine
+approaching its budget before it crosses. `write` used to read `47 of 47`.
 
-Use `expectEnd` wherever something outside the region hard-codes that address:
-the SSC's four Pascal entry offsets at `$Cn0D-$Cn10`, the HDV dispatch's
-`BEQ +16` / `BEQ +55`, PSTATUS's internal `BCS $Cn8B` / `JMP $Cn8D`.
-
-**This is a fence, not the cure.** TODO P1-1 replaces it with a real
-`constexpr` mini-assembler — symbolic labels, resolved branches — which makes
-both failure modes unrepresentable instead of merely detected. `SlotRom.h` is
-the specification that assembler has to satisfy.
+`slot_rom_asm` tests the assembler itself, because a card test can only assert
+its flag is clear — which a `finish()` of `return true` would also satisfy.
 
 ## Storage
 

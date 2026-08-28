@@ -5858,11 +5858,13 @@ add_test(NAME pom2_core_sdk_consumer
 set_tests_properties(pom2_core_sdk_consumer PROPERTIES TIMEOUT 600)
 set_property(TEST pom2_core_sdk_consumer APPEND PROPERTY LABELS slow)
 
-# ─── SlotRomBuilder — the hand-assembled-ROM guard itself ───────────────
+# ─── SlotRomAsm — the hand-assembled-ROM assembler itself ───────────────
 # Header-only, no core sources: the point is that this file can assert the
-# layout flag can be SET. Every card test can only assert it is clear, which
-# a guard hard-wired to `false` would also satisfy.
-add_executable(test_slot_rom_builder slot_rom_builder_test.cpp)
-target_include_directories(test_slot_rom_builder PRIVATE ${CMAKE_SOURCE_DIR}/src)
-add_test(NAME slot_rom_builder COMMAND test_slot_rom_builder)
-set_tests_properties(slot_rom_builder PROPERTIES TIMEOUT 10)
+# failures are REACHABLE. Every card test can only assert its layout flag is
+# clear, which an assembler whose finish() was `return true` would also
+# satisfy.
+add_executable(test_slot_rom_asm slot_rom_asm_test.cpp)
+target_include_directories(test_slot_rom_asm PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME slot_rom_asm COMMAND test_slot_rom_asm)
+set_tests_properties(slot_rom_asm PROPERTIES TIMEOUT 10)
+

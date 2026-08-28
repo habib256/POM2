@@ -427,7 +427,7 @@ void testPascalIdBlock()
     SuperSerialCard ssc(2);
 
     // The page is hand-assembled and every region declares where it ends
-    // (SlotRom.h). The entry table below is exactly the reason it has to:
+    // (SlotRomAsm.h). The entry table below is exactly the reason it has to:
     // $Cn0D-$Cn10 are the LOW BYTES of four routines, so a routine that
     // outgrew its region and pushed its neighbour down would leave Pascal
     // dispatching into the middle of an instruction — the SmartPort failure,
