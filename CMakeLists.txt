@@ -758,7 +758,14 @@ if(POM2_COVERAGE)
             "POM2_COVERAGE needs clang (source-based coverage); this is "
             "${CMAKE_CXX_COMPILER_ID}. Use a clang toolchain or drop the option.")
     endif()
-    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    # -g0 is not an optimisation, it is a size limit. The coverage tree is a
+    # Debug build (asserts must stay live — the tests use them) of ~215
+    # statically-linked binaries, and llvm-cov reads the coverage MAPPING, not
+    # DWARF. Carrying debug info as well took the tree to 3.9 GB on macOS and
+    # to more than a GitHub runner has on Linux, where the DWARF is embedded
+    # rather than split into a .dSYM. Dropping it costs nothing this build
+    # uses.
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping -g0)
     add_link_options(-fprofile-instr-generate)
 endif()
 
