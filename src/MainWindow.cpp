@@ -836,6 +836,19 @@ MainWindow::MainWindow(bool forceIIPlus)
 EmulationController& MainWindow::emul()       { return *controller; }
 Apple2Display&       MainWindow::displayRef() { return *display; }
 
+bool MainWindow::startAiControlFromCli(unsigned short port, std::string& errOut)
+{
+    aiServer->attach(controller.get(), display.get(), primaryDiskII(), primaryHdvCard());
+    aiServer->setAuthToken("");
+    if (!aiServer->start(port)) {
+        errOut = "cannot listen on 127.0.0.1:" + std::to_string(port);
+        return false;
+    }
+    pom2::log().info("CLI", "AI control listening on 127.0.0.1:" +
+                              std::to_string(port));
+    return true;
+}
+
 MainWindow::~MainWindow()
 {
     // Stop the AI control server BEFORE the CPU worker — pending requests

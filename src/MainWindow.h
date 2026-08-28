@@ -217,6 +217,14 @@ public:
     /// internally between frames).
     bool insertAndBootImage(const std::string& path, std::string& errOut);
 
+    /// Build and mount a read-only ProDOS /HOST/ volume from `path` on an
+    /// HDV card, auto-provisioning the card when necessary. Does not boot it:
+    /// the synthetic volume deliberately has no boot blocks.
+    bool mountProDOSFolder(const std::string& path, std::string& errOut);
+
+    /// Start the loopback automation endpoint explicitly for this process.
+    bool startAiControlFromCli(unsigned short port, std::string& errOut);
+
     /// CLI (`--fujinet` / `--fujinet-serial`): plug a FujiNet relay card into
     /// `slot` and arm its link before the machine boots, so an autostart scan
     /// finds a FujiNet on its first pass. `serialDevice` empty in serial mode

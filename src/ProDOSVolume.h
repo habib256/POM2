@@ -23,9 +23,9 @@
 //                 host-folder volume appears as a secondary drive).
 //   Block 1       Boot block 2 (zeroed).
 //   Blocks 2-5    Volume directory (key + 3 extension blocks → 51 entries).
-//   Block 6       Volume bitmap (1 block ⇒ covers up to 4096 blocks = 2 MB,
-//                 plenty for typical drag-drop use).
-//   Blocks 7+     File data + sapling index blocks, allocated sequentially.
+//   Blocks 6+      Contiguous volume bitmap blocks, allocated to cover the
+//                  complete synthesised volume.
+//   Following     File data + sapling index blocks, allocated sequentially.
 //
 // Scope (MVP):
 //   * Flat directory only — sub-directories of the host folder are skipped.

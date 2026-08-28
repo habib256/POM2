@@ -501,3 +501,31 @@ bool MainWindow::insertAndBootImage(const std::string& path, std::string& errOut
             return false;
     }
 }
+
+bool MainWindow::mountProDOSFolder(const std::string& path, std::string& errOut)
+{
+    if (ensureHdvCardForBoot() < 0 || !primaryHdvCard()) {
+        errOut = "no free slot to plug an HDV card into";
+        return false;
+    }
+
+    std::vector<std::uint8_t> bytes;
+    const auto built = pom2::buildVolumeFromFolder(path, "HOST", bytes);
+    if (!built.ok) {
+        errOut = built.error;
+        return false;
+    }
+
+    const auto mounted = storageCoordinator_->mountBlockBytes(
+        *controller, *settings, primaryHdvCard()->getSlot(), std::move(bytes),
+        std::string("[host folder] ") + path, path);
+    if (!mounted.ok) {
+        errOut = mounted.error;
+        return false;
+    }
+
+    pom2::log().info("CLI", "mounted /HOST/ from " + path + " (" +
+        std::to_string(built.filesIncluded) + " files, " +
+        std::to_string(built.totalBlocks) + " blocks)");
+    return true;
+}
