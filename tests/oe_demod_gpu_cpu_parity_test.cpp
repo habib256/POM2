@@ -26,6 +26,12 @@
 #include "Apple2Display.h"
 #include "Memory.h"
 
+// std::max's initializer_list overload lives here. libc++ and GCC's own
+// libstdc++ both drag <algorithm> in transitively, so this compiled on macOS
+// and on the Linux GCC leg for as long as it existed; Ubuntu clang against
+// libstdc++ 14 does not, and said so the first time the coverage job built
+// the tree. Third compiler combination, first sighting.
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
