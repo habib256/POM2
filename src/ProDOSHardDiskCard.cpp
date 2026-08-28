@@ -30,11 +30,20 @@ namespace {
 // SmartPort bug this guards against; the write routine below was ONE byte
 // from repeating it — it ended at $CnBF with STATUS starting at $CnC0.
 constexpr uint8_t  kBootOff    = 0x20;
+/// Shared error tail, in the free bytes between the boot routine (which ends
+/// at $Cn44) and the ProDOS driver at $Cn50. Both transfer routines BRANCH
+/// here rather than carrying their own `LDA #err / SEC / RTS`, which is what
+/// buys the room for WRITE to pre-flight the bay at all — see the layout note
+/// in buildRom().
+constexpr uint8_t  kErrNoDev   = 0x45;   // → A = $28, SEC, RTS
+constexpr uint8_t  kErrWProt   = 0x49;   // → A = $2B, SEC, RTS
 constexpr uint8_t  kDriverOff  = 0x50;
-constexpr uint8_t  kReadOff    = 0x66;   // dispatch's BEQ +16 lands here
-constexpr uint8_t  kWriteOff   = 0x91;   // dispatch's BEQ +55 lands here
+constexpr uint8_t  kReadOff    = 0x66;   // dispatch's BEQ lands here
+constexpr uint8_t  kWriteOff   = 0x8D;   // dispatch's BEQ lands here
 constexpr uint8_t  kStatusOff  = 0xC0;   // dispatch's JMP $CnC0
 constexpr uint8_t  kHaltOff    = 0xE0;   // boot-failure halt loop
+
+using pom2::slotRomRel;
 
 // Block-level I/O trace, gated by POM2_TRACE_HDV=1 (mirrors the env-var
 // diagnostics in DiskIICard.cpp / Memory.cpp). One line per 512-byte block
@@ -248,41 +257,67 @@ void ProDOSHardDiskCard::buildRom()
     rom[kHaltOff + 1] = kHaltOff;
     rom[kHaltOff + 2] = kSlotRomHi;
 
+    // ── Shared error tail ($Cn45) ──────────────────────────────────────
+    // Two entry points into one exit. Both transfer routines branch here
+    // instead of each carrying `LDA #err / SEC / RTS`, and that is not
+    // tidiness: it is the eight bytes that let WRITE ask "is there a disk
+    // here?" at all. The routine had ZERO slack before — it ended at $CnBF
+    // with STATUS at $CnC0 — so the pre-flight had to be paid for by
+    // removing bytes, not by finding room.
+    //
+    // Lives in the gap the boot routine leaves ($Cn45-$Cn4F). Unlike
+    // SmartPortCard, whose identical first attempt had to be undone, this
+    // ROM has no authentic dump overlaid on it, so the gap really is free.
+    b.region(kErrNoDev, kDriverOff).emit({
+        0xA9, 0x28,                             // LDA #$28  no device
+        0xD0, slotRomRel(kErrNoDev + 2, kErrWProt + 2),  // BNE (always: A≠0)
+        0xA9, 0x2B,                             // LDA #$2B  write protected
+        0x38,                                   // SEC
+        0x60                                    // RTS
+    }).expectEnd(kErrWProt + 4);
+
     // Driver dispatch table (22 bytes), commands:
     //   $00 status → JMP $CnC0 (returns block count in X/Y — see below)
     //   $01 read   → branches to read block (43 bytes)
     //   $02 write  → branches to write block (47 bytes)
     //   any other  → A=$01 (bad command), SEC, RTS
-    // Read block first probes $C0D3 bit-7: if set (no image mounted),
-    // return $28 (NO DEVICE CONNECTED) with carry set instead of CLC
-    // "success" over a $FF stream — real ProDOS drivers never report a
-    // successful read from absent media.
-    // Write block first probes $C0D3 bit-6: if set (image is WP), return
-    // $2B (write-protected) without touching memory.
+    // Both transfer routines PRE-FLIGHT the bay before touching anything,
+    // through a single `BIT $C0n3`: the status byte puts "no media" at bit 7
+    // and "write protected" at bit 6 precisely so N and V answer both
+    // questions in three bytes. Media is asked about FIRST. An empty bay is
+    // $28 "no device connected" — not $27 "I/O error" and not $2B "write
+    // protected", which is what WRITE used to say because it tested the WP
+    // bit and never tested media at all.
     //
     // Layout, as offsets from $Cn00 (the constants at the top of the file):
-    //   $Cn20..$Cn44  boot                (37 B, budget 48)
-    //   $Cn50..$Cn65  dispatch            (22 B, exact — the BEQ offsets
-    //                                      below hard-code where read and
-    //                                      write start, so both ends are
-    //                                      pinned with expectEnd)
-    //   $Cn66..$Cn90  read block          (43 B, exact)
-    //   $Cn91..$CnBF  write block         (47 B, budget 47 — ZERO slack: it
-    //                                      ends one byte below STATUS, which
-    //                                      is how SmartPortCard's write
-    //                                      routine came to eat its own STATUS)
+    //   $Cn20..$Cn44  boot                (37 B, budget 37)
+    //   $Cn45..$Cn4C  shared error tail   ( 8 B, budget 11)
+    //   $Cn50..$Cn65  dispatch            (22 B, exact — its three branch
+    //                                      displacements come from the
+    //                                      layout constants, and both ends
+    //                                      are pinned with expectEnd)
+    //   $Cn66..$Cn8C  read block          (39 B, exact)
+    //   $Cn8D..$CnB7  write block         (43 B, budget 51)
     //   $CnC0..$CnC9  STATUS              (10 B, budget 32)
     //   $CnE0..$CnE2  boot-failure halt
+    //
+    // Before the shared tail, write ran $Cn91-$CnBF against a STATUS routine
+    // starting at $CnC0: zero slack, one byte from the failure SlotRom.h
+    // exists to describe. Branching to one exit instead of carrying two
+    // inline ones is what paid for the pre-flight AND left eight bytes of
+    // margin behind.
     b.region(kDriverOff, kReadOff).emit({
         0xA5, 0x42,       // LDA $42         ; command
         0xC9, 0x01,       // CMP #$01
-        0xF0, 0x10,       // BEQ read    (+16 → $C566)
+        0xF0, slotRomRel(kDriverOff + 0x04, kReadOff),   // BEQ read
         0xC9, 0x02,       // CMP #$02
-        0xF0, 0x37,       // BEQ write   (+55 → $C591: read grew 9 B for
-                          //              the no-media probe — pinned by
-                          //              tests/hdv_status_driver_test.cpp)
+        // These three displacements used to be hand-computed literals, and
+        // the comment on the middle one recorded a previous re-count ("read
+        // grew 9 B"). They come from the layout constants now, so moving a
+        // routine cannot leave the dispatch pointing at where it used to be.
+        0xF0, slotRomRel(kDriverOff + 0x08, kWriteOff),  // BEQ write
         0xC9, 0x00,       // CMP #$00
-        0xF0, 0x04,       // BEQ status  (+4  → $C562)
+        0xF0, slotRomRel(kDriverOff + 0x0C, kDriverOff + 0x12),  // BEQ status
         0xA9, 0x01,       // LDA #$01    ; bad-command error
         0x38,             // SEC
         0x60,             // RTS
@@ -313,11 +348,8 @@ void ProDOSHardDiskCard::buildRom()
     const uint8_t dataReg = static_cast<uint8_t>(kDeviceBase + 0x02);
     const uint8_t statReg = static_cast<uint8_t>(kDeviceBase + 0x03);
     b.region(kReadOff, kWriteOff).emit({
-        0xAD, statReg, 0xC0, // read: LDA $C0D3 ; status
-        0x10, 0x04,       // BPL ok          ; bit-7 set = no image
-        0xA9, 0x28,       // LDA #$28        ; NO DEVICE CONNECTED
-        0x38,             // SEC
-        0x60,             // RTS
+        0x2C, statReg, 0xC0, // read: BIT $C0n3  ; N = no media, V = WP
+        0x30, slotRomRel(kReadOff + 3, kErrNoDev),  // BMI → $28
         0xA5, 0x46,       // ok: LDA $46     ; block low
         0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
         0xA5, 0x47,       // LDA $47         ; block high
@@ -338,12 +370,14 @@ void ProDOSHardDiskCard::buildRom()
     }).expectEnd(kWriteOff);
 
     b.region(kWriteOff, kStatusOff).emit({
-        0xAD, statReg, 0xC0, // write: LDA $C0D3   ; status
-        0x29, 0x40,          // AND #$40           ; WP bit
-        0xF0, 0x04,          // BEQ ok
-        0xA9, 0x2B,          // LDA #$2B           ; write-protected
-        0x38,                // SEC
-        0x60,                // RTS
+        // One BIT answers both questions, and asks them in the right order.
+        // The old head tested the write-protect bit FIRST and never tested
+        // media at all, so an empty bay came back $2B "write protected" —
+        // which is not true of a bay with nothing in it. Media first, then
+        // WP, exactly as SmartPortCard does since 2026-08-27.
+        0x2C, statReg, 0xC0, // write: BIT $C0n3   ; N = no media, V = WP
+        0x30, slotRomRel(kWriteOff + 3, kErrNoDev),  // BMI → $28
+        0x70, slotRomRel(kWriteOff + 5, kErrWProt),  // BVS → $2B
         0xA5, 0x46,          // ok: LDA $46
         0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
         0xA5, 0x47,          // LDA $47

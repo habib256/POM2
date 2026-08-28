@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -80,6 +81,31 @@ void callDriver(M6502& cpu, Memory& mem, uint8_t cmd, uint16_t block,
 }
 
 bool carrySet(const M6502& cpu) { return (cpu.getStatusRegister() & 0x01) != 0; }
+
+// A 5-block ProDOS-order .2mg with the "locked" flag set. Write protection
+// only reaches Block512Backing through a real file — either a 2IMG header or
+// a chmod-read-only image — and the 2IMG route is the portable one.
+std::string writeLocked2mg(const char* name)
+{
+    const std::string path =
+        (std::filesystem::temp_directory_path() / name).string();
+    std::vector<uint8_t> img(64 + 5 * kBlk, 0x00);
+    img[0] = '2'; img[1] = 'I'; img[2] = 'M'; img[3] = 'G';
+    auto wr32 = [&](size_t o, uint32_t v) {
+        img[o + 0] = static_cast<uint8_t>(v);
+        img[o + 1] = static_cast<uint8_t>(v >> 8);
+        img[o + 2] = static_cast<uint8_t>(v >> 16);
+        img[o + 3] = static_cast<uint8_t>(v >> 24);
+    };
+    wr32(12, 1);                       // format 1 = ProDOS block order
+    wr32(16, 0x80000000u);             // flags bit 31 = locked
+    wr32(24, 64);                      // data offset
+    wr32(28, static_cast<uint32_t>(5 * kBlk));
+    std::ofstream f(path, std::ios::binary);
+    f.write(reinterpret_cast<const char*>(img.data()),
+            static_cast<std::streamsize>(img.size()));
+    return path;
+}
 
 }  // namespace
 
@@ -225,6 +251,56 @@ int main()
                     "($0800 = %02X)\n", mem.memRead(0x0800));
         return 1;
     }
+    // ── 4. WRITE with no media → carry set, A = $28 (not $2B) ──────────
+    // WRITE used to test the write-protect bit and never test media at all,
+    // so an empty bay answered $2B "write protected" — which is not true of a
+    // bay with nothing in it, and is a code a ProDOS caller may reasonably
+    // act on by telling the user to unlock the disk. $28 "no device
+    // connected" is the honest answer, and it is the one READ already gave.
+    //
+    // Fixing it meant the write routine had to get SHORTER: it ran
+    // $Cn91-$CnBF against a STATUS routine at $CnC0, so there was no room to
+    // add a probe. One `BIT $C0n3` now answers both questions and both
+    // routines branch to a shared error tail in the gap after boot.
+    mem.memWrite(0x0900, 0x5A);
+    callDriver(cpu, mem, /*cmd=*/0x02, /*block=*/0, /*buffer=*/0x0900);
+    if (!carrySet(cpu) || cpu.getAccumulator() != 0x28) {
+        std::printf("FAIL: no-media WRITE returned A=%02X C=%d, want "
+                    "A=28 C=1 (was $2B \"write protected\" — it tested the "
+                    "WP bit before asking whether media was there)\n",
+                    cpu.getAccumulator(), carrySet(cpu) ? 1 : 0);
+        return 1;
+    }
+
+    // ── 5. Write-protect still reports $2B, and only when media IS there ──
+    // The empty-bay fix works by testing media FIRST. This is the half that
+    // says it did not simply stop reporting write-protect at all — the same
+    // pair smartport_rom_layout checks, for the same reason.
+    {
+        const std::string locked = writeLocked2mg("pom2_hdv_locked.2mg");
+        assert(raw->loadImage(locked));
+        assert(raw->isImageLoaded());
+        mem.memWrite(0x0900, 0x5A);
+        callDriver(cpu, mem, /*cmd=*/0x02, /*block=*/0, /*buffer=*/0x0900);
+        if (!carrySet(cpu) || cpu.getAccumulator() != 0x2B) {
+            std::printf("FAIL: write-protected WRITE returned A=%02X C=%d, "
+                        "want A=2B C=1 (media-first must not stop the card "
+                        "reporting write-protect)\n",
+                        cpu.getAccumulator(), carrySet(cpu) ? 1 : 0);
+            return 1;
+        }
+        // READ from a locked-but-present volume is perfectly legal.
+        callDriver(cpu, mem, /*cmd=*/0x01, /*block=*/0, /*buffer=*/0x0800);
+        if (carrySet(cpu)) {
+            std::printf("FAIL: READ from a write-protected volume returned "
+                        "carry set (A=%02X)\n", cpu.getAccumulator());
+            return 1;
+        }
+        raw->ejectImage();
+        std::error_code ec;
+        std::filesystem::remove(locked, ec);
+    }
+
     // STATUS on the empty bay reports 0 blocks (and the count registers
     // read 0, not $FF garbage).
     callDriver(cpu, mem, /*cmd=*/0x00, /*block=*/0, /*buffer=*/0x0800);
@@ -234,6 +310,7 @@ int main()
         return 1;
     }
 
-    std::printf("OK hdv_status_driver (STATUS X/Y + clamp + no-media $28)\n");
+    std::printf("OK hdv_status_driver (STATUS X/Y + clamp + read/write "
+                "round trip + no-media $28 on both)\n");
     return 0;
 }

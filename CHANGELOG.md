@@ -106,11 +106,38 @@ neighbouring block is undisturbed.
 only assert the flag is **clear** — which a guard hard-wired to `return false`
 would also satisfy. Something has to assert it can be set.
 
-Still open, and recorded in `TODO.md`: an empty HDV bay answers `$2B` "write
-protected" instead of `$28` "no device connected". It was not fixed here
-precisely *because* the write routine has zero slack — the fix has to move
-bytes rather than add them, which is a different change from putting a fence
-around the current ones.
+### And then the HDV write routine, which had no room to be fixed in
+
+The other half of the same finding: an empty HDV bay answered `$2B` "write
+protected". WRITE tested the write-protect bit and never asked whether media
+was there at all — a code a ProDOS caller may reasonably act on by telling the
+user to unlock a disk that is not in the machine. READ already answered `$28`
+"no device connected"; only WRITE did not.
+
+It could not simply be fixed, which is the point. The routine ran
+`$Cn91-$CnBF` against a STATUS routine starting at `$CnC0`: **zero bytes
+free**, so adding a probe would have repeated the SmartPort bug exactly. The
+fix had to make the routine *shorter*:
+
+* one `BIT $C0n3` answers both questions — the status byte puts "no media" at
+  bit 7 and "write protected" at bit 6 precisely so `N` and `V` come back
+  loaded, the same trick `SmartPortCard` uses;
+* both transfer routines **branch to a shared error tail** in the gap the boot
+  routine leaves at `$Cn45-$Cn4C`, instead of each carrying its own
+  `LDA #err / SEC / RTS`. Unlike SmartPort — whose identical first attempt had
+  to be undone — this ROM has no authentic dump overlaid on it, so the page
+  gap really is free.
+
+Read drops 43 → 39 bytes, write 47 → 43, and the write routine now has eight
+bytes of margin instead of none. The dispatch's three branch displacements were
+hand-computed literals (one carried a comment recording a previous re-count);
+they come from the layout constants now, so moving a routine cannot leave the
+dispatch pointing where it used to be.
+
+Both halves are pinned, and mutation-checked separately: dropping the media
+probe fails the empty-bay case, dropping the write-protect probe fails the
+locked-volume case. Testing media first must not quietly stop the card
+reporting write-protect at all — the same pair `smartport_rom_layout` checks.
 
 217/217 ctest, layer guard clean, ratchet clean, clean-checkout configure
 verified in an empty build tree.

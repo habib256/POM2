@@ -337,7 +337,11 @@ void W5100Device::openSystemSocket(size_t i, W5100SocketKind kind,
                                    uint8_t status)
 {
 #if !POM2_HAS_SOCKETS
-    (void)type; (void)protocol; (void)status;
+    // `type`/`protocol` until the socket-factory seam renamed them to `kind`.
+    // Only the WASM leg compiles this branch, and the WASM leg could not get
+    // this far — MainWindow.cpp died on a missing Version.h first — so the
+    // rename left a reference to two parameters that no longer exist.
+    (void)kind; (void)status;
     clearSocket(i);
     log().warn("W5100", "TCP/UDP sockets are unavailable in the WASM build");
 #else
