@@ -54,15 +54,21 @@ namespace pom2 {
 class PanelRegistry {
 public:
     /// What a panel can do that only the running machine knows.
+    /// Every member carries a default initialiser, including the three
+    /// std::functions that obviously default to empty. That is not
+    /// decoration: callers brace-initialise only the fields they mean
+    /// (`RT{ title }`, `RT{ title, available }`), and without the defaults
+    /// each of those is a -Wmissing-field-initializers warning — nine of
+    /// them, drowning out the real ones on the way to -Werror.
     struct Runtime {
         /// Runtime label, when the static title is not the whole story (a slot
         /// number, "no card plugged"). Empty → the catalog's title.
-        std::function<std::string()> dynamicTitle;
+        std::function<std::string()> dynamicTitle = {};
         /// False greys the menu row and disables the palette entry. Empty →
         /// always available.
-        std::function<bool()> available;
+        std::function<bool()> available = {};
         /// Draws the panel. Called only while it is visible.
-        std::function<void()> draw;
+        std::function<void()> draw = {};
         /// Called every frame, open or closed. For the one panel that has to
         /// see its own CLOSE: the //e keyboard latches Open-Apple / Solid-Apple,
         /// and a latch that outlives the window showing it as down is a key the

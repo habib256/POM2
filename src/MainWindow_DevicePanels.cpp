@@ -209,6 +209,12 @@ void MainWindow::renderSscPanelWindow()
             ImGui::TextWrapped("%s", ssc.recentRxText.c_str());
         }
         ImGui::PopID();
+        // Falling off the end of a value-returning lambda is UB. It has been
+        // doing so since this panel got its snapshot/command boundary, and it
+        // worked only because NRVO happened to build `cmd` in the caller's
+        // return slot — the panel's start/stop, port, raw-mode and printer-tap
+        // commands all rode on that. -Werror is what turned it up.
+        return cmd;
     };
 
     // One acquisition for every tab's data, taken before any of them render.

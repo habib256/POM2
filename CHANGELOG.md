@@ -5,6 +5,71 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — Zero warnings, and a leg that keeps it that way
+
+TODO P2-3, plus the gaps in P2-2. Two of the fourteen warnings cleared were
+not style.
+
+**A value-returning lambda that fell off its end.** The Super Serial panel's
+`renderOne` returns a `SerialCommand` — the panel's start/stop, port, raw-mode
+and printer-tap actions — and never returned it. Falling off the end of a
+value-returning function is undefined behaviour; this worked because NRVO
+happened to construct `cmd` in the caller's return slot, so the object the
+caller read was the one the lambda had been filling. It has been that way
+since the panel got its snapshot/command boundary. Nothing detected it,
+because there was nothing to detect it *with*.
+
+**A constructor initialiser list in a different order from its declarations.**
+Members are constructed in declaration order whatever the list says, and a
+list that disagrees is how an initialiser comes to read a member that has not
+been built yet. The panel `unique_ptr`s were written after the coordinators
+and constructed before them.
+
+The rest were noise, and the noise is why the two above went unread: nine
+`-Wmissing-field-initializers` from `RT{ title }`-style aggregate init, an
+unused lambda, an unused `this` capture, and a shadowed local. The nine are
+fixed at the source — `PanelRegistry::Runtime`'s three `std::function` members
+now carry `= {}` like its two bools, so the idiom the call sites use is not a
+warning any more.
+
+`-DPOM2_WERROR=ON` promotes warnings to errors and is **on for the macOS CI
+job**. That leg rather than Linux because the local development compiler is
+the same AppleClang family, so a contributor sees the failure before pushing
+rather than after. Extending it to GCC is real work — GCC's warning set is not
+clang's — and is recorded as its own item rather than turned on blind.
+
+### The `N:` device's error bytes are a contract
+
+`FujiNetNetDevice` was in the plan as "the only untested network input
+parsing". It was not untested — `fujinet_net_device_test.cpp` already covered
+the happy path, the header split, the STATUS cap, a stalled server and a
+blackholed host. That is the second plan item whose premise was wrong the same
+way (`TnfsClient` was the first), and it is the argument for P2-1: a coverage
+number would have said which lines were uncovered instead of guessing at whole
+files.
+
+What was actually missing, now added and mutation-checked:
+
+* a reply **over the 512 KB cap** — refused outright, not truncated, for the
+  same reason as a stalled server: half a document the guest cannot tell from
+  a whole one is the failure nobody can diagnose from the Apple II side;
+* a reply with **no CRLFCRLF** — passed through whole, pinned so it is not
+  rediscovered as a bug. The split looks for what HTTP specifies and what the
+  FujiNet firmware's own `N:` looks for; guessing at a boundary would silently
+  eat part of a document;
+* the **port-number and empty-host refusals**, which are the parser cases a
+  string compare does not cover;
+* a **refused connection** told apart from a **name that will not resolve**.
+  The two error bytes are a contract with the guest: FILE NOT FOUND is how the
+  firmware's table spells "no such host", and a guest that cannot tell a typo'd
+  hostname from a dead server has nothing to show the user;
+* `close()` putting a fetched body out of reach — `available()` and `read()`
+  are public and do not consult `open_`, so that is the only thing between a
+  closed device and a stale page.
+
+217/217 ctest, zero warnings, `-Werror` build verified clean and
+mutation-checked (an unused variable fails it).
+
 ## 2026-08-28 — MainWindow.cpp: 8316 lines to 1680
 
 TODO P1-3 / P1-4, and the other half of the architecture assessment's finding.

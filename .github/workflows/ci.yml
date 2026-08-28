@@ -158,12 +158,24 @@ jobs:
       - name: Install build dependencies
         run: brew install glfw
 
+      # -DPOM2_WERROR=ON: this is the leg that holds first-party sources to
+      # ZERO warnings. It is on here rather than on Linux because the local
+      # development compiler is the same AppleClang family, so a contributor
+      # sees the failure before pushing rather than after. Extending it to the
+      # GCC leg is worth doing and is a separate job — GCC's warning set is
+      # not clang's, and nobody has cleaned it yet (TODO P2-3).
+      #
+      # The flag earned itself immediately: of the fourteen warnings cleared
+      # on 2026-08-28, one was a value-returning lambda in the Super Serial
+      # panel that fell off its end. UB, working only because NRVO put the
+      # object where the caller was going to read it anyway.
       - name: Configure + build
         run: |
           set -euo pipefail
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPOM2_ENABLE_TESTS=ON
+            -DPOM2_ENABLE_TESTS=ON \
+            -DPOM2_WERROR=ON
           cmake --build build --parallel 3
 
       # This step earned its place the first time it ran: 191/192, with

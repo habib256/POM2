@@ -36,6 +36,7 @@
 //     from it.
 
 #include "FujiNetNetDevice.h"
+#include "FujiNetNetwork.h"   // the kNetErr* bytes are contract, not detail
 
 #include <atomic>
 #include <chrono>
@@ -69,6 +70,10 @@ struct HttpStub {
     /// and say nothing more — a server that stalls mid-page, which is the
     /// case a per-recv timeout cannot bound.
     bool         stall = false;
+    /// Send `body` VERBATIM, with no canned status line or headers. For the
+    /// cases that are about what the device does with bytes it did not
+    /// expect: a reply with no CRLFCRLF, and one over the size cap.
+    bool         raw = false;
     int          listenFd = -1;
     uint16_t     port     = 0;
     std::thread  th;
@@ -97,12 +102,21 @@ struct HttpStub {
             char buf[2048];
             const ssize_t r = ::recv(c, buf, sizeof buf - 1, 0);
             if (r > 0) { buf[r] = '\0'; seenRequest = buf; }
-            std::string resp =
-                "HTTP/1.0 200 OK\r\n"
-                "Content-Type: text/html\r\n"
-                "Server: stub\r\n\r\n";
+            std::string resp;
+            if (!raw) {
+                resp = "HTTP/1.0 200 OK\r\n"
+                       "Content-Type: text/html\r\n"
+                       "Server: stub\r\n\r\n";
+            }
             resp += stall ? body.substr(0, body.size() / 2) : body;
-            ::send(c, resp.data(), resp.size(), 0);
+            // Written in slices: a 600 KB reply will not fit one send() on
+            // any platform, and a short write would silently shorten the
+            // very case that is about length.
+            for (std::size_t off = 0; off < resp.size(); ) {
+                const ssize_t w = ::send(c, resp.data() + off, resp.size() - off, 0);
+                if (w <= 0) break;
+                off += static_cast<std::size_t>(w);
+            }
             if (stall) {
                 // Outlive the device's deadline without ever sending EOF.
                 while (!stopping.load()) {
@@ -247,6 +261,119 @@ int main()
         // instantly and passes too. What must never happen is the OS default.
         check(ms < 30000, "a blackholed host is bounded by the deadline, not by the OS");
         if (ms >= 30000) std::printf("      (took %lld ms)\n", (long long)ms);
+    }
+
+    // ── Specs that must be refused for their NUMBERS, not their scheme ────
+    // The scheme cases above are refused by a string compare. These are the
+    // ones the port parser has to get right, and a wrong answer here is a
+    // socket opened against something the guest did not ask for.
+    {
+        pom2::FujiNetNetDevice net;
+        check(!net.open("N:HTTP://host:0/"),      "refuses port 0");
+        check(!net.open("N:HTTP://host:99999/"),  "refuses a port above 65535");
+        check(!net.open("N:HTTP:///path"),        "refuses a spec with no host");
+        check(net.lastError() == pom2::kNetErrGeneral,
+              "a spec it cannot parse reports GENERAL");
+        check(net.available() == 0, "and leaves nothing readable");
+    }
+
+    // ── A reply with no header terminator is passed through whole ─────────
+    //
+    // Deliberate, and pinned so it is not rediscovered as a bug. The split
+    // looks for CRLFCRLF — what HTTP specifies and what the FujiNet
+    // firmware's own N: looks for. A server that separates with bare LF
+    // therefore hands the guest its headers too, which is preferable to
+    // guessing at a boundary and silently eating part of a document.
+    {
+        HttpStub stub;
+        stub.raw  = true;
+        stub.body = "HTTP/1.0 200 OK\nContent-Type: text/plain\n\nhello";
+        if (!stub.start()) { std::printf("FAIL: stub bind\n"); return 2; }
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(4000);
+        check(net.open("N:HTTP://127.0.0.1:" + std::to_string(stub.port) + "/"),
+              "an LF-only reply still opens");
+        std::vector<uint8_t> got(net.available());
+        if (!got.empty()) net.read(got.data(), got.size());
+        check(std::string(got.begin(), got.end()) == stub.body,
+              "with no CRLFCRLF the whole reply becomes the body");
+        stub.stop();
+    }
+
+    // ── A reply over the size cap is refused, not truncated ───────────────
+    //
+    // The guest has 128 KB of RAM and STATUS announces 512 bytes at a time,
+    // so a runaway response must not grow POM2's heap without bound. Refused
+    // for the same reason as the stalled server: half a document the guest
+    // cannot tell from a whole one is the failure nobody can diagnose from
+    // the Apple II side.
+    {
+        HttpStub stub;
+        stub.raw  = true;
+        stub.body = "HTTP/1.0 200 OK\r\n\r\n" + std::string(600u * 1024u, 'x');
+        if (!stub.start()) { std::printf("FAIL: stub bind\n"); return 2; }
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(10000);
+        check(!net.open("N:HTTP://127.0.0.1:" + std::to_string(stub.port) + "/"),
+              "a reply over the 512 KB cap fails the open");
+        check(net.lastError() == pom2::kNetErrGeneral, "and reports GENERAL");
+        check(net.available() == 0, "and leaves no partial body reachable");
+        stub.stop();
+    }
+
+    // ── Nothing listening: refused, and told apart from "no such host" ────
+    //
+    // The two error bytes are a contract with the guest, not an
+    // implementation detail: FILE NOT FOUND is how the firmware's table
+    // spells "no such host", and a guest that cannot tell a typo'd hostname
+    // from a dead server has nothing to show the user.
+    {
+        HttpStub probe;              // bind, learn the port, then let it go
+        if (!probe.start()) { std::printf("FAIL: stub bind\n"); return 2; }
+        const uint16_t deadPort = probe.port;
+        probe.stop();
+
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(2000);
+        check(!net.open("N:HTTP://127.0.0.1:" + std::to_string(deadPort) + "/"),
+              "a refused connection fails the open");
+        check(net.lastError() == pom2::kNetErrGeneral,
+              "a reachable host with nothing listening is GENERAL");
+    }
+    {
+        // RFC 2606 reserves `.invalid` so it can never resolve.
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(2000);
+        const auto t0 = std::chrono::steady_clock::now();
+        check(!net.open("N:HTTP://pom2-no-such-host.invalid/x"),
+              "an unresolvable name fails the open");
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - t0).count();
+        check(net.lastError() == pom2::kNetErrFileNotFound,
+              "a name that will not resolve is FILE NOT FOUND, not GENERAL");
+        check(ms < 8000, "and the lookup is bounded, not the resolver's business");
+        if (ms >= 8000) std::printf("      (took %lld ms)\n", (long long)ms);
+    }
+
+    // ── close() puts a fetched body out of reach ──────────────────────────
+    // available() and read() are public and do not consult open_, so this is
+    // the only thing standing between a closed device and a stale page.
+    {
+        HttpStub stub;
+        stub.body = "abcdef";
+        if (!stub.start()) { std::printf("FAIL: stub bind\n"); return 2; }
+        pom2::FujiNetNetDevice net;
+        net.setFetchDeadlineMs(4000);
+        check(net.open("N:HTTP://127.0.0.1:" + std::to_string(stub.port) + "/"),
+              "fetch for the close() case");
+        check(net.available() == stub.body.size(), "body is there before close");
+        net.close();
+        check(!net.isOpen(),        "close() clears open");
+        check(net.available() == 0, "close() drops the body");
+        uint8_t st[4];
+        net.status(st);
+        check(st[2] == 0, "and STATUS stops claiming a connection");
+        stub.stop();
     }
 
     if (failures) { std::printf("fujinet_net_device: %d failure(s)\n", failures); return 2; }

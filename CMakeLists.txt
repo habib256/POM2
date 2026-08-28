@@ -731,10 +731,26 @@ set(HEADERS
 # we resync `imgui/`. Applied per source-file rather than per target so
 # the same flags propagate naturally to pom2_headless (which compiles a
 # subset of ${SOURCES}) without listing them twice.
+#
+# POM2_WERROR promotes them to errors. OFF by default so a contributor on a
+# compiler version we have not seen is not blocked by a warning we cannot
+# reproduce; ON for one CI leg, which is what makes "zero warnings" a state
+# the repo can be held to rather than a number in a TODO. The count went 14 →
+# 0 on 2026-08-28, and one of the fourteen was a value-returning lambda that
+# fell off its end (UB, working only by NRVO) in the Super Serial panel — the
+# case for the flag, in one line.
+option(POM2_WERROR "Treat warnings in first-party sources as errors" OFF)
+
 if(MSVC)
     set(POM2_WARN_FLAGS "/W4")
+    if(POM2_WERROR)
+        string(APPEND POM2_WARN_FLAGS " /WX")
+    endif()
 else()
     set(POM2_WARN_FLAGS "-Wall -Wextra -Wshadow")
+    if(POM2_WERROR)
+        string(APPEND POM2_WARN_FLAGS " -Werror")
+    endif()
 endif()
 foreach(_pom2_src ${SOURCES})
     set_source_files_properties(${_pom2_src} PROPERTIES
