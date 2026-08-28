@@ -307,7 +307,7 @@ private:
     std::array<uint8_t, 256> rom_{};
     /// Set by buildRom() when a hand-assembled region overran its budget or
     /// stopped ending where the layout's hard-coded branch offsets assume.
-    /// Read by `fujinet_rom_layout`; see SlotRom.h for why it exists.
+    /// Read by `fujinet_card_smoke`; see SlotRomAsm.h for why it exists.
     bool                     romLayoutError_ = false;
     /// The owned command surface, and the host lifecycle surface that
     /// normally aliases it. `transport_` is non-owning by design: it points

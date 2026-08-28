@@ -5,6 +5,79 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — Slot ROMs stop counting bytes
+
+The cure the fence was standing in for. TODO P1-1 / P1-2.
+
+Six cards have no ROM dump and synthesise their `$Cn00` page. Until now all six
+wrote it as a byte list with every **address in it computed by hand**:
+
+```cpp
+0xF0, 0x37,              // BEQ write   (+55 -> $Cn91)
+0x4C, 0xC0, kSlotRomHi,  // JMP $CnC0
+rom[0xFF] = 0x50;        // ProDOS driver entry offset
+```
+
+Three ways to be wrong, and all three had fired. A region outgrew its budget
+and overwrote its neighbour — SmartPortCard's write routine ate its own ProDOS
+STATUS, which then answered `$27` on a healthy bay for weeks. A region *shrank*
+and left a displacement pointing past the routine it named, changing no byte a
+hexdump comparison would flag. Or a displacement was simply mistyped: `BEQ +55`
+carried a comment recording that somebody had already re-counted it once.
+
+`SlotRomAsm.h` removes the cause instead of guarding the symptom. **An address
+is never typed. It is a label, and the assembler computes the byte.**
+
+| you write | it emits | it replaces |
+|---|---|---|
+| `branch(0xF0, "read")` | opcode + displacement | `0xF0, 0x37` |
+| `jmp("status")` | opcode + lo + `$Cn` | `0x4C, kStatusOff, kSlotRomHi` |
+| `byteOf("driver")` | the label's page offset | `rom[0xFF] = kDriverOff;` |
+| `region("write", 0xA2, 0xE0)` | nothing — a bounded span, and a label at its start | a comment claiming where the routine lives |
+
+`finish()` fails on a region over budget, a branch outside the ±128 window, an
+undefined or duplicated label, a poke outside the open region — and on **two
+regions claiming the same bytes**, which is the SmartPort bug in its purest
+form and which the bounded builder could not see at all: it checked each region
+against its own limit and never against the others. The message names the
+region and its span (`region 'read' ($06F..$0A0) ran out of room`), because a
+layout error that says only "false" sends the reader back to counting bytes.
+
+**Every one of the six was verified byte-identical** to what it produced
+before — all three slots, dumped and diffed at each step — so the rewrite
+changes what the code *says*, not what the machine runs. Two things fell out
+along the way that the diff proved were already right and are now derived
+rather than repeated: the HDV's `$Cn01 = $20` ProDOS signature byte, which is
+the low byte of its own `JMP boot`, and the SSC's four Pascal entry bytes at
+`$Cn0D-$Cn10`, which are the addresses of four routines defined further down
+the same function.
+
+**`POM2_DUMP_SLOT_ROM=1`** makes every card print its page as it is built —
+one file per build, diffable against the last:
+
+```
+write  $08D..$0C0  43 of 51 bytes
+```
+
+The occupancy column is the point: that is how you see a routine approaching
+its budget *before* it crosses. It used to read `47 of 47`.
+
+Two corrections to the plan, recorded because they are the kind of thing that
+gets re-proposed. It is **not** `constexpr`: a slot page is parameterised by
+the slot it is plugged into — every absolute reference carries `$Cn` — and the
+slot comes from settings at runtime, so there is no constant to fold. And there
+were **six** hand-written ROMs, not seven: `ClockCard` writes nine fixed bytes
+with no cursor, and `DiskIICard`'s boot PROM is a verbatim dump.
+
+`SlotRom.h` and its test are deleted with the last conversion. `slot_rom_asm`
+replaces them and tests the assembler itself, because a card test can only
+assert its flag is clear — which a `finish()` of `return true` would also
+satisfy. Mutation-checked on real cards: shrinking SmartPort's read region
+names it in the log and fails `smartport_rom_layout`; misspelling a label in
+FujiNetCard fails `fujinet_card_smoke`.
+
+217/217 ctest.
+
 ## 2026-08-28 — Three guards that reported success while doing nothing
 
 The P0 pass of the 2026-08-28 architecture plan. Its four items were "bound the

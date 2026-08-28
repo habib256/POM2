@@ -25,7 +25,7 @@
 #include "Logger.h"
 #include "M6502.h"
 #include "Memory.h"
-#include "SlotRom.h"
+#include "SlotRomAsm.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -62,12 +62,6 @@ constexpr uint16_t kZpBufLo   = 0x44;
 constexpr uint16_t kZpBlkLo   = 0x46;
 
 constexpr std::size_t kBlockBytes = 512;
-
-/// Relative branch displacement, from the shared slot-ROM helper.
-constexpr uint8_t rel(unsigned at, unsigned target)
-{
-    return slotRomRel(at, target);
-}
 
 } // namespace
 
@@ -122,13 +116,6 @@ void FujiNetCard::buildRom()
     const uint8_t trapLo  = static_cast<uint8_t>(0x80 + slot_ * 16 + 2);
 
     // ── 256-byte layout ──────────────────────────────────────────────────
-    // Hand-assembled, so every region declares where it ends and the builder
-    // refuses to write past it — see SlotRom.h for the SmartPort bug that
-    // motivated the bound. `expectEnd` pins the regions whose length is
-    // hard-coded somewhere else (the branch displacements below, and the
-    // Apple convention that the SmartPort entry sits three bytes after the
-    // ProDOS one).
-    //
     //   $Cn00-$Cn07  ProDOS/SmartPort signature bytes
     //   $Cn08-$Cn2F  boot
     //   $Cn30-$Cn41  boot failure — rejoin the autostart slot scan
@@ -136,44 +123,44 @@ void FujiNetCard::buildRom()
     //   $Cn60-$CnEF  the driver (ProDOS entry, SmartPort entry at +3)
     //   $CnF0-$CnF7  "FN ERROR", stored reversed
     //   $CnFC-$CnFF  ProDOS identification tail
-    pom2::SlotRomBuilder b(rom_);
+    pom2::SlotRomAsm a(rom_, slot_, "FujiNetCard");
 
     // ── Signature ($Cn00-$Cn07) ──────────────────────────────────────────
-    // CPX #$20 / LDX #$00 / CPX #$03 / CPX #$00 — chosen so the bytes at
-    // $Cn01/$Cn03/$Cn05 are the ProDOS block-device signature $20/$00/$03
-    // that POM2's own bootFromSlot validates, and $Cn07 = $00 marks the
-    // SmartPort class. Executing them is harmless (X ends up 0).
-    b.region(0x00, kBootOff).emit({
-        0xE0, 0x20,          // CPX #$20   → $Cn01 = $20
-        0xA2, 0x00,          // LDX #$00   → $Cn03 = $00
-        0xE0, 0x03,          // CPX #$03   → $Cn05 = $03
-        0xE0, 0x00,          // CPX #$00   → $Cn07 = $00 (SmartPort)
-    }).expectEnd(kBootOff);
+    // Real instructions, so a JMP $Cn00 — which is how both the autostart
+    // scan and PR#n enter a card — executes them harmlessly and falls
+    // straight into the boot code. CPX #$20 / LDX #$00 / CPX #$03 / CPX #$00
+    // puts the ProDOS block-device signature $20/$00/$03 at $Cn01/$Cn03/$Cn05
+    // — the one POM2's own bootFromSlot validates — and $Cn07 = $00 marks the
+    // SmartPort class. X ends up 0.
+    a.region("signature", 0x00, kBootOff)
+     .emit({ 0xE0, 0x20,          // CPX #$20   → $Cn01 = $20
+             0xA2, 0x00,          // LDX #$00   → $Cn03 = $00
+             0xE0, 0x03,          // CPX #$03   → $Cn05 = $03
+             0xE0, 0x00 });       // CPX #$00   → $Cn07 = $00 (SmartPort)
 
     // ── Boot ($Cn08) ─────────────────────────────────────────────────────
     // Read block 0 of unit 1 to $0800 through our own ProDOS entry, sanity
     // check it the way a ProDOS boot block is supposed to look, then run it.
-    b.region(kBootOff, kBootErr).emit({
-        0xA2, 0x00,                       // LDX #$00
-        0x86, 0x46,                       // STX $46      block lo
-        0x86, 0x47,                       // STX $47      block hi
-        0x86, 0x44,                       // STX $44      buffer lo
-        0xE8,                             // INX
-        0x86, 0x42,                       // STX $42      command = 1 (read)
-        0xA2, 0x08,                       // LDX #$08
-        0x86, 0x45,                       // STX $45      buffer hi = $08
-        0xA2, unitDrv1,                   // LDX #slot*16 unit, drive 1
-        0x86, 0x43,                       // STX $43
-        0x20, kDriverOff, romHi,          // JSR $Cn60    ProDOS entry
-        0xB0, rel(0x1E, kBootErr),        // BCS bootErr
-        0xAE, 0x00, 0x08,                 // LDX $0800    boot block count
-        0xCA,                             // DEX
-        0xD0, rel(0x24, kBootErr),        // BNE bootErr  must be 1
-        0xAE, 0x01, 0x08,                 // LDX $0801    first opcode
-        0xF0, rel(0x29, kBootErr),        // BEQ bootErr  must not be BRK
-        0xA2, unitDrv1,                   // LDX #slot*16 boot blocks want it
-        0x4C, 0x01, 0x08,                 // JMP $0801
-    }).expectEnd(kBootErr);
+    a.region("boot", kBootOff, kBootErr)
+     .emit({ 0xA2, 0x00,                       // LDX #$00
+             0x86, 0x46,                       // STX $46      block lo
+             0x86, 0x47,                       // STX $47      block hi
+             0x86, 0x44,                       // STX $44      buffer lo
+             0xE8,                             // INX
+             0x86, 0x42,                       // STX $42      command = 1
+             0xA2, 0x08,                       // LDX #$08
+             0x86, 0x45,                       // STX $45      buffer hi = $08
+             0xA2, unitDrv1,                   // LDX #slot*16 unit, drive 1
+             0x86, 0x43 })                     // STX $43
+     .jsr("driver")
+     .branch(0xB0, "bootErr")                  // BCS bootErr
+     .emit({ 0xAE, 0x00, 0x08,                 // LDX $0800    boot block count
+             0xCA })                           // DEX
+     .branch(0xD0, "bootErr")                  // BNE bootErr  must be 1
+     .emit({ 0xAE, 0x01, 0x08 })               // LDX $0801    first opcode
+     .branch(0xF0, "bootErr")                  // BEQ bootErr  must not be BRK
+     .emit({ 0xA2, unitDrv1,                   // LDX #slot*16 boot blocks want it
+             0x4C, 0x01, 0x08 });              // JMP $0801
 
     // ── Boot failure ($Cn30) ─────────────────────────────────────────────
     // No FujiNet, or no bootable volume on unit 1. If we got here from the
@@ -182,32 +169,33 @@ void FujiNetCard::buildRom()
     // whenever the FujiNet is not running. The scan is recognised the way the
     // Monitor leaves it: $00/$01 hold the $Cn00 it jumped to, and MSLOT
     // ($07F8) holds $Cn.
-    b.region(kBootErr, kErrExit).emit({
-        0xA6, 0x00,                       // LDX $00
-        0xD0, rel(0x32, kErrExit),        // BNE errExit  low byte must be 0
-        0xA6, 0x01,                       // LDX $01
-        0xEC, static_cast<uint8_t>(kMslot & 0xFF),
-              static_cast<uint8_t>(kMslot >> 8),          // CPX $07F8 (MSLOT)
-        0xD0, rel(0x39, kErrExit),        // BNE errExit
-        0xE0, romHi,                      // CPX #$Cn     and is it us?
-        0xD0, rel(0x3D, kErrExit),        // BNE errExit
-        0x4C, static_cast<uint8_t>(kMonSloop & 0xFF),
-              static_cast<uint8_t>(kMonSloop >> 8),      // JMP $FABA
-    }).expectEnd(kErrExit);
+    a.region("bootErr", kBootErr, kErrExit)
+     .emit({ 0xA6, 0x00 })                     // LDX $00
+     .branch(0xD0, "errExit")                  // BNE errExit  low byte must be 0
+     .emit({ 0xA6, 0x01,                       // LDX $01
+             0xEC, static_cast<uint8_t>(kMslot & 0xFF),
+                   static_cast<uint8_t>(kMslot >> 8) })    // CPX $07F8 (MSLOT)
+     .branch(0xD0, "errExit")
+     .emit({ 0xE0, romHi })                    // CPX #$Cn     and is it us?
+     .branch(0xD0, "errExit")
+     .emit({ 0x4C, static_cast<uint8_t>(kMonSloop & 0xFF),
+                   static_cast<uint8_t>(kMonSloop >> 8) });  // JMP $FABA
 
     // ── Not a scan: somebody ran PR#n with nothing to boot ($Cn42) ───────
-    b.region(kErrExit, kDriverOff).emit({
-        0x20, static_cast<uint8_t>(kMonSetScr & 0xFF), static_cast<uint8_t>(kMonSetScr >> 8),
-        0x20, static_cast<uint8_t>(kMonSetKbd & 0xFF), static_cast<uint8_t>(kMonSetKbd >> 8),
-        0x20, static_cast<uint8_t>(kMonSetTxt & 0xFF), static_cast<uint8_t>(kMonSetTxt >> 8),
-        0x20, static_cast<uint8_t>(kMonHome   & 0xFF), static_cast<uint8_t>(kMonHome   >> 8),
-        0xA2, 0x07,                       // LDX #$07
-        0xBD, kErrText, romHi,            // LDA $CnF0,X  (text stored reversed)
-        0x20, static_cast<uint8_t>(kMonCout & 0xFF), static_cast<uint8_t>(kMonCout >> 8),
-        0xCA,                             // DEX
-        0x10, rel(0x57, 0x50),            // BPL loop
-        0x4C, static_cast<uint8_t>(kBasic & 0xFF), static_cast<uint8_t>(kBasic >> 8),
-    }).expectEnd(0x5C);
+    a.region("errExit", kErrExit, kDriverOff)
+     .emit({ 0x20, static_cast<uint8_t>(kMonSetScr & 0xFF), static_cast<uint8_t>(kMonSetScr >> 8),
+             0x20, static_cast<uint8_t>(kMonSetKbd & 0xFF), static_cast<uint8_t>(kMonSetKbd >> 8),
+             0x20, static_cast<uint8_t>(kMonSetTxt & 0xFF), static_cast<uint8_t>(kMonSetTxt >> 8),
+             0x20, static_cast<uint8_t>(kMonHome   & 0xFF), static_cast<uint8_t>(kMonHome   >> 8),
+             0xA2, 0x07 })                     // LDX #$07
+     .label("errLoop")
+     .emit({ 0xBD }).byteOf("errText").emit({ romHi })  // LDA errText,X
+     .emit({ 0x20, static_cast<uint8_t>(kMonCout & 0xFF),
+                   static_cast<uint8_t>(kMonCout >> 8),
+             0xCA })                           // DEX
+     .branch(0x10, "errLoop")                  // BPL errLoop
+     .emit({ 0x4C, static_cast<uint8_t>(kBasic & 0xFF),
+                   static_cast<uint8_t>(kBasic >> 8) });
 
     // ── The driver ($Cn60) ───────────────────────────────────────────────
     // THE WHOLE POINT OF THE CARD. Two entry points three bytes apart, as the
@@ -218,36 +206,40 @@ void FujiNetCard::buildRom()
     // the carry flag ProDOS and SmartPort both expect: carry clear iff A == 0.
     // It also overwrites N/Z, which is why `finish()` setting them is a
     // courtesy for callers that enter mid-routine rather than a contract.
-    b.region(kDriverOff, kErrText).emit({
-        0x38,                             // SEC              ProDOS entry
-        0xB0, rel(0x61, 0x67),            // BCS doProdos
-        0xA9, kMagicSmartPort,            // LDA #$65         SmartPort entry
-        0xD0, rel(0x65, 0x69),            // BNE store          ( = entry + 3 )
-        0xA9, kMagicProDOS,               // LDA #$66
-        0x8D, trapLo, 0xC0,               // STA $C0n2        ← the trap
-        0xC9, 0x01,                       // CMP #$01         A != 0 → carry
-        0x60,                             // RTS
-    }).expectEnd(kDriverOff + 0x0F);
+    a.region("driver", kDriverOff, kErrText)
+     .emit({ 0x38 })                           // SEC              ProDOS entry
+     .branch(0xB0, "drvProDos")                // BCS drvProDos
+     .label("drvSmartPort")                    // ( = ProDOS entry + 3 )
+     .emit({ 0xA9, kMagicSmartPort })          // LDA #$65
+     .branch(0xD0, "drvStore")                 // BNE drvStore
+     .label("drvProDos")
+     .emit({ 0xA9, kMagicProDOS })             // LDA #$66
+     .label("drvStore")
+     .emit({ 0x8D, trapLo, 0xC0,               // STA $C0n2        ← the trap
+             0xC9, 0x01,                       // CMP #$01   A != 0 → carry
+             0x60 });                          // RTS
 
     // ── "FN ERROR", stored reversed because the printer counts X down ────
+    a.region("errText", kErrText, kErrText + 8);
     const char text[8] = { 'R', 'O', 'R', 'R', 'E', ' ', 'N', 'F' };
     for (int i = 0; i < 8; ++i)
-        rom_[kErrText + i] = static_cast<uint8_t>(text[i] | 0x80);
+        a.poke(static_cast<unsigned>(kErrText + i),
+               static_cast<uint8_t>(text[i] | 0x80));
 
     // ── ProDOS identification tail ───────────────────────────────────────
     // $CnFC/$CnFD = total blocks. ZERO ON PURPOSE: it makes ProDOS issue a
     // STATUS call to learn the size, which is the only correct answer for a
     // device whose media the user can change from the FujiNet's own web UI
     // while the machine is running.
-    rom_[0xFC] = 0x00;
-    rom_[0xFD] = 0x00;
+    //
     // $CnFE capability byte (ProDOS 8 TN #21): removable, interruptible,
     // read + write + status. Same value the FujiNet AppleWin fork's ROM
     // publishes, so a guest that special-cases FujiNet sees what it expects.
-    rom_[0xFE] = 0xF7;
-    rom_[0xFF] = kDriverOff;
+    a.region("tail", 0xFC, pom2::kSlotRomBytes)
+     .emit({ 0x00, 0x00, 0xF7 })
+     .byteOf("driver");
 
-    romLayoutError_ = b.layoutError();
+    romLayoutError_ = !a.finish();
 }
 
 uint8_t FujiNetCard::slotRomRead(uint8_t low8) { return rom_[low8]; }

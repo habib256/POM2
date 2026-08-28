@@ -144,9 +144,11 @@ public:
     // ── SlotPeripheral interface ────────────────────────────────────────
     std::string_view name() const override { return "SmartPort"; }
 
-    /// True when a hand-assembled slot-ROM region overflowed its budget.
-    /// Only a test should ever look at this; a correct build is always false.
-    bool romLayoutOverflowed() const { return romOverflow_; }
+    /// True when the hand-assembled slot ROM did not assemble — a region
+    /// over budget, two regions overlapping, a branch that cannot reach its
+    /// target, a label nobody defined. Only a test should look at this; a
+    /// correct build is always false. See SlotRomAsm.h.
+    bool romLayoutError() const { return romLayoutError_; }
     uint8_t deviceSelectRead (uint8_t low4) override;
     void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
     uint8_t slotRomRead      (uint8_t low8) override;
@@ -187,7 +189,7 @@ private:
     /// True when a hand-assembled ROM region did not fit its budget. Always
     /// false in a correct build; pinned by `smartport_rom_layout`, which is
     /// the check the silent $CnC0 overwrite got past.
-    bool                     romOverflow_ = false;
+    bool                     romLayoutError_ = false;
 
     // Per-unit transfer state. The byte-stream protocol auto-increments
     // `streamOffset_[u]` per access, wrapping every 512 B. Drive select

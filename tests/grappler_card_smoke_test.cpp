@@ -52,7 +52,7 @@ void testStubRom()
 
     // The stub is the only hand-assembled part of this card (a real roms/
     // dump is copied verbatim), so it is the only part that can overrun a
-    // region — see SlotRom.h.
+    // region — see SlotRomAsm.h.
     assert(!card.romLayoutError());
 
     // PR#n entry at $Cn00 — JMP $Cn20.

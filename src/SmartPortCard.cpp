@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "SmartPortCard.h"
+#include "SlotRomAsm.h"
 
 #include "FloppySoundSink.h"
 #include "Logger.h"
@@ -31,6 +32,8 @@ namespace {
 
 constexpr uint8_t kBootOff   = 0x20;
 constexpr uint8_t kDriverOff = 0x50;
+constexpr uint8_t kReadOff   = 0x6F;
+constexpr uint8_t kWriteOff  = 0xA2;
 /// Halt loop the boot routine jumps to when the boot block will not load.
 constexpr uint8_t kHaltOff   = 0xE0;
 
@@ -54,24 +57,6 @@ constexpr size_t   kPreflightC800 = 0x500;      // → $CD00
 constexpr size_t   kStatusC800    = 0x510;      // → $CD10
 constexpr uint16_t kPreflightAddr = 0xC800 + kPreflightC800;
 constexpr uint16_t kStatusAddr    = 0xC800 + kStatusC800;
-
-/// Emit bytes at `pc`, refusing to run past `limit` (exclusive).
-///
-/// The unchecked version did `rom[pc++]` on a uint8_t and wrapped in silence,
-/// which is exactly how the write-block routine came to overrun the STATUS
-/// pre-flight at $CnC0: ProDOS STATUS then executed the middle of the write
-/// loop and fell into its I/O-error branch, so a volume scanner got $27 on a
-/// perfectly healthy empty bay. A 256-byte ROM has no room for a routine to
-/// grow by accident, so every region now declares where it ends and an
-/// overrun trips `overflow` instead of quietly eating its neighbour.
-void emit(std::array<uint8_t, 256>& rom, uint8_t& pc, unsigned limit,
-          std::initializer_list<uint8_t> bytes, bool& overflow)
-{
-    for (uint8_t b : bytes) {
-        if (pc >= limit) { overflow = true; return; }
-        rom[pc++] = b;
-    }
-}
 
 } // anon namespace
 
@@ -480,12 +465,37 @@ void SmartPortCard::buildRom()
     const uint8_t  kSlotRomHi  = static_cast<uint8_t>(0xC0 + slot_);
     const uint8_t  kUnitDrv1   = static_cast<uint8_t>(slot_ << 4);
 
-    // ── ProDOS / SmartPort signature ───────────────────────────────────
-    rom_[0x00] = 0x4C;                          // JMP $Cn20
-    rom_[0x01] = kBootOff;
-    rom_[0x02] = kSlotRomHi;
-    rom_[0x03] = 0x00;
-    rom_[0x05] = 0x03;
+    const uint8_t blkLoReg = static_cast<uint8_t>(kDeviceBase + 0x01);
+    const uint8_t blkHiReg = static_cast<uint8_t>(kDeviceBase + 0x02);
+    const uint8_t dataReg  = static_cast<uint8_t>(kDeviceBase + 0x03);
+    const uint8_t statReg  = static_cast<uint8_t>(kDeviceBase + 0x04);
+
+    // ── 256-byte layout ────────────────────────────────────────────────
+    //   $Cn00-$Cn02  PR#n / autostart entry
+    //   $Cn03-$Cn09  ProDOS + controller-class signature bytes
+    //   $Cn0A-$Cn0C  real-hardware ProDOS driver entry
+    //   $Cn0D-$Cn12  SmartPort entry (ProDOS entry + 3)
+    //   $Cn13-$Cn1F  LEFT ALONE — the real Liron dump's identity bytes
+    //   $Cn20-$Cn4F  boot routine
+    //   $Cn50-$Cn6E  ProDOS driver dispatch
+    //   $Cn6F-$CnA1  read block
+    //   $CnA2-$CnDF  write block
+    //   $CnE0-$CnE2  boot-failure halt loop
+    //   $CnE3-$CnFD  LEFT ALONE — real dump ID bytes
+    //   $CnFE-$CnFF  capability + driver-entry bytes
+    //
+    // Every region declares where it starts and ends, and every address in
+    // the code is a LABEL. That combination is what this card cost to learn:
+    // the write-block routine once ran from $Cn9C to $CnD5, straight THROUGH
+    // the STATUS routine that `JMP $CnC0` pointed at, so ProDOS STATUS
+    // executed the middle of the write loop and answered $27 on a healthy
+    // bay for weeks. Both halves of that are now unrepresentable — regions
+    // may not overlap, and no displacement is typed.
+    pom2::SlotRomAsm a(rom_, slot_, "SmartPortCard");
+
+    a.region("entry", 0x00, 0x03).jmp("boot");
+
+    // ── ProDOS / controller-class signature ────────────────────────────
     // $Cn07 identifies the controller class to the //c-class boot firmware.
     // $3C = Disk II (the //c internal $C607!) — claiming it makes a //c see
     // TWO Disk II controllers (slot 5 + the internal slot 6) and its boot
@@ -495,13 +505,10 @@ void SmartPortCard::buildRom()
     // standard JMP $Cn00 path with no Disk II / SmartPort confusion, and //e
     // boot (bootFromSlot, ProDOS via $CnFF) is unaffected. See
     // project_iic_smartport_boot.
-    rom_[0x07] = 0x01;                          // ProDOS block device
-    // $CnFE capability byte (ProDOS 8 TN #21): bit3 format, bit2 WRITE,
-    // bit1 read, bit0 status, bits5-4 volume count. Was $13 — read+status
-    // only — which advertised a READ-ONLY device to capability-inspecting
-    // utilities despite the write path being fully implemented.
-    rom_[0xFE] = 0x17;                          // read+WRITE+status, 2 units
-    rom_[0xFF] = kDriverOff;
+    a.region("signature", 0x03, 0x0A)
+     .poke(0x03, 0x00)
+     .poke(0x05, 0x03)
+     .poke(0x07, 0x01);                         // ProDOS block device
 
     // ── Real-hardware driver entry at $Cn0A ────────────────────────────
     // The Apple Disk 3.5 / Liron ("Unidisk") firmware exposes its block
@@ -515,9 +522,8 @@ void SmartPortCard::buildRom()
     // dispatch; the $42-$47 calling convention is identical, so block reads/
     // writes/status all work unchanged. ($CnFF stays $Cn50 so the //e/c boot
     // and the ProDOS tests are untouched.)
-    rom_[0x0A] = 0x4C;                           // JMP $Cn50
-    rom_[0x0B] = kDriverOff;
-    rom_[0x0C] = kSlotRomHi;
+    a.region("driverEntry", 0x0A, 0x0D).jmp("driver");
+
     // SmartPort-convention entry = ProDOS entry + 3 = $Cn0D (real Liron:
     // $CnFF=$0A, SmartPort dispatch $Cn0D). Routes to the full SmartPort
     // call handler in the $C800 bank (see buildC800) — STATUS/DIB, READ,
@@ -537,182 +543,162 @@ void SmartPortCard::buildRom()
     // the window for THIS slot (SlotBus::slotRomRead latches the owner on
     // any access to the slot's page), so the target is live by the time the
     // JMP takes it.
-    rom_[0x0D] = 0x2C;                           // BIT $CFFF
-    rom_[0x0E] = 0xFF;
-    rom_[0x0F] = 0xCF;
-    rom_[0x10] = 0x4C;                           // JMP $CE00
-    rom_[0x11] = 0x00;
-    rom_[0x12] = 0xCE;
-
-    // ── 256-byte layout ────────────────────────────────────────────────
-    // Everything below is hand-assembled into one page, so the regions are
-    // spelled out and every emit() is bounded. The previous layout let the
-    // write-block routine run from $Cn9C to $CnD5, straight THROUGH the
-    // STATUS pre-flight that was supposed to live at $CnC0 — `JMP $CnC0`
-    // landed mid-instruction in the write loop and fell into its I/O-error
-    // branch, so ProDOS STATUS answered $27 on a healthy empty bay. STATUS
-    // now lives above the halt loop where nothing can grow into it.
-    //
-    //   $Cn00-$Cn12  signature + ProDOS/SmartPort entry points
-    //   $Cn13-$Cn1F  media pre-flight subroutine (shared by read + write)
-    //   $Cn20-$Cn4F  boot routine
-    //   $Cn50-$Cn6E  ProDOS driver dispatch
-    //   $Cn6F-....   read block, then write block  (bounded by $CnE0)
-    //   $CnE0-$CnE2  boot-failure halt loop
-    //   $CnE3-$CnFD  ProDOS STATUS
-    //   $CnFE-$CnFF  capability + driver-entry bytes
-    bool overflow = false;
+    a.region("smartPortEntry", 0x0D, 0x13)
+     .emit({ 0x2C, 0xFF, 0xCF,                  // BIT $CFFF
+             0x4C, 0x00, 0xCE });               // JMP $CE00
 
     // ── Boot routine ($Cn20) ───────────────────────────────────────────
-    uint8_t pc = kBootOff;
-    emit(rom_, pc, kDriverOff, {
-        0xA9, 0x01,            // LDA #$01           ; ProDOS read cmd
-        0x85, 0x42,
-        0xA9, kUnitDrv1,       // unit = slot×16, drive 1
-        0x85, 0x43,
-        0xA9, 0x00,
-        0x85, 0x44,            // buffer LO = $00
-        0xA9, 0x08,
-        0x85, 0x45,            // buffer HI = $08
-        0xA9, 0x00,
-        0x85, 0x46,            // block LO = 0
-        0x85, 0x47,            // block HI = 0
-        0x20, kDriverOff, kSlotRomHi, // JSR $Cn50 (driver)
-        0xB0, 0x07,            // BCS  error
-        0xA2, kUnitDrv1,       // X = unit
-        0xA9, 0x00,
-        0x4C, 0x01, 0x08,      // JMP $0801
-        0x4C, kHaltOff, kSlotRomHi // error: JMP $CnE0 (halt loop)
-    }, overflow);
-
-    rom_[kHaltOff + 0] = 0x4C;
-    rom_[kHaltOff + 1] = kHaltOff;
-    rom_[kHaltOff + 2] = kSlotRomHi;
+    a.region("boot", kBootOff, kDriverOff)
+     .emit({ 0xA9, 0x01,            // LDA #$01           ; ProDOS read cmd
+             0x85, 0x42,
+             0xA9, kUnitDrv1,       // unit = slot×16, drive 1
+             0x85, 0x43,
+             0xA9, 0x00,
+             0x85, 0x44,            // buffer LO = $00
+             0xA9, 0x08,
+             0x85, 0x45,            // buffer HI = $08
+             0xA9, 0x00,
+             0x85, 0x46,            // block LO = 0
+             0x85, 0x47 })          // block HI = 0
+     .jsr("driver")
+     .branch(0xB0, "bootErr")       // BCS bootErr
+     .emit({ 0xA2, kUnitDrv1,       // X = unit
+             0xA9, 0x00,
+             0x4C, 0x01, 0x08 })    // JMP $0801
+     .label("bootErr").jmp("halt");
 
     // ── ProDOS driver dispatch ($Cn50) ─────────────────────────────────
     // ProDOS calls here with $42 = command, $43 = unit, $44/$45 = buffer,
     // $46/$47 = block. Unit byte bit 7 = drive (0 = drive 1, 1 = drive 2).
-    pc = kDriverOff;
-    emit(rom_, pc, 0x6F, {
-        0xA5, 0x43,            // LDA $43           ; unit byte
-        0x0A,                  // ASL A             ; bit7 → carry
-        0xA9, 0x00,
-        0x2A,                  // ROL A             ; A = drive (0 or 1)
-        0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
-                               // STA $C0n0         ; latch unit
-        0xA5, 0x42,            // LDA $42           ; command
-        0xC9, 0x01,            // CMP #$01
-        0xF0, 0x10,            // BEQ read   (+16)
-        0xC9, 0x02,            // CMP #$02
-        0xF0, 0x3F,            // BEQ write  (+63: skip the 51-byte read block)
-        0xC9, 0x00,            // CMP #$00
-        0xF0, 0x04,            // BEQ status (+4)
-        0xA9, 0x27,            // bad cmd (incl. FORMAT $03): LDA #$27 —
-                               // a REAL driver error code; the old $01 is
-                               // not in the ProDOS $27/$28/$2B set and
-                               // surfaced as a bogus code in Filer.
-        0x38,                  // SEC
-        0x60,                  // RTS
-        // status: jump to the full STATUS routine in the $C800 bank
-        // (returns the block count in X/Y). Kept 4 bytes (JMP + NOP pad) so
-        // the BEQ read/write offsets above stay valid — pinned by
-        // tests/smartport_write_dispatch_test.cpp.
-        0x4C, static_cast<uint8_t>(kStatusAddr & 0xFF),
-              static_cast<uint8_t>(kStatusAddr >> 8),   // status: JMP $CD10
-        0xEA                    // pad
-    }, overflow);
+    a.region("driver", kDriverOff, kReadOff)
+     .emit({ 0xA5, 0x43,            // LDA $43           ; unit byte
+             0x0A,                  // ASL A             ; bit7 → carry
+             0xA9, 0x00,
+             0x2A,                  // ROL A             ; A = drive (0 or 1)
+             0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
+                                    // STA $C0n0         ; latch unit
+             0xA5, 0x42,            // LDA $42           ; command
+             0xC9, 0x01 })          // CMP #$01
+     .branch(0xF0, "read")
+     .emit({ 0xC9, 0x02 })          // CMP #$02
+     .branch(0xF0, "write")
+     .emit({ 0xC9, 0x00 })          // CMP #$00
+     .branch(0xF0, "dispStatus")
+     .emit({ 0xA9, 0x27,            // bad cmd (incl. FORMAT $03): LDA #$27 —
+                                    // a REAL driver error code; the old $01
+                                    // is not in the ProDOS $27/$28/$2B set
+                                    // and surfaced as a bogus code in Filer.
+             0x38,                  // SEC
+             0x60 })                // RTS
+     // The STATUS arm jumps to the full routine in the $C800 bank, which
+     // returns the block count in X/Y. Four bytes (JMP + pad) — the pad is a
+     // leftover from when the branch operands above were hand-counted, and
+     // stays only because removing it would change the page for no reason.
+     .label("dispStatus")
+     .emit({ 0x4C, static_cast<uint8_t>(kStatusAddr & 0xFF),
+                   static_cast<uint8_t>(kStatusAddr >> 8),   // JMP $CD10
+             0xEA });               // pad
 
-    const uint8_t blkLoReg = static_cast<uint8_t>(kDeviceBase + 0x01);
-    const uint8_t blkHiReg = static_cast<uint8_t>(kDeviceBase + 0x02);
-    const uint8_t dataReg  = static_cast<uint8_t>(kDeviceBase + 0x03);
-    const uint8_t statReg  = static_cast<uint8_t>(kDeviceBase + 0x04);
+    // ── Read block ($Cn6F) ─────────────────────────────────────────────
+    // Pre-flight the bay, stream 512 bytes, then test $C0n4 bit 0 (I/O
+    // error) so a failed / out-of-range readBlock returns carry-set (ProDOS
+    // $27) rather than CLC "success" over a $FF-filled buffer.
+    a.region("read", kReadOff, kWriteOff)
+     .emit({ 0x20, static_cast<uint8_t>(kPreflightAddr & 0xFF),
+                   static_cast<uint8_t>(kPreflightAddr >> 8) }) // JSR $CD00
+     .branch(0x90, "rdGo")          // BCC rdGo    ; media present
+     .emit({ 0x60 })                // RTS         ; else return $28 + SEC
+     .label("rdGo")
+     .emit({ 0xA5, 0x46,            // LDA $46
+             0x8D, blkLoReg, 0xC0,
+             0xA5, 0x47,            // LDA $47
+             0x8D, blkHiReg, 0xC0,
+             0xA0, 0x00 })          // LDY #$00
+     .label("rdPage1")
+     .emit({ 0xAD, dataReg, 0xC0,   // LDA $C0n3
+             0x91, 0x44,            // STA ($44),Y
+             0xC8 })                // INY
+     .branch(0xD0, "rdPage1")
+     .emit({ 0xE6, 0x45 })          // INC $45
+     .label("rdPage2")
+     .emit({ 0xAD, dataReg, 0xC0,   // LDA $C0n3
+             0x91, 0x44,            // STA ($44),Y
+             0xC8 })                // INY
+     .branch(0xD0, "rdPage2")
+     .emit({ 0xC6, 0x45,            // DEC $45
+             0xAD, statReg, 0xC0,   // LDA $C0n4   ; status
+             0x29, 0x01 })          // AND #$01    ; I/O error bit
+     .branch(0xD0, "rdErr")
+     .emit({ 0x18,                  // CLC         ; success
+             0x60 })                // RTS
+     .label("rdErr")
+     .emit({ 0xA9, 0x27,            // LDA #$27 (ProDOS I/O error)
+             0x38,                  // SEC
+             0x60 });               // RTS
 
-    // ── Read block (51 bytes) ──────────────────────────────────────────
-    // Streams 512 bytes, then tests $C0n4 bit 0 (I/O error) so a failed /
-    // out-of-range readBlock returns carry-set (ProDOS $27) rather than CLC
-    // "success" over a 0xFF-filled buffer. Lengthening this block past the
-    // original 34 bytes is why the dispatch `BEQ write` operand above is $39
-    // (was $2E) — pinned by tests/smartport_write_dispatch_test.cpp.
-    emit(rom_, pc, kHaltOff, {
-        0x20, static_cast<uint8_t>(kPreflightAddr & 0xFF),
-              static_cast<uint8_t>(kPreflightAddr >> 8),  // JSR $CD00 (pre-flight)
-        0x90, 0x01,            // BCC +1      ; media present → carry on
-        0x60,                  // RTS         ; else return $28 + SEC
-        0xA5, 0x46,            // LDA $46
-        0x8D, blkLoReg, 0xC0,
-        0xA5, 0x47,            // LDA $47
-        0x8D, blkHiReg, 0xC0,
-        0xA0, 0x00,            // LDY #$00
-        0xAD, dataReg, 0xC0,   // LDA $C0n3
-        0x91, 0x44,            // STA ($44),Y
-        0xC8,                  // INY
-        0xD0, 0xF8,            // BNE -8
-        0xE6, 0x45,            // INC $45
-        0xAD, dataReg, 0xC0,   // LDA $C0n3
-        0x91, 0x44,            // STA ($44),Y
-        0xC8,                  // INY
-        0xD0, 0xF8,            // BNE -8
-        0xC6, 0x45,            // DEC $45
-        0xAD, statReg, 0xC0,   // LDA $C0n4   ; status
-        0x29, 0x01,            // AND #$01    ; I/O error bit
-        0xD0, 0x02,            // BNE rderr
-        0x18,                  // CLC         ; success
-        0x60,                  // RTS
-        0xA9, 0x27,            // rderr: LDA #$27 (ProDOS I/O error)
-        0x38,                  // SEC
-        0x60                   // RTS
-    }, overflow);
-
-    // ── Write block ────────────────────────────────────────────────────
+    // ── Write block ($CnA2) ────────────────────────────────────────────
     // Media pre-check first ($28 — an empty bay is not "write protected",
     // which is what it used to answer), then WP ($2B); after streaming 512
-    // bytes, tests $C0n4
-    // bit 0 so an out-of-range / rejected writeBlock returns carry-set
-    // ($27) instead of the old unconditional CLC "success".
-    emit(rom_, pc, kHaltOff, {
-        0x20, static_cast<uint8_t>(kPreflightAddr & 0xFF),
-              static_cast<uint8_t>(kPreflightAddr >> 8),  // JSR $CD00 (pre-flight)
-        0x90, 0x01,            // BCC +1
-        0x60,                  // RTS         ; empty: $28, NOT "write protected"
-        0x2C, statReg, 0xC0,   // BIT $C0n4   ; V = WP bit
-        0x50, 0x04,            // BVC +4 (not WP → proceed)
-        0xA9, 0x2B,            // LDA #$2B    ; write-protected error
-        0x38,                  // SEC
-        0x60,                  // RTS
-        0xA5, 0x46,            // LDA $46
-        0x8D, blkLoReg, 0xC0,
-        0xA5, 0x47,            // LDA $47
-        0x8D, blkHiReg, 0xC0,
-        0xA0, 0x00,            // LDY #$00
-        0xB1, 0x44,            // LDA ($44),Y
-        0x8D, dataReg, 0xC0,   // STA $C0n3
-        0xC8,                  // INY
-        0xD0, 0xF8,            // BNE -8
-        0xE6, 0x45,            // INC $45
-        0xB1, 0x44,            // LDA ($44),Y
-        0x8D, dataReg, 0xC0,   // STA $C0n3
-        0xC8,                  // INY
-        0xD0, 0xF8,            // BNE -8
-        0xC6, 0x45,            // DEC $45
-        0xAD, statReg, 0xC0,   // LDA $C0n4   ; re-read status
-        0x29, 0x01,            // AND #$01    ; I/O error bit
-        0xD0, 0x04,            // BNE wrerr
-        0xA9, 0x00,            // LDA #$00    ; success
-        0x18,                  // CLC
-        0x60,                  // RTS
-        0xA9, 0x27,            // wrerr: LDA #$27 (ProDOS I/O error)
-        0x38,                  // SEC
-        0x60                   // RTS
-    }, overflow);
+    // bytes, tests $C0n4 bit 0 so an out-of-range / rejected writeBlock
+    // returns carry-set ($27) instead of the old unconditional CLC.
+    a.region("write", kWriteOff, kHaltOff)
+     .emit({ 0x20, static_cast<uint8_t>(kPreflightAddr & 0xFF),
+                   static_cast<uint8_t>(kPreflightAddr >> 8) }) // JSR $CD00
+     .branch(0x90, "wrGo")
+     .emit({ 0x60 })                // RTS   ; empty: $28, NOT "write protected"
+     .label("wrGo")
+     .emit({ 0x2C, statReg, 0xC0 }) // BIT $C0n4   ; V = WP bit
+     .branch(0x50, "wrXfer")        // BVC wrXfer  (not WP → proceed)
+     .emit({ 0xA9, 0x2B,            // LDA #$2B    ; write-protected error
+             0x38,                  // SEC
+             0x60 })                // RTS
+     .label("wrXfer")
+     .emit({ 0xA5, 0x46,            // LDA $46
+             0x8D, blkLoReg, 0xC0,
+             0xA5, 0x47,            // LDA $47
+             0x8D, blkHiReg, 0xC0,
+             0xA0, 0x00 })          // LDY #$00
+     .label("wrPage1")
+     .emit({ 0xB1, 0x44,            // LDA ($44),Y
+             0x8D, dataReg, 0xC0,   // STA $C0n3
+             0xC8 })                // INY
+     .branch(0xD0, "wrPage1")
+     .emit({ 0xE6, 0x45 })          // INC $45
+     .label("wrPage2")
+     .emit({ 0xB1, 0x44,            // LDA ($44),Y
+             0x8D, dataReg, 0xC0,   // STA $C0n3
+             0xC8 })                // INY
+     .branch(0xD0, "wrPage2")
+     .emit({ 0xC6, 0x45,            // DEC $45
+             0xAD, statReg, 0xC0,   // LDA $C0n4   ; re-read status
+             0x29, 0x01 })          // AND #$01    ; I/O error bit
+     .branch(0xD0, "wrErr")
+     .emit({ 0xA9, 0x00,            // LDA #$00    ; success
+             0x18,                  // CLC
+             0x60 })                // RTS
+     .label("wrErr")
+     .emit({ 0xA9, 0x27,            // LDA #$27 (ProDOS I/O error)
+             0x38,                  // SEC
+             0x60 });               // RTS
 
-    // A region that ran out of room is a build error in hand-assembled code,
-    // not a runtime condition: the ROM would ship with a routine truncated or
-    // a neighbour eaten, exactly the failure this layout was rewritten to
-    // undo. Surface it loudly and let `smartport_rom_layout` fail on it.
-    romOverflow_ = overflow;
-    if (overflow)
-        log().error("SmartPort", "slot ROM layout overflowed a region — "
-                                 "a routine no longer fits its budget");
+    a.region("halt", kHaltOff, kHaltOff + 3).jmp("halt");
+
+    // $CnFE capability byte (ProDOS 8 TN #21): bit3 format, bit2 WRITE,
+    // bit1 read, bit0 status, bits5-4 volume count. Was $13 — read+status
+    // only — which advertised a READ-ONLY device to capability-inspecting
+    // utilities despite the write path being fully implemented.
+    a.region("tail", 0xFE, pom2::kSlotRomBytes)
+     .emit({ 0x17 })                // read+WRITE+status, 2 units
+     .byteOf("driver");
+
+    // A page that does not assemble is a build error in hand-written code,
+    // not a runtime condition: the ROM would ship with a routine truncated,
+    // a neighbour eaten or a branch pointing nowhere — exactly the failure
+    // this layout was rewritten to undo. Surface it loudly and let
+    // `smartport_rom_layout` fail on it.
+    romLayoutError_ = !a.finish();
+    if (romLayoutError_)
+        log().error("SmartPort", "slot ROM did not assemble: " + a.error());
 
     // ── Real Liron base (roms/liron.rom present) ───────────────────────
     // Re-base the page on the real dump (per-slot page at slot×256) for
