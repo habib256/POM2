@@ -968,7 +968,6 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     // invalidated exactly once, before any card is destroyed.
     slotRebuildCoordinator_->prepareAfterFlush();
 
-
     // 0. Commit the active profile NOW — BEFORE step 7's plugSlotsFromSettings(),
     //    which reads `activeProfile` to apply the profile's built-in locked slots
     //    (//c / //c+ on-board SSC / Mouse / SmartPort / Disk II). Setting it only
@@ -1437,13 +1436,6 @@ bool MainWindow::loadWindowGeometryFromSettings()
     return true;
 }
 
-void MainWindow::setKioskMode(bool k)
-{
-    kiosk_           = k;
-    launchedInKiosk_ = k;
-    if (k && settings) settings->setReadOnly(true);
-}
-
 void MainWindow::captureWindowGeometryNow()
 {
     if (!window || kiosk_ || settingsReadOnly()) return;
@@ -1462,149 +1454,4 @@ void MainWindow::captureWindowGeometryNow()
         glfwGetWindowSize(window, &savedWinW_, &savedWinH_);
     }
     saveWindowGeometryToSettings();
-}
-
-void MainWindow::setKioskModeRuntime(bool k)
-{
-    if (k == kiosk_) return;
-
-    if (k) {
-        // Entering kiosk. Persist first: kiosk deliberately never writes
-        // state.cfg, so anything the user changed in the GUI session would
-        // otherwise be lost if they quit from kiosk. (A session LAUNCHED
-        // with --kiosk was read-only from the start and stays that way —
-        // see settingsReadOnly().)
-        if (window) {
-#ifdef __EMSCRIPTEN__
-            // The browser build must not touch the window/monitor pair at
-            // all: Emscripten's GLFW port defines glfwSetWindowMonitor as
-            // `abort('glfwSetWindowMonitor not implemented.')` (upstream
-            // src/lib/libglfw.js), and an abort() tears the whole module
-            // down — the page reports it as a load/init failure and the
-            // machine is gone. So the canvas keeps its size and we take the
-            // same path as a host with no usable monitor: chrome-free, and
-            // nothing else. Real full-screen inside a page belongs to the
-            // browser (F11, or the page's own control), not to us.
-            pom2::log().info("Kiosk",
-                "browser build — chrome-free; canvas size unchanged");
-#else
-            // Record the windowed geometry to come back to. A MAXIMIZED
-            // window reports its maximized size here, so remember the flag
-            // separately and re-maximize on the way out — otherwise the
-            // user gets an un-maximized window of the maximized size, which
-            // most WMs then reposition somewhere unexpected.
-            captureWindowGeometryNow();
-            GLFWmonitor* mon = glfwGetPrimaryMonitor();
-            const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
-            if (mon && vm) {
-                glfwSetWindowMonitor(window, mon, 0, 0,
-                                     vm->width, vm->height, vm->refreshRate);
-            } else {
-                // No monitor info (headless/odd WM): stay windowed but
-                // still enter the chrome-free path — the user asked for it.
-                pom2::log().warn("Kiosk",
-                    "no primary monitor / video mode — kiosk stays windowed");
-            }
-#endif
-        }
-        // Persist AFTER measuring, and BEFORE the flag flips: kiosk never
-        // writes state.cfg, so this is the last chance to record both the
-        // geometry we just captured and anything the user changed in the
-        // GUI session. Without it there was nothing to restore from after a
-        // quit-from-kiosk, and a --kiosk launch toggling to the GUI got a
-        // hard-coded default size instead of the user's real window.
-        if (!settingsReadOnly()) {
-            saveWindowGeometryToSettings();
-            settings->save();
-        }
-        kiosk_ = true;
-        settings->setReadOnly(true);   // covers every UI save site
-        pom2::log().info("Kiosk", "entered (full-screen, chrome-free, "
-                                  "settings read-only)");
-    } else {
-        // Leaving kiosk. Release the host pointer first, before anything
-        // touches the window. Kiosk is the mode where a captured pointer is
-        // least of a problem (there is no UI to click), and the GUI is the
-        // mode where it is most of one: the user comes back to menus, panels
-        // and a docked layout, and every one of those needs a real cursor.
-        // Doing it here rather than leaving it to the user also avoids a
-        // GLFW_CURSOR_DISABLED pointer riding through the full-screen →
-        // windowed monitor change, where the OS re-warps it. Entering kiosk
-        // deliberately does NOT touch the grab — a captured mouse is what a
-        // game in full screen wants.
-        setMouseGrab(false);
-        // Close the in-kiosk menu next so its captured
-        // key handling doesn't leak into the GUI frame — and un-pause: the
-        // menu pauses the machine while it is up, and leaving kiosk from an
-        // open menu would otherwise strand the user in the GUI with a
-        // silently stopped CPU.
-        kioskMenuOpen_ = false;
-        // Undo only the pause the MENU imposed — kioskSetPaused keeps a
-        // user-initiated pause intact (see kioskPauseWasAlreadyStopped_).
-        kioskSetPaused(false);
-        if (window) {
-#ifdef __EMSCRIPTEN__
-            // Nothing to restore: entering kiosk never moved the canvas (see
-            // the matching guard above), and glfwSetWindowMonitor would
-            // abort() the module here exactly as it does there. This is the
-            // path the user actually hits — F10 to leave full-screen — so it
-            // is the one that used to kill the emulator mid-session.
-            pom2::log().info("Kiosk", "browser build — canvas size unchanged");
-#else
-            if (savedWinW_ > 0) {
-                glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
-                                     savedWinW_, savedWinH_, GLFW_DONT_CARE);
-                // Many window managers IGNORE the position/size passed to
-                // glfwSetWindowMonitor when leaving full-screen (they just
-                // un-fullscreen and keep their own idea of the geometry) —
-                // this is the standard GLFW workaround. Harmless when the
-                // WM already honoured the call.
-                glfwSetWindowSize(window, savedWinW_, savedWinH_);
-                glfwSetWindowPos (window, savedWinX_, savedWinY_);
-                if (savedWinMaximized_) glfwMaximizeWindow(window);
-                pom2::log().info("Kiosk",
-                    "restored window " + std::to_string(savedWinW_) + "x" +
-                    std::to_string(savedWinH_) + " at " +
-                    std::to_string(savedWinX_) + "," +
-                    std::to_string(savedWinY_) +
-                    (savedWinMaximized_ ? " (maximized)" : ""));
-            } else if (loadWindowGeometryFromSettings()) {
-                // Launched with --kiosk: nothing was measured this session,
-                // but a previous GUI session persisted its geometry.
-                glfwSetWindowMonitor(window, nullptr, savedWinX_, savedWinY_,
-                                     savedWinW_, savedWinH_, GLFW_DONT_CARE);
-                glfwSetWindowSize(window, savedWinW_, savedWinH_);
-                glfwSetWindowPos (window, savedWinX_, savedWinY_);
-                if (savedWinMaximized_) glfwMaximizeWindow(window);
-                pom2::log().info("Kiosk",
-                    "restored window from settings " +
-                    std::to_string(savedWinW_) + "x" +
-                    std::to_string(savedWinH_));
-            } else {
-                // Never ran windowed on this machine: centred default.
-                GLFWmonitor* mon = glfwGetPrimaryMonitor();
-                const GLFWvidmode* vm = mon ? glfwGetVideoMode(mon) : nullptr;
-                const int w = 1280, h = 850;
-                const int x = vm ? (vm->width  - w) / 2 : 64;
-                const int y = vm ? (vm->height - h) / 2 : 64;
-                glfwSetWindowMonitor(window, nullptr, x, y, w, h, GLFW_DONT_CARE);
-                glfwSetWindowSize(window, w, h);
-                glfwSetWindowPos (window, x, y);
-                savedWinX_ = x; savedWinY_ = y; savedWinW_ = w; savedWinH_ = h;
-            }
-#endif
-        }
-        kiosk_ = false;
-        // A session LAUNCHED with --kiosk stays read-only for life (the
-        // documented "can't disturb your desktop setup" promise); a GUI
-        // session that merely visited kiosk resumes writing.
-        settings->setReadOnly(launchedInKiosk_);
-        pom2::log().info("Kiosk", "left (windowed, full UI)");
-    }
-}
-
-bool MainWindow::toggleKioskMode()
-{
-    setKioskModeRuntime(!kiosk_);
-    return kiosk_;
 }

@@ -219,6 +219,13 @@ set(SOURCES
     src/MainWindow_SettingsPanels.cpp
     src/MainWindow_MiscPanels.cpp
     src/MainWindow_Slots.cpp
+    src/MainWindow_Kiosk.cpp
+    src/MainWindow_StoragePanels.cpp
+    src/MainWindow_Media.cpp
+    src/MainWindow_Chrome.cpp
+    src/MainWindow_Screen.cpp
+    src/MainWindow_Input.cpp
+    src/MainWindow_SlotConfig.cpp
     src/PanelRegistry.cpp
     # Host-policy coordinators ported from refactor/core-boundaries-and-coordinators.
     # Renderer-free value/command boundaries over SlotBus + EmulationController;
@@ -474,6 +481,13 @@ set(POM2_FRONTEND_SOURCES
     src/MainWindow_DevicePanels.cpp
     src/MainWindow_MemoryMaps.cpp
     src/MainWindow_Slots.cpp
+    src/MainWindow_Kiosk.cpp
+    src/MainWindow_StoragePanels.cpp
+    src/MainWindow_Media.cpp
+    src/MainWindow_Chrome.cpp
+    src/MainWindow_Screen.cpp
+    src/MainWindow_Input.cpp
+    src/MainWindow_SlotConfig.cpp
     src/MemoryViewer_ImGui.cpp
     src/NtscPostProcessor.cpp
     src/CrtEffectStack.cpp
@@ -604,6 +618,14 @@ set(POM2_RUNTIME_SOURCES
 )
 
 pom2_enforce_source_layers(${CMAKE_CURRENT_SOURCE_DIR})
+
+# The frontend composition root regrew from 5590 to 11511 lines with a rule
+# against it written down and no mechanism behind it. The decomposition
+# (2026-08-28) took MainWindow.cpp to ~1680 and split the rest across eleven
+# siblings; this is what keeps any ONE of them from becoming the next
+# monolith. Deliberately family-wide: the failure mode is not "MainWindow.cpp
+# grows", it is "the panel that grows is whichever one is convenient".
+pom2_enforce_mainwindow_line_limit(${CMAKE_CURRENT_SOURCE_DIR} 2000)
 
 set(HEADERS
     src/M6502.h

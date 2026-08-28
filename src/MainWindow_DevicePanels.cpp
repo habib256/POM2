@@ -24,6 +24,13 @@
 #include "DevicePanelCoordinator.h"
 #include "EmulationController.h"
 
+#include "SystemProfile.h"
+#include "FujiNetCardFactory.h"
+#include "FujiNet_ImGui.h"
+#include "NetworkCoordinator.h"
+#include "SerialPort.h"
+#include "SpTransport.h"
+#include "PrinterScreenDump.h"
 #include "AiControlServer.h"
 #include "AtomicFileReplace.h"
 #include "FujiNetCard.h"
@@ -673,4 +680,196 @@ void MainWindow::renderAiControlPanelWindow()
                         "/eject /snapshot/save /snapshot/load /speed /screen.ppm");
 
     ImGui::End();
+}
+bool MainWindow::plugFujiNetFromCli(int& slot, bool slotExplicit, bool serial,
+                                    const std::string& serialDevice,
+                                    int tcpPort, std::string& errOut)
+{
+    if (slot < 1 || slot > 7) { errOut = "slot must be 1-7"; return false; }
+    if (pom2::profileConfig(activeProfile).noPhysicalSlots) {
+        errOut = "the active //c-class profile has no physical expansion slots";
+        return false;
+    }
+
+    auto  st  = controller->lockState();
+    auto& bus = st.memory().slotBus();
+
+    if (bus.peripheral(slot) != nullptr && !slotExplicit) {
+        // The user never named a slot — 7 is only POM2's preference, and its
+        // own first-run default puts a Le Chat Mauve there, so refusing here
+        // would make the documented bare `--fujinet` fail on a stock install.
+        // Fall back the way docs/fujinet_plan.md specifies. Downwards from 7:
+        // the autostart scan walks slots high to low, so the highest free slot
+        // is the one most likely to be reached before the Disk II in 6.
+        int free = 0;
+        for (int s = 7; s >= 1 && free == 0; --s)
+            if (bus.peripheral(s) == nullptr) free = s;
+        if (free == 0) {
+            errOut = "every slot is occupied — free one, or name it with "
+                     "--fujinet-slot";
+            return false;
+        }
+        pom2::log().info("CLI", "--fujinet: slot " + std::to_string(slot) +
+                                    " holds " +
+                                    std::string(bus.peripheral(slot)->name()) +
+                                    ", using free slot " + std::to_string(free));
+        slot = free;
+    }
+
+    if (bus.peripheral(slot) != nullptr) {
+        errOut = "slot " + std::to_string(slot) + " already holds " +
+                 std::string(bus.peripheral(slot)->name()) +
+                 " — pick a free slot with --fujinet-slot";
+        return false;
+    }
+
+    if (!plugFujiNetUnlocked(st, slot, serial, serialDevice, tcpPort, errOut))
+        return false;
+
+    // Remember it so every later slot rebuild reproduces it — see the header.
+    cliFujiNetSlot_       = slot;
+    cliFujiNetSerial_     = serial;
+    cliFujiNetSerialPath_ = serialDevice;
+    cliFujiNetPort_       = tcpPort;
+    return true;
+}
+
+bool MainWindow::plugFujiNetUnlocked(const pom2::StateAccess& st,
+                                     int slot, bool serial,
+                                     const std::string& serialDevice,
+                                     int tcpPort, std::string& errOut)
+{
+    auto& bus = st.memory().slotBus();
+    auto card = pom2::makeFujiNetCard(slot);
+    card->setMemory(&st.memory());
+    card->setCpu(&st.cpu());
+    auto& link = card->transportLink();
+    if (serial)
+        link.setSerialMode(serialDevice, pom2::SerialPort::kDefaultBaud);
+    else
+        link.setTcpMode(static_cast<uint16_t>(tcpPort));
+
+    std::string err;
+    if (!link.start(err)) { errOut = err; return false; }
+
+    bus.plug(slot, std::move(card));
+    // Session-only (CLI --fujinet / drag-and-drop): the live bus shows it,
+    // the plan does not claim it.
+    return true;
+}
+
+void MainWindow::archiveNewPrinterPages()
+{
+    if (!imageWriter || !printerHistory || !printerHistory->isOpen()) return;
+
+    const uint64_t ejected = static_cast<uint64_t>(imageWriter->sheetsEjected());
+    if (ejected <= printerArchivedSheets_) return;
+
+    // How many of those sheets are still reachable. The stack is capped, so a
+    // burst of form feeds between two frames can push pages off it before we
+    // ever see them — archive what is there and resynchronise rather than
+    // pretending we captured everything.
+    const uint64_t missed = ejected - printerArchivedSheets_;
+    const size_t   have   = imageWriter->completedPageCount();
+    const size_t   take   = static_cast<size_t>(std::min<uint64_t>(missed, have));
+    const uint64_t irrecoverablyDropped = missed - take;
+    size_t accepted = 0;
+
+    for (size_t i = have - take; i < have; ++i) {
+        std::string err;
+        if (!printerHistory->addPage(imageWriter->completedPage(i),
+                                     static_cast<int>(imageWriter->model()),
+                                     static_cast<int>(imageWriter->ribbon()),
+                                     imageWriter->paperWidthIn(),
+                                     imageWriter->paperLengthIn(), err)) {
+            pom2::log().warn("PrinterHistory", err);
+            break;
+        }
+        ++accepted;
+    }
+    if (take < missed) {
+        pom2::log().warn("PrinterHistory",
+            "archived " + std::to_string(take) + " of " +
+            std::to_string(missed) + " ejected sheets — the rest had already "
+            "fallen off the printer's page stack");
+    }
+    // Advance only past sheets actually archived (plus sheets already fallen
+    // off the bounded live stack). A transient index failure is retried next
+    // frame instead of silently discarding the failed page and the rest of
+    // the batch.
+    printerArchivedSheets_ += irrecoverablyDropped + accepted;
+}
+
+void MainWindow::dumpScreenToPrinter()
+{
+    if (!imageWriter) return;
+
+    // Snapshot the framebuffer under BOTH locks, exactly as saveScreenshot
+    // does — `pixels()` can lazily run the composite demod, which writes
+    // frame80 and races the AI control server's /screen handler otherwise.
+    // Lock order stateMutex → demodMutex, never the other way.
+    int w = 0, h = 0;
+    std::vector<uint32_t> px;
+    {
+        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        std::lock_guard<std::mutex> demodLk(display->demodMutex());
+        w = display->width();
+        h = display->height();
+        if (w > 0 && h > 0) {
+            const uint32_t* src = display->pixels();
+            px.assign(src, src + static_cast<size_t>(w) * h);
+        }
+    }
+    if (px.empty()) return;
+
+    // The dump goes in as BYTES, through the printer's own ESC G parser —
+    // never painted onto the page. So it obeys the ribbon, the pacing and the
+    // paper, lands in the tray and the PDF export, and cannot drift from what
+    // a period driver would have produced. See PrinterScreenDump.h.
+    // Each head has its own graphics grammar, so the dump has to be built
+    // for the one actually fitted — the Epson wants ESC * with a binary count
+    // and bit 7 as the top dot, the C. Itoh family ESC G with four ASCII
+    // digits and bit 0.
+    std::vector<uint8_t> stream;
+    if (imageWriter->model() == pom2::IwModel::EpsonFX80)
+        pom2::buildScreenDumpEpson(px.data(), w, h, w,
+                                   printerDumpOptions_, stream);
+    else
+        pom2::buildScreenDumpImageWriter(px.data(), w, h, w,
+                                         printerDumpOptions_, stream);
+    if (stream.empty()) return;
+
+    imageWriter->queueBytes(stream.data(), stream.size());
+    show(pom2::PanelId::ImageWriter) = true;  // the user asked to print; show the paper
+}
+
+void MainWindow::renderFujiNetPanelWindow()
+{
+    if (!show(pom2::PanelId::FujiNet)) return;
+
+    // One acquisition for the snapshot, one for whatever the frame asked for.
+    // What this replaces bound `auto& link = card->transportLink()` OUTSIDE
+    // any lock and then wrote through that reference inside SIX separate
+    // critical sections — a slot rebuild between any two of them left the rest
+    // writing to a freed link — and applied the timeout change with no lock at
+    // all.
+    auto snap = networkCoordinator_->captureFujiNetPanel(*controller);
+
+    // Both of these take the machine lock themselves, so they must stay
+    // outside any guard: stateMutex is non-recursive.
+    //
+    // Outranked iff the arbitration picked something OTHER than this tap.
+    snap.printerOutranked =
+        snap.printerTap &&
+        printerCoordinator_->captureHost(*controller).source !=
+            pom2::PrinterCoordinator::SourceKind::FujiNet;
+    snap.hostClockCard =
+        devicePanelCoordinator_->captureInventory().clockPlugged();
+
+    const auto r = fujiNetPanel->render("FujiNet", show(pom2::PanelId::FujiNet), snap);
+    if (!snap.plugged) return;
+
+    // The web-UI button has no portable "open a URL" helper in POM2, so the
+    // coordinator surfaces the address on the status line instead.
+    networkCoordinator_->applyFujiNetPanel(*controller, r);
 }

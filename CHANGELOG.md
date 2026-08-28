@@ -5,6 +5,68 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — MainWindow.cpp: 8316 lines to 1680
+
+TODO P1-3 / P1-4, and the other half of the architecture assessment's finding.
+
+The composition root had grown from 5590 to 11511 lines **with a rule against
+it written down**, which is the whole reason this entry ends with two
+mechanisms rather than a promise. It is now ~1680 lines and holds only what a
+composition root should: construction, destruction, the DockSpace and its
+layout presets, and the frame loop.
+
+Everything else moved to a sibling named for what it owns. Nothing was
+rewritten — the panel registry (2026-08-2x) had already made every panel body
+a thing nothing outside it refers to, so this was a move:
+
+| new TU | owns |
+|---|---|
+| `MainWindow_SlotConfig.cpp` | `plugSlotsFromSettings` — the peripheral composition root, including the runtime seams a DEVICES card may not build for itself |
+| `MainWindow_Chrome.cpp` | menu bar, status bar, command palette, `runCommand` |
+| `MainWindow_Screen.cpp` | framebuffer upload, `drawScreenImage`, screenshots |
+| `MainWindow_Input.cpp` | keyboard, paste, pointer grab, mouse, joystick, file drop |
+| `MainWindow_Kiosk.cpp` | the whole of kiosk mode, including the two window methods that were in `MainWindow_Slots.cpp` |
+| `MainWindow_Media.cpp` | mount / eject / boot policy and the SlotBus queries |
+| `MainWindow_StoragePanels.cpp` | every storage window and file dialog |
+
+**The split worth arguing about is Media vs StoragePanels.** One decides what
+happens to a disk image — which slot it belongs in, whether a card has to be
+auto-plugged to boot it, what an eject commits. The other draws. The panels
+call in; nothing in `MainWindow_Media.cpp` calls back out to ImGui. Keeping
+those apart is what makes the two-phase mount rule (`MediaMount.h`: read and
+decode unlocked, take `stateMutex` only to swap the object in) reviewable in
+one file instead of interleaved with 1600 lines of widget code.
+
+Three file-scope helpers moved with the code that used them and nothing else:
+the on-screen kiosk key grid, the `@PRODOS_HOST_FOLDER@:` library sentinel,
+and `freePoNameFor`. The `stb_image` implementation macro moved too — it is
+there for the About photo and the //e keyboard photo, both of which now live
+in `MainWindow_MiscPanels.cpp`, and `STB_IMAGE_STATIC` means the symbols have
+to be in the same TU as the callers.
+
+`MainWindow.cpp` was left carrying 49 includes for code that had moved away.
+They are gone, and the handful the file still uses directly are now named
+**even though they also arrive transitively through `MainWindow.h`** —
+libstdc++ is stricter about transitive includes than libc++, so relying on
+them is a GCC-only break waiting for a header cleanup elsewhere.
+
+**Two mechanisms, deliberately different.**
+
+* `tools/check_file_sizes.sh` stays the general ratchet. `MainWindow.cpp`
+  **left the budget file entirely**: at ~1680 it is under the 2000-line watch
+  threshold, as is every sibling. The two exceptions the budget's header used
+  to record — the GPL-notice bump and the host-seam injections — went with it.
+* `pom2_enforce_mainwindow_line_limit()` is a **hard cap at configure time**:
+  any `src/MainWindow*.cpp` over 2000 lines fails `cmake`. The function had
+  been written and never called. It is family-wide on purpose — the failure
+  mode was never "MainWindow.cpp grows", it was "the file that grows is
+  whichever one is convenient". Mutation-checked at 1600: cmake fails and
+  names the file and its length.
+
+217/217 ctest, layer guard clean (every new TU is in the FRONTEND manifest,
+which the completeness check makes non-optional), lock scanner clean at 85
+coordinator call sites.
+
 ## 2026-08-28 — Slot ROMs stop counting bytes
 
 The cure the fence was standing in for. TODO P1-1 / P1-2.
