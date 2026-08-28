@@ -8,6 +8,10 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - `docs/test_corpus.md` — edge-case integration corpus; **[DIX](https://github.com/Fr3nchT0uch/DIX/)** (French Touch anthology) is the priority gold-standard benchmark.
 - `docs/lle_vs_hle.md` — abstraction level per subsystem (silicon vs contract), the HLE seams, and the rule POM2 follows when picking a level.
 - `docs/printer_plan.md` — dot-matrix printer gap analysis vs `web-a2e` + phased plan (character ROMs, screen dump, more heads).
+- `tools/coverage.sh` — line coverage over the code the tests link, with a
+  floor that may rise and may not fall (`tools/coverage_floor.txt`). Run it
+  before claiming something is untested: the 2026-08-28 plan named three such
+  subsystems and all three had suites.
 - `docs/PERFORMANCE.md` — core profile (callgrind recipe + `pom2_bench`), the optimisations already done and **why**, and the PGO/LTO build recipe. Read before "optimising" anything on the hot path.
 - `CHANGELOG.md` — resolved items + the **why** behind non-obvious fixes.
 - `docs/releases/v<x.y>.md` — the release notes for that tag, written by hand. The publish job fetches the file matching the tag and uses it as the GitHub Release body (generated commit list only as fallback).

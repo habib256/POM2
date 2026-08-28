@@ -92,7 +92,7 @@ that grows is whichever one is convenient".
 Details for all four in `CHANGELOG.md`, structure in
 [DEV § The MainWindow family](DEV.md#the-mainwindow-family).
 
-### P2 — make the holes visible · *2-2 and 2-3 landed 2026-08-28*
+### P2 — make the holes visible · *landed 2026-08-28*
 
 **2-3 — warnings to zero, and a leg that keeps them there.** 14 → 0, and
 `-DPOM2_WERROR=ON` on the macOS job. One of the fourteen was not a style nit:
@@ -100,6 +100,21 @@ a value-returning lambda in the Super Serial panel fell off its end (UB,
 working only because NRVO put the object where the caller was going to read
 it). Another was an initialiser list in a different order from the
 declarations it initialises. Both are the argument for the flag.
+
+**2-1 — coverage in CI.** `tools/coverage.sh` + a `Line coverage (floor)` job.
+Clang source-based coverage over the code the tests link; the floor may go up
+freely and may not go down, the same ratchet shape as the file-size budget.
+**First measurement: 78.90 %**, floor recorded at 78.40 % (half a point of
+margin — two runs of the same tree differ by ~0.1 %, and a floor that fails on
+noise is a floor somebody switches off). It named real holes on its first run:
+`CharRomCatalog.cpp`, `RomLoader.cpp`, `SlirpNetworkBackend.cpp`,
+`SpSerialTransport.cpp` and `SuperSerialTcpTransport.cpp` are all at **0 %**.
+
+**2-4 — `FloppyEmuDevice`.** Already tested, and the plan's third wrong
+premise. `tests/floppy_emu_smoke_test.cpp` covers the mode label/key
+round-trip, per-mode format filtering, SD navigation bounded to the root
+(including the symlink escape), and `favdisks.txt` parsing. Nothing worth
+adding was missing.
 
 **2-2 — `FujiNetNetDevice`.** The plan's premise was wrong, in the same way
 P0-5's was: it is **not** untested. `tests/fujinet_net_device_test.cpp`
@@ -112,11 +127,14 @@ is how the firmware's table spells "no such host"; a guest that cannot tell a
 typo'd hostname from a dead server has nothing to show the user). Both new
 paths mutation-checked.
 
+**What the number says to do next**, now that there is one — these are the
+0 % files above, and they are a better backlog than guessing was:
+
 | # | Item | Why |
 | - | ---- | --- |
-| 2-1 | 🟡 **Coverage in CI** — `llvm-cov` on the Linux job, report published, floor set at the first measured value. | Holes are found by hand today, and badly: the plan asserted that `FujiNetNetDevice` and `TnfsClient` were untested and both had test suites. A number would have said which lines were actually uncovered instead. |
+| 2-5 | 🟡 **`RomLoader.cpp` and `CharRomCatalog.cpp` at 0 %** — every profile's ROM probe order and the character-ROM locale fallback, with no test at all. | The path every single boot takes, and the one that decides whether the machine you asked for is the machine you got. |
+| 2-6 | 🟢 **The three host transports at 0 %** — `SlirpNetworkBackend`, `SpSerialTransport`, `SuperSerialTcpTransport`. | Seams exist for all three now (`ssc_transport_seam`, `fujinet_link_seam`), so these are testable in a way they were not before the 2026-08-27 seam work. |
 | 2-3b | 🟢 **Extend `-Werror` to the GCC leg** — it is on for macOS/AppleClang (2026-08-28). GCC's warning set is not clang's and nobody has cleaned it, so turning it on blind would red `main`. Build the Linux job once with it, fix what it names, then wire it. | The leg that catches what clang does not — transitive includes, and its own `-Wmaybe-uninitialized` family. |
-| 2-4 | 🟢 **A test for `FloppyEmuDevice`** — the last device with no pin that is not a declared stub. | |
 
 ### P3 — rulings, not development
 

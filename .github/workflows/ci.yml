@@ -444,6 +444,41 @@ jobs:
         with:
           path: _site
 
+  # ─── Line coverage, with a floor ────────────────────────────────────────
+  #
+  # The 2026-08-28 architecture plan asserted that three subsystems had no
+  # tests — TnfsClient, FujiNetNetDevice, FloppyEmuDevice. All three had test
+  # suites. Holes were being found by reading, and reading got it wrong three
+  # times out of three. This measures instead, and names the LINES.
+  #
+  # Clang source-based coverage, not gcov: it counts regions, so a half-taken
+  # `a && b` and an untaken `else` are visible rather than reading as covered.
+  # Its own job because it needs a clang toolchain and a full instrumented
+  # rebuild, neither of which the GCC leg should be made to carry.
+  coverage:
+    name: Line coverage (floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake clang llvm pkg-config libglfw3-dev libgl1-mesa-dev
+
+      - name: Fetch Dear ImGui (pinned)
+        run: tools/fetch_imgui_pinned.sh
+
+      # Ubuntu ships the LLVM tools versioned and unversioned depending on the
+      # release, so the script takes them from the environment rather than
+      # guessing at a suffix.
+      - name: Measure, and hold the floor
+        run: |
+          export LLVM_PROFDATA="$(command -v llvm-profdata || command -v llvm-profdata-18 || command -v llvm-profdata-17)"
+          export LLVM_COV="$(command -v llvm-cov || command -v llvm-cov-18 || command -v llvm-cov-17)"
+          tools/coverage.sh
+
   # Deploys what the `wasm` job just built. Separate job on purpose: it is
   # the only one that needs `pages: write` + `id-token: write`, and keeping
   # those off the build jobs is the point of a least-privilege split. Its
