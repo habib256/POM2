@@ -118,7 +118,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Mouse Card (MAME + AppleWin HLE) + host pointer capture | `MouseCard.*`, `MouseCardAppleWin.*`, `MouseGrab.h` | [§ Mouse](DEV.md#mouse-card), [§ Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh) |
 | Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |
 | AI control server (HTTP on loopback, opt-in) | `AiControlServer.h/.cpp` | [§ AI control server](DEV.md#ai-control-server-aicontrolserver) |
-| UI (ImGui) | `MainWindow.*`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui) |
+| UI (ImGui) — `MainWindow.cpp` is the composition root only; each concern is a `MainWindow_<Area>.cpp` sibling, hard-capped at 2000 lines | `MainWindow.*`, `MainWindow_*.cpp`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui), [§ MainWindow family](DEV.md#the-mainwindow-family) |
 | UI theme + DPI/zoom scaling | `Pom2Theme.h/.cpp` | [§ Theme](DEV.md#theme--ui-scaling-pom2theme) |
 | Panel registry — the ONE list of panels (menus + palette + persistence derive from it) | `PanelCatalog.h`, `PanelRegistry.h/.cpp`, `MainWindow_Panels.cpp` | [§ Panel registry](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp) |
 | Command palette (Ctrl+Shift+P) | `CommandPalette_ImGui.h/.cpp` | [§ Palette](DEV.md#command-palette-commandpalette_imgui) |

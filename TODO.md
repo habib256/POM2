@@ -41,14 +41,19 @@ items stay under [Backlog](#backlog); this says what to do *next* when choosing
 among them. Levels are sequential: P0 before anything else. Priorities that land
 are deleted here and written up in `CHANGELOG.md`.
 
-The assessment's finding in one line: POM2 is **well above average on the hard
+The assessment's finding in one line: POM2 was **well above average on the hard
 axes** (concurrency discipline, hardware fidelity, test density) and **below it
-on the easy ones** (one god-object, seven hand-assembled ROMs with no
-assembler). Both weak axes have already produced a silent bug.
+on the easy ones** (one god-object, six hand-written ROMs with no assembler).
+Both weak axes had already produced a silent bug; **both are closed as of
+2026-08-28** — P0 and P1 are done, and what is left below is P2 and P3.
 
-Standing rule while P1 is open: **do not grow the god-objects.** A new card gets
-its panel in its own `*_ImGui.cpp` and **zero** business logic in
-`MainWindow.cpp`.
+Standing rule, and it is a mechanism now rather than a request: **do not grow
+the god-objects.** A new card gets its panel in its own `*_ImGui.cpp` and
+**zero** business logic in `MainWindow.cpp`. `cmake` fails if any
+`src/MainWindow*.cpp` passes 2000 lines, and `tools/check_file_sizes.sh` fails
+if any first-party file passes its recorded ceiling. The rule went from 5590 to
+11511 lines while it was only written down; both numbers are why it is wired to
+something now.
 
 ### P0 — close what is bleeding · *mostly landed 2026-08-28*
 
@@ -62,21 +67,30 @@ header was never generated (no clean checkout could build); the ratchet had
 never run on macOS *and reported success*; and `POM2_FOUNDATION_SOURCES` was
 listed but never read, so the layer hole was 14 files, not 13.
 
-### P1 — the two structural causes · *half landed 2026-08-28*
+### P1 — the two structural causes · *landed 2026-08-28*
 
-**1-1 and 1-2 landed** — `SlotRomAsm.h`, and all six hand-written ROMs rewritten
-on it, each verified **byte-identical** to what it produced before. Details in
-`CHANGELOG.md`. Two corrections to the plan, recorded because they are the kind
-of thing that gets re-proposed: it is *not* `constexpr` (a slot page is
-parameterised by the slot, which comes from settings at runtime, so there is no
-constant to fold), and there were **six** hand-written ROMs, not seven —
-`ClockCard` writes nine fixed bytes with no cursor and `DiskIICard`'s boot PROM
-is a verbatim dump.
+**All four items are done.** Both weak axes the assessment named are closed.
 
-| # | Item | Why |
-| - | ---- | --- |
-| 1-3 | 🟠 **Finish the `MainWindow` decomposition** — target &lt; 2 000 lines; it should keep only the frame loop, the dock and the coordinator wiring. | Detail: [Arch](#arch-refactor--tooling). Mechanical, not conceptual — the registry and the eleven coordinators did the design work. |
-| 1-4 | 🟡 **Lower the ratchet in the same commit.** | Without it the file regrows. It already has. |
+**1-1 / 1-2 — the hand-written ROMs.** `SlotRomAsm.h`, and all six pages
+rewritten on it, each verified **byte-identical** to what it produced before.
+Two corrections to the plan, recorded because they are the kind of thing that
+gets re-proposed: it is *not* `constexpr` (a slot page is parameterised by the
+slot, which comes from settings at runtime, so there is no constant to fold),
+and there were **six** hand-written ROMs, not seven — `ClockCard` writes nine
+fixed bytes with no cursor and `DiskIICard`'s boot PROM is a verbatim dump.
+
+**1-3 / 1-4 — the god-object.** `MainWindow.cpp` 8316 → ~1680, holding only
+construction, the dock and the frame loop. Eleven sibling TUs, each named for
+what it owns; the split worth knowing is `MainWindow_Media.cpp` (what happens
+to a disk image) vs `MainWindow_StoragePanels.cpp` (drawing it). The ratchet
+was lowered in the same commit — in fact `MainWindow.cpp` **left the budget
+file entirely**, being under the 2000-line watch threshold — and a *hard* cap
+now fails `cmake` if any `src/MainWindow*.cpp` passes 2000 lines. Family-wide
+on purpose: the failure mode was never "MainWindow.cpp grows", it was "the file
+that grows is whichever one is convenient".
+
+Details for all four in `CHANGELOG.md`, structure in
+[DEV § The MainWindow family](DEV.md#the-mainwindow-family).
 
 ### P2 — make the holes visible · *≈ 3-4 d*
 

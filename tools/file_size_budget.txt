@@ -4,29 +4,22 @@
 # A number here may go DOWN (record the win); it may not go up.
 # Growing one of these means editing this file in the same commit.
 #
-# The 2026-08-27 bump is the ONLY exception recorded so far: the GPL-3 notice
-# added to every source file is 15 lines, of which the old attribution prelude
-# accounted for ~4. That is licence text, not code, and it is why six ceilings
-# moved up by ~11 in one commit. Code growth still may not raise them.
+# 2026-08-28: src/MainWindow.cpp LEFT THIS FILE. It was 8316 lines and had
+# been the largest entry since the ratchet was written; the decomposition
+# (TODO P1-3) took it to ~1680, below the 2000-line watch threshold, and every
+# TU it was split into is below it too. The two exceptions this header used to
+# record — the GPL-notice bump and the host-seam injections — went with it.
 #
-# The 2026-08-28 bump is the second, and it is the one the rule was written to
-# make visible: src/MainWindow.cpp 8300 -> 8316. The growth is real code — the
-# host-seam injections the layer guard required (SuperSerial transport, W5100
-# socket factory + resolver) plus three includes. It went unnoticed for a day
-# because tools/check_file_sizes.sh aborted on bash 3.2 (macOS) with exit
-# status 0, so the only place it ran was CI, where it has been failing since.
-#
-# Answering the question the rule asks: yes, that code belongs elsewhere. Card
-# construction with its runtime seam wired is what pom2::makeFujiNetCard()
-# already does for FujiNet, and the SSC and Uthernet II want the same
-# treatment. TODO P1-3 owns it; this ceiling is the receipt.
+# The MainWindow family also has a HARD cap now, enforced at configure time
+# rather than here: pom2_enforce_mainwindow_line_limit() fails cmake if any
+# src/MainWindow*.cpp passes 2000 lines. The ratchet is the general rule; that
+# is the specific promise, because this is the family that broke it before.
 #
 # Regenerate with: tools/check_file_sizes.sh --update
 
 src/Apple2Display.cpp                    2711
 src/DiskImage.cpp                        2835
-src/hgrpaint/HgrPaintEditor.cpp          2525
 src/ImageWriter.cpp                      2152
 src/M6502.cpp                            2159
-src/MainWindow.cpp                       8316
 src/Memory.cpp                           2402
+src/hgrpaint/HgrPaintEditor.cpp          2525

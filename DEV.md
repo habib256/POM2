@@ -4372,8 +4372,8 @@ the browser's pointer lock already delivers raw `movementX/Y`).
 A grab is host-side only, like kiosk: the machine never sees it, so
 nothing about it is snapshotted. The policy itself lives in
 `MouseGrab.h` — GLFW-free, so `mouse_grab_policy` pins it with no
-windowing stack; `MainWindow.cpp` static_asserts its mirrored GLFW
-tokens against the real header.
+windowing stack; `MainWindow_Input.cpp` static_asserts its mirrored
+GLFW tokens against the real header.
 
 **ROM gating**: BOTH ROMs required. Slot-config UI greys entry when
 missing; `plugSlotsFromSettings` refuses with a Mouse log warn.
@@ -4602,11 +4602,46 @@ frame so it can act on the close edge, exactly as it did when the call was
 unconditional. `panel_registry` pins that, because it is the kind of thing a
 loop silently eats.
 
-**What is left.** Nothing structural: adding a panel is a catalog row, a
-`draw` line, and — only if it sits behind a card — a `bind` for its label and
-availability. The remaining work on `MainWindow.cpp` is ordinary extraction of
-the panel *bodies* into their own translation units, which is now a move
-rather than a rewrite, because nothing outside a body refers to it.
+**What is left.** Nothing. Adding a panel is a catalog row, a `draw` line,
+and — only if it sits behind a card — a `bind` for its label and availability.
+The panel *bodies* moved into their own translation units on 2026-08-28
+(see below); it was a move rather than a rewrite, exactly because nothing
+outside a body refers to it.
+
+### The MainWindow family
+
+`MainWindow.cpp` was 8316 lines. It is ~1680, and holds only what a
+composition root should: construction, destruction, the dock, and the frame
+loop. Everything else is a sibling TU named for what it owns.
+
+| file | owns |
+|---|---|
+| `MainWindow.cpp` | ctor/dtor, `render()`, the DockSpace and its layout presets, theme + DPI |
+| `MainWindow_SlotConfig.cpp` | `plugSlotsFromSettings` — the peripheral composition root, including the runtime seams a DEVICES card may not build for itself |
+| `MainWindow_Slots.cpp` | the Slot Config + Internal Disks windows, profile switching |
+| `MainWindow_Chrome.cpp` | menu bar, status bar, command palette, `runCommand` |
+| `MainWindow_Screen.cpp` | framebuffer upload, `drawScreenImage`, screenshots |
+| `MainWindow_Input.cpp` | keyboard, paste, pointer grab, mouse, joystick, file drop |
+| `MainWindow_Kiosk.cpp` | the whole kiosk mode: render path, in-game menu, GUI ⇄ full-screen |
+| `MainWindow_Media.cpp` | mount/eject/boot policy and the SlotBus queries — no UI |
+| `MainWindow_StoragePanels.cpp` | every storage window and file dialog — no policy |
+| `MainWindow_*Panels.cpp` | audio, device, settings, misc panel bodies |
+| `MainWindow_MemoryMaps.cpp` | the memory-map views |
+| `MainWindow_Panels.cpp` | the panel registry binding |
+
+The split that matters most is **Media vs StoragePanels**: one decides what
+happens to a disk image, the other draws. The panels call in; nothing in
+`MainWindow_Media.cpp` calls back out to ImGui.
+
+Two mechanisms keep it this way, and they are different on purpose:
+
+* `tools/check_file_sizes.sh` is the general ratchet — a recorded ceiling per
+  file, which may fall and may not rise. `MainWindow.cpp` left it entirely:
+  at ~1680 it is below the 2000-line watch threshold, as is every sibling.
+* `pom2_enforce_mainwindow_line_limit()` is a **hard cap at configure time**:
+  any `src/MainWindow*.cpp` over 2000 lines fails `cmake`. Family-wide on
+  purpose — the failure mode was never "MainWindow.cpp grows", it was "the
+  file that grows is whichever one is convenient".
 
 **Deliberately a table, not self-registration.** Static registrars in 40
 translation units would scatter the UI surface back across the codebase; the
