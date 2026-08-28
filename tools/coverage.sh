@@ -48,17 +48,40 @@ for t in "$PROFDATA" "$COV"; do
 done
 
 echo "coverage: configuring $BUILD_DIR"
+# C is not enabled as a project language, so naming a C compiler only earns a
+# "manually-specified variable was not used" warning.
+mkdir -p "$BUILD_DIR"
 cmake -S . -B "$BUILD_DIR" \
       -DCMAKE_BUILD_TYPE=Debug \
       -DPOM2_ENABLE_TESTS=ON \
       -DPOM2_COVERAGE=ON \
-      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ > /dev/null || exit 1
+      -DCMAKE_CXX_COMPILER=clang++ > "$BUILD_DIR/configure.log" 2>&1 || {
+    echo "coverage: configure failed" >&2
+    tail -30 "$BUILD_DIR/configure.log" >&2
+    exit 1
+}
 
 echo "coverage: building"
 cmake --build "$BUILD_DIR" --parallel "$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" \
       > "$BUILD_DIR/build.log" 2>&1 || {
-    echo "coverage: build failed — see $BUILD_DIR/build.log" >&2
-    tail -30 "$BUILD_DIR/build.log" >&2
+    echo "coverage: build failed" >&2
+    echo "--- compiler ---" >&2
+    "${CXX:-clang++}" --version 2>&1 | head -2 >&2
+    # The ERRORS, not the tail. A --parallel build ends with whatever finished
+    # last, which is usually a target that succeeded, so a tail is exactly the
+    # part of the log that does not say what went wrong. (This cost a CI round
+    # trip the first time the job ran.)
+    echo "--- errors ---" >&2
+    grep -nE "error:|Error [0-9]|fatal error" "$BUILD_DIR/build.log" | head -40 >&2
+    # A build that ran out of room says so in a way easy to miss among 200
+    # parallel targets, and the coverage tree is big enough for that to be the
+    # first thing to check.
+    echo "--- disk ---" >&2
+    df -h . >&2
+    du -sh "$BUILD_DIR" 2>/dev/null >&2
+    echo "--- context around the first error ---" >&2
+    grep -n -B6 -A12 -m1 "error:" "$BUILD_DIR/build.log" >&2 || \
+        tail -40 "$BUILD_DIR/build.log" >&2
     exit 1
 }
 
