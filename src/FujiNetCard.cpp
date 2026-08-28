@@ -25,6 +25,7 @@
 #include "Logger.h"
 #include "M6502.h"
 #include "Memory.h"
+#include "SlotRom.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -62,18 +63,10 @@ constexpr uint16_t kZpBlkLo   = 0x46;
 
 constexpr std::size_t kBlockBytes = 512;
 
-void emit(std::array<uint8_t, 256>& rom, uint8_t& pc,
-          std::initializer_list<uint8_t> bytes)
+/// Relative branch displacement, from the shared slot-ROM helper.
+constexpr uint8_t rel(unsigned at, unsigned target)
 {
-    for (uint8_t b : bytes) rom[pc++] = b;
-}
-
-/// Relative branch displacement from the branch opcode at `at` to `target`.
-/// `at` is the opcode's own offset; the operand follows, so the PC the CPU
-/// adds to is `at + 2`.
-constexpr uint8_t rel(uint8_t at, uint8_t target)
-{
-    return static_cast<uint8_t>(target - (at + 2));
+    return slotRomRel(at, target);
 }
 
 } // namespace
@@ -128,24 +121,39 @@ void FujiNetCard::buildRom()
     // $C0(8+slot)2 — the device-select address the driver stores the magic to.
     const uint8_t trapLo  = static_cast<uint8_t>(0x80 + slot_ * 16 + 2);
 
+    // ── 256-byte layout ──────────────────────────────────────────────────
+    // Hand-assembled, so every region declares where it ends and the builder
+    // refuses to write past it — see SlotRom.h for the SmartPort bug that
+    // motivated the bound. `expectEnd` pins the regions whose length is
+    // hard-coded somewhere else (the branch displacements below, and the
+    // Apple convention that the SmartPort entry sits three bytes after the
+    // ProDOS one).
+    //
+    //   $Cn00-$Cn07  ProDOS/SmartPort signature bytes
+    //   $Cn08-$Cn2F  boot
+    //   $Cn30-$Cn41  boot failure — rejoin the autostart slot scan
+    //   $Cn42-$Cn5F  PR#n with nothing to boot: print "FN ERROR"
+    //   $Cn60-$CnEF  the driver (ProDOS entry, SmartPort entry at +3)
+    //   $CnF0-$CnF7  "FN ERROR", stored reversed
+    //   $CnFC-$CnFF  ProDOS identification tail
+    pom2::SlotRomBuilder b(rom_);
+
     // ── Signature ($Cn00-$Cn07) ──────────────────────────────────────────
     // CPX #$20 / LDX #$00 / CPX #$03 / CPX #$00 — chosen so the bytes at
     // $Cn01/$Cn03/$Cn05 are the ProDOS block-device signature $20/$00/$03
     // that POM2's own bootFromSlot validates, and $Cn07 = $00 marks the
     // SmartPort class. Executing them is harmless (X ends up 0).
-    uint8_t pc = 0x00;
-    emit(rom_, pc, {
+    b.region(0x00, kBootOff).emit({
         0xE0, 0x20,          // CPX #$20   → $Cn01 = $20
         0xA2, 0x00,          // LDX #$00   → $Cn03 = $00
         0xE0, 0x03,          // CPX #$03   → $Cn05 = $03
         0xE0, 0x00,          // CPX #$00   → $Cn07 = $00 (SmartPort)
-    });
+    }).expectEnd(kBootOff);
 
     // ── Boot ($Cn08) ─────────────────────────────────────────────────────
     // Read block 0 of unit 1 to $0800 through our own ProDOS entry, sanity
     // check it the way a ProDOS boot block is supposed to look, then run it.
-    pc = kBootOff;
-    emit(rom_, pc, {
+    b.region(kBootOff, kBootErr).emit({
         0xA2, 0x00,                       // LDX #$00
         0x86, 0x46,                       // STX $46      block lo
         0x86, 0x47,                       // STX $47      block hi
@@ -165,7 +173,7 @@ void FujiNetCard::buildRom()
         0xF0, rel(0x29, kBootErr),        // BEQ bootErr  must not be BRK
         0xA2, unitDrv1,                   // LDX #slot*16 boot blocks want it
         0x4C, 0x01, 0x08,                 // JMP $0801
-    });
+    }).expectEnd(kBootErr);
 
     // ── Boot failure ($Cn30) ─────────────────────────────────────────────
     // No FujiNet, or no bootable volume on unit 1. If we got here from the
@@ -174,8 +182,7 @@ void FujiNetCard::buildRom()
     // whenever the FujiNet is not running. The scan is recognised the way the
     // Monitor leaves it: $00/$01 hold the $Cn00 it jumped to, and MSLOT
     // ($07F8) holds $Cn.
-    pc = kBootErr;
-    emit(rom_, pc, {
+    b.region(kBootErr, kErrExit).emit({
         0xA6, 0x00,                       // LDX $00
         0xD0, rel(0x32, kErrExit),        // BNE errExit  low byte must be 0
         0xA6, 0x01,                       // LDX $01
@@ -186,11 +193,10 @@ void FujiNetCard::buildRom()
         0xD0, rel(0x3D, kErrExit),        // BNE errExit
         0x4C, static_cast<uint8_t>(kMonSloop & 0xFF),
               static_cast<uint8_t>(kMonSloop >> 8),      // JMP $FABA
-    });
+    }).expectEnd(kErrExit);
 
     // ── Not a scan: somebody ran PR#n with nothing to boot ($Cn42) ───────
-    pc = kErrExit;
-    emit(rom_, pc, {
+    b.region(kErrExit, kDriverOff).emit({
         0x20, static_cast<uint8_t>(kMonSetScr & 0xFF), static_cast<uint8_t>(kMonSetScr >> 8),
         0x20, static_cast<uint8_t>(kMonSetKbd & 0xFF), static_cast<uint8_t>(kMonSetKbd >> 8),
         0x20, static_cast<uint8_t>(kMonSetTxt & 0xFF), static_cast<uint8_t>(kMonSetTxt >> 8),
@@ -201,7 +207,7 @@ void FujiNetCard::buildRom()
         0xCA,                             // DEX
         0x10, rel(0x57, 0x50),            // BPL loop
         0x4C, static_cast<uint8_t>(kBasic & 0xFF), static_cast<uint8_t>(kBasic >> 8),
-    });
+    }).expectEnd(0x5C);
 
     // ── The driver ($Cn60) ───────────────────────────────────────────────
     // THE WHOLE POINT OF THE CARD. Two entry points three bytes apart, as the
@@ -212,8 +218,7 @@ void FujiNetCard::buildRom()
     // the carry flag ProDOS and SmartPort both expect: carry clear iff A == 0.
     // It also overwrites N/Z, which is why `finish()` setting them is a
     // courtesy for callers that enter mid-routine rather than a contract.
-    pc = kDriverOff;
-    emit(rom_, pc, {
+    b.region(kDriverOff, kErrText).emit({
         0x38,                             // SEC              ProDOS entry
         0xB0, rel(0x61, 0x67),            // BCS doProdos
         0xA9, kMagicSmartPort,            // LDA #$65         SmartPort entry
@@ -222,7 +227,7 @@ void FujiNetCard::buildRom()
         0x8D, trapLo, 0xC0,               // STA $C0n2        ← the trap
         0xC9, 0x01,                       // CMP #$01         A != 0 → carry
         0x60,                             // RTS
-    });
+    }).expectEnd(kDriverOff + 0x0F);
 
     // ── "FN ERROR", stored reversed because the printer counts X down ────
     const char text[8] = { 'R', 'O', 'R', 'R', 'E', ' ', 'N', 'F' };
@@ -241,6 +246,8 @@ void FujiNetCard::buildRom()
     // publishes, so a guest that special-cases FujiNet sees what it expects.
     rom_[0xFE] = 0xF7;
     rom_[0xFF] = kDriverOff;
+
+    romLayoutError_ = b.layoutError();
 }
 
 uint8_t FujiNetCard::slotRomRead(uint8_t low8) { return rom_[low8]; }

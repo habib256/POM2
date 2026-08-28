@@ -1488,6 +1488,55 @@ Mockingboard keeps `cpu_` for `getCycleCountNow()` lazy-sync only;
 Disk II keeps `cpu_` for sub-instruction LSS accuracy on Q6L reads.
 MouseCard and SSC dropped `cpu_`.
 
+### Hand-assembled slot ROMs (`SlotRom.h`)
+
+Six cards do not have a ROM dump and synthesise their `$Cn00` page as a list of
+6502 opcode bytes: `SmartPortCard`, `ProDOSHardDiskCard`, `FujiNetCard`,
+`PrinterCard`, `SuperSerialCard`, and `GrapplerCard`'s fallback stub.
+(`ClockCard` writes nine fixed signature bytes with no cursor at all;
+`DiskIICard`'s boot PROM is a verbatim dump.)
+
+Every one of them used to append the same unchecked way:
+
+```cpp
+for (uint8_t b : bytes) rom[pc++] = b;
+```
+
+`pc` is a `uint8_t` and the page is exactly 256 bytes, so a routine that
+outgrows its budget does not fail — it overwrites its neighbour, and wraps to
+`$Cn00` rather than trapping. That is how `SmartPortCard`'s ProDOS STATUS
+became dead code for weeks (2026-08-27; the write-block routine had grown
+straight through it). `ProDOSHardDiskCard` was one byte from the same fate.
+
+`pom2::SlotRomBuilder` replaces it. A region declares where it **ends**, and
+two things are caught:
+
+| flag | meaning | why it matters |
+|---|---|---|
+| `overflowed()`  | a region ran past its limit | it used to eat its neighbour |
+| `misaligned()`  | a region no longer ends at the offset `expectEnd()` declares | these ROMs are full of hand-computed branch displacements (`BEQ +55` to reach the next routine) and dispatch tables holding raw low bytes; a routine that **shrinks** breaks those exactly as thoroughly as one that grows, and changes no byte a hexdump would flag |
+
+```cpp
+pom2::SlotRomBuilder b(rom_);
+b.region(kBootOff, kDriverOff).emit({ ... }).expectEnd(kDriverOff);
+b.put(0x31, pom2::kSlotRomBytes, { 0x8D, dataLo, 0xC0, 0x60 });
+romLayoutError_ = b.layoutError();
+```
+
+Each card publishes `romLayoutError()` and its smoke test asserts it is clear.
+`slot_rom_builder` tests the *builder*, because a card test can only ever
+assert the flag is false — which a guard hard-wired to `return false` would
+also satisfy.
+
+Use `expectEnd` wherever something outside the region hard-codes that address:
+the SSC's four Pascal entry offsets at `$Cn0D-$Cn10`, the HDV dispatch's
+`BEQ +16` / `BEQ +55`, PSTATUS's internal `BCS $Cn8B` / `JMP $Cn8D`.
+
+**This is a fence, not the cure.** TODO P1-1 replaces it with a real
+`constexpr` mini-assembler — symbolic labels, resolved branches — which makes
+both failure modes unrepresentable instead of merely detected. `SlotRom.h` is
+the specification that assembler has to satisfy.
+
 ## Storage
 
 ### Read / write matrix by format

@@ -50,6 +50,12 @@ void testRomFingerprint()
 {
     PrinterCard card(1);
 
+    // The 256-byte page is hand-assembled, and each region declares where it
+    // ends (SlotRom.h). SmartPortCard's write routine silently ate its own
+    // ProDOS STATUS this way; the byte checks below say the layout is right,
+    // this says nothing had to be truncated to make it so.
+    assert(!card.romLayoutError());
+
     // PR#n entry at $Cn00 — JMP $Cn20 (skip the Pascal sig region).
     assert(card.slotRomRead(0x00) == 0x4C);
     assert(card.slotRomRead(0x01) == 0x20);

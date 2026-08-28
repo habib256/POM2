@@ -425,6 +425,15 @@ void testPascalIdBlock()
     // ROM (6502disassembly.com/a2-rom/SSC). Before this the SSC published the
     // ID bytes but no entry table → Pascal jumped into NOP fill.
     SuperSerialCard ssc(2);
+
+    // The page is hand-assembled and every region declares where it ends
+    // (SlotRom.h). The entry table below is exactly the reason it has to:
+    // $Cn0D-$Cn10 are the LOW BYTES of four routines, so a routine that
+    // outgrew its region and pushed its neighbour down would leave Pascal
+    // dispatching into the middle of an instruction — the SmartPort failure,
+    // with a Pascal interpreter instead of ProDOS on the receiving end.
+    assert(!ssc.romLayoutError());
+
     assert(ssc.slotRomRead(0x05) == 0x38);     // Pascal 1.1 sig 1
     assert(ssc.slotRomRead(0x07) == 0x18);     // Pascal 1.1 sig 2
     assert(ssc.slotRomRead(0x0B) == 0x01);     // generic Pascal 1.1 signature
@@ -441,6 +450,21 @@ void testPascalIdBlock()
     assert(ssc.slotRomRead(pread)  == 0xAD);   // PREAD   : LDA $C0n9
     assert(ssc.slotRomRead(pwrite) == 0x48);   // PWRITE  : PHA
     assert(ssc.slotRomRead(pstat)  == 0x4A);   // PSTATUS : LSR A
+
+    // PSTATUS is the one routine with branch targets computed BY HAND against
+    // its own internal offsets — `BCS $Cn8B` and `JMP $Cn8D`. Nothing else in
+    // the ROM would notice if those two labels drifted, so they are checked
+    // where they land: the input mask at $Cn8B and the shared CMP at $Cn8D.
+    assert(ssc.slotRomRead(0x84) == 0xB0 && ssc.slotRomRead(0x85) == 0x05);
+    assert(ssc.slotRomRead(0x88) == 0x4C && ssc.slotRomRead(0x89) == 0x8D);
+    assert(ssc.slotRomRead(0x8B) == 0x29 && ssc.slotRomRead(0x8C) == 0x08);
+    assert(ssc.slotRomRead(0x8D) == 0xC9 && ssc.slotRomRead(0x8E) == 0x01);
+
+    // The PR#n / IN#n binds publish $CnB0 and $CnE0 as the character-in/out
+    // vectors. Same question, same answer: both must be code, not fill.
+    assert(ssc.slotRomRead(0xB0) == 0x48);     // output : PHA
+    assert(ssc.slotRomRead(0xE0) == 0xAD);     // input  : LDA $C0n9
+
     std::printf("  ok: Pascal 1.1 ID block + entry table\n");
 }
 

@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "SuperSerialCard.h"
+#include "SlotRom.h"
 
 #include "SuperSerialTransport.h"
 #include "Pom2Build.h"
@@ -742,9 +743,27 @@ void SuperSerialCard::buildRom()
     const uint8_t dataReg   = static_cast<uint8_t>(devLo + 0x8);
     const uint8_t cmdRegAddr = static_cast<uint8_t>(devLo + 0xA);
 
-    auto putAt = [&](uint8_t addr, std::initializer_list<uint8_t> bytes) {
-        for (uint8_t b : bytes) rom[addr++] = b;
-    };
+    // Hand-assembled, so every region declares its budget (SlotRom.h) — the
+    // limit is where the NEXT routine starts. Layout:
+    //
+    //   $Cn00-$Cn04  PR#n entry (JMP $Cn20, over the signature bytes)
+    //   $Cn05-$Cn07  Pascal signature, poked individually
+    //   $Cn08-$Cn0A  IN#n entry (JMP $Cn40)
+    //   $Cn0B-$Cn10  Pascal revision/class + the four entry OFFSETS
+    //   $Cn20-$Cn3F  PR#n bind       (14 B)
+    //   $Cn40-$Cn4F  IN#n bind       (14 B)
+    //   $Cn50-$Cn5F  PINIT           ( 8 B)
+    //   $Cn60-$Cn6F  PREAD           (15 B)
+    //   $Cn70-$Cn7F  PWRITE          (15 B of 16 — the tightest region here)
+    //   $Cn80-$CnAF  PSTATUS         (18 B; contains two hand-computed
+    //                                 branch targets, hence expectEnd)
+    //   $CnB0-$CnDF  output routine  (13 B)
+    //   $CnE0-$CnFF  input routine   (13 B)
+    //
+    // The four Pascal entry offsets at $Cn0D-$Cn10 are literally the low
+    // bytes of $Cn50/$Cn60/$Cn70/$Cn80, so a routine that moved would send
+    // the Pascal interpreter into NOP fill with nothing to show for it.
+    pom2::SlotRomBuilder b(rom);
 
     // Apple-II PR#n / IN#n auto-config protocol:
     //   $Cn00: JSR'd by `PR#n` to install the output hook in CSWL/CSWH.
@@ -761,13 +780,13 @@ void SuperSerialCard::buildRom()
     //   $Cn0C = $31   (device class: serial-port aka "Communications")
 
     // PR#n entry at $Cn00 — jump past the signature region.
-    putAt(0x00, { 0x4C, 0x20, slotHi });   // JMP $Cn20 (PR#n_entry)
+    b.put(0x00, 0x05, { 0x4C, 0x20, slotHi });   // JMP $Cn20 (PR#n_entry)
 
     // IN#n entry at $Cn08 (dispatched by the IN# command). Apple BASIC
     // calls $Cn00 for both PR# and IN# but distinguishes by zero-page
     // contents; many ROMs publish IN#n at $Cn00+8. We jump to a separate
     // input-bind routine.
-    putAt(0x08, { 0x4C, 0x40, slotHi });   // JMP $Cn40 (IN#n_entry)
+    b.put(0x08, 0x0B, { 0x4C, 0x40, slotHi });   // JMP $Cn40 (IN#n_entry)
 
     rom[0x05] = 0x38;
     rom[0x07] = 0x18;
@@ -794,7 +813,7 @@ void SuperSerialCard::buildRom()
 
     // PINIT $Cn50 — assert DTR + RTS-low/TX-IRQ-off (cmd=$0B) so the port
     // can transmit, then return success (X=0).
-    putAt(0x50, {
+    b.put(0x50, 0x60, {
         0xA9, 0x0B,            // LDA #$0B
         0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
         0xA2, 0x00,            // LDX #$00    (no error)
@@ -803,7 +822,7 @@ void SuperSerialCard::buildRom()
 
     // PREAD $Cn60 — spin until RDRF, return the byte in A with the high bit
     // cleared (Pascal wants 7-bit ASCII), X=0.
-    putAt(0x60, {
+    b.put(0x60, 0x70, {
         0xAD, statusReg, 0xC0, // LDA $C0n9        (loop)
         0x29, 0x08,            // AND #$08  (RDRF)
         0xF0, 0xF9,            // BEQ -7 → loop
@@ -814,7 +833,7 @@ void SuperSerialCard::buildRom()
     });
 
     // PWRITE $Cn70 — spin until TDRE, send the char in A, X=0.
-    putAt(0x70, {
+    b.put(0x70, 0x80, {
         0x48,                  // PHA
         0xAD, statusReg, 0xC0, // LDA $C0n9        (loop)
         0x29, 0x10,            // AND #$10  (TDRE)
@@ -828,7 +847,7 @@ void SuperSerialCard::buildRom()
     // PSTATUS $Cn80 — A=0 → output-ready (TDRE), A=1 → input-avail (RDRF).
     // LSR moves the request code into carry; CMP #$01 maps "masked bit set"
     // back into the carry flag (ready). X=0.
-    putAt(0x80, {
+    b.put(0x80, 0xB0, {
         0x4A,                  // LSR A            (C=0 output, C=1 input)
         0xAD, statusReg, 0xC0, // LDA $C0n9
         0xB0, 0x05,            // BCS $Cn8B  (input path)
@@ -838,7 +857,7 @@ void SuperSerialCard::buildRom()
         0xC9, 0x01,            // $Cn8D: CMP #$01  (A!=0 → C set = ready)
         0xA2, 0x00,            // LDX #$00
         0x60                   // RTS
-    });
+    }).expectEnd(0x92);
 
     // PR#n entry at $Cn20 — initialise the ACIA, then patch CSWL/CSWH to
     // point at the output routine at $CnB0 and RTS so the BASIC
@@ -852,7 +871,7 @@ void SuperSerialCard::buildRom()
     // de-asserted and the transmitter (correctly, per MAME
     // `mos6551.cpp:317-321`) drops every byte on the floor — only Pascal,
     // whose PINIT does the same $0B write, could ever transmit.
-    putAt(0x20, {
+    b.put(0x20, 0x40, {
         0xA9, 0x0B,            // LDA #$0B    (DTR on, RX IRQ off)
         0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
         0xA9, 0xB0,            // LDA #<output_routine
@@ -864,7 +883,7 @@ void SuperSerialCard::buildRom()
 
     // IN#n entry at $Cn40 — same ACIA init, then patch KSWL/KSWH (input
     // vector). Ends at $Cn4D — just under the PINIT routine at $Cn50.
-    putAt(0x40, {
+    b.put(0x40, 0x50, {
         0xA9, 0x0B,            // LDA #$0B    (DTR on, RX IRQ off)
         0x8D, cmdRegAddr, 0xC0,// STA $C0nA   (command register)
         0xA9, 0xE0,            // LDA #<input_routine
@@ -878,7 +897,7 @@ void SuperSerialCard::buildRom()
     // write is in A (high bit set per the OUT vector spec). PHA once,
     // spin on TDRE (BEQ branches back to the LDA *after* PHA so we
     // don't push extra stack frames each iteration), then PLA + write.
-    putAt(0xB0, {
+    b.put(0xB0, 0xE0, {
         0x48,                  // PHA               $CnB0
         0xAD, statusReg, 0xC0, // LDA $C0n9         $CnB1  (loop target)
         0x29, 0x10,            // AND #$10  (TDRE)  $CnB4
@@ -890,7 +909,7 @@ void SuperSerialCard::buildRom()
 
     // Input routine at $CnE0 — spin until RDRF, return byte in A with
     // bit 7 set (Apple keyboard convention).
-    putAt(0xE0, {
+    b.put(0xE0, pom2::kSlotRomBytes, {
         0xAD, statusReg, 0xC0, // LDA $C0n9
         0x29, 0x08,            // AND #$08  (RDRF)
         0xF0, 0xF9,            // BEQ -7 → loop
@@ -898,6 +917,8 @@ void SuperSerialCard::buildRom()
         0x09, 0x80,            // ORA #$80  (Apple keys are high-bit-set)
         0x60                   // RTS
     });
+
+    romLayoutError_ = b.layoutError();
 }
 
 // ── Snapshot / rewind ─────────────────────────────────────────────────────

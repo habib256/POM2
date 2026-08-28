@@ -89,6 +89,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Floppy mechanical sounds (MAME WAV samples) | `FloppySoundDevice.h/.cpp` | [§ Floppy sounds](DEV.md#floppy-mechanical-sounds) |
 | Printer mechanical sounds (**synthesised** — no sample set exists) | `PrinterSoundDevice.*`, `PrinterSoundSink.h` | [§ Printer sound](DEV.md#printer-sound-printersounddevice) |
 | Slot bus + wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [§ Slot bus](DEV.md#slot-bus--irq-aggregation) |
+| Hand-assembled slot ROMs — bounded regions, both failure modes | `SlotRom.h` | [§ Hand-assembled slot ROMs](DEV.md#hand-assembled-slot-roms-slotromh) |
 | DiskImage / DiskIICard / Snapshot | `DiskImage.*`, `DiskIICard.*`, `SnapshotIO.*` | [§ Storage](DEV.md#storage) |
 | Atomic **+ durable** file commit — every write-back goes through it | `AtomicFileReplace.h` | [§ Write-back commit](DEV.md#how-a-media-write-back-commits-atomicfilereplaceh) |
 | Two-phase media mount — keeps the file read off `stateMutex` | `MediaMount.h/.cpp` | [§ Two-phase mount](DEV.md#two-phase-media-mount-mediamounthcpp) |

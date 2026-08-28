@@ -16,6 +16,7 @@
 
 #include "ProDOSHardDiskCard.h"
 #include "Logger.h"
+#include "SlotRom.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -23,13 +24,17 @@
 
 namespace {
 
-constexpr uint8_t  kDriverOff  = 0x50;
+// ── 256-byte slot ROM layout (offsets from $Cn00) ─────────────────────────
+// Hand-assembled, so every region is bounded and the ones whose length is
+// hard-coded elsewhere also declare where they end. See SlotRom.h for the
+// SmartPort bug this guards against; the write routine below was ONE byte
+// from repeating it — it ended at $CnBF with STATUS starting at $CnC0.
 constexpr uint8_t  kBootOff    = 0x20;
-
-void emit(std::array<uint8_t, 256>& rom, uint8_t& pc, std::initializer_list<uint8_t> bytes)
-{
-    for (uint8_t b : bytes) rom[pc++] = b;
-}
+constexpr uint8_t  kDriverOff  = 0x50;
+constexpr uint8_t  kReadOff    = 0x66;   // dispatch's BEQ +16 lands here
+constexpr uint8_t  kWriteOff   = 0x91;   // dispatch's BEQ +55 lands here
+constexpr uint8_t  kStatusOff  = 0xC0;   // dispatch's JMP $CnC0
+constexpr uint8_t  kHaltOff    = 0xE0;   // boot-failure halt loop
 
 // Block-level I/O trace, gated by POM2_TRACE_HDV=1 (mirrors the env-var
 // diagnostics in DiskIICard.cpp / Memory.cpp). One line per 512-byte block
@@ -214,8 +219,9 @@ void ProDOSHardDiskCard::buildRom()
     rom[0xFE] = 0x03;        // read/write/status flags; high nibble = one fixed unit
     rom[0xFF] = kDriverOff;  // ProDOS driver entry offset
 
-    uint8_t pc = kBootOff;
-    emit(rom, pc, {
+    pom2::SlotRomBuilder b(rom);
+
+    b.region(kBootOff, kDriverOff).emit({
         0xA9, 0x01,       // LDA #$01        ; read command
         0x85, 0x42,       // STA $42
         0xA9, kUnitNumber,
@@ -232,15 +238,15 @@ void ProDOSHardDiskCard::buildRom()
         0xA2, kUnitNumber,// LDX #unit
         0xA9, 0x00,       // LDA #$00
         0x4C, 0x01, 0x08, // JMP $0801
-        0x4C, 0xE0, kSlotRomHi // error: JMP $CnE0 (stable halt)
+        0x4C, kHaltOff, kSlotRomHi // error: JMP $CnE0 (stable halt)
     });
 
     // Boot error handler at $CnE0: simple infinite loop.
     // We deliberately avoid calling monitor routines here: a failed HD boot
     // should be safe even if the main ROM isn't fully initialised yet.
-    rom[0xE0] = 0x4C; // JMP $CnE0
-    rom[0xE1] = 0xE0;
-    rom[0xE2] = kSlotRomHi;
+    rom[kHaltOff + 0] = 0x4C; // JMP $CnE0
+    rom[kHaltOff + 1] = kHaltOff;
+    rom[kHaltOff + 2] = kSlotRomHi;
 
     // Driver dispatch table (22 bytes), commands:
     //   $00 status → JMP $CnC0 (returns block count in X/Y — see below)
@@ -254,13 +260,20 @@ void ProDOSHardDiskCard::buildRom()
     // Write block first probes $C0D3 bit-6: if set (image is WP), return
     // $2B (write-protected) without touching memory.
     //
-    // Layout when emitted at $C550 ($Cn50):
-    //   $C550..$C565  dispatch (22 B)
-    //   $C566..$C590  read block (43 B)
-    //   $C591..$C5BF  write block (47 B)
-    //   $C5C0..$C5C9  STATUS routine (10 B)
-    pc = kDriverOff;
-    emit(rom, pc, {
+    // Layout, as offsets from $Cn00 (the constants at the top of the file):
+    //   $Cn20..$Cn44  boot                (37 B, budget 48)
+    //   $Cn50..$Cn65  dispatch            (22 B, exact — the BEQ offsets
+    //                                      below hard-code where read and
+    //                                      write start, so both ends are
+    //                                      pinned with expectEnd)
+    //   $Cn66..$Cn90  read block          (43 B, exact)
+    //   $Cn91..$CnBF  write block         (47 B, budget 47 — ZERO slack: it
+    //                                      ends one byte below STATUS, which
+    //                                      is how SmartPortCard's write
+    //                                      routine came to eat its own STATUS)
+    //   $CnC0..$CnC9  STATUS              (10 B, budget 32)
+    //   $CnE0..$CnE2  boot-failure halt
+    b.region(kDriverOff, kReadOff).emit({
         0xA5, 0x42,       // LDA $42         ; command
         0xC9, 0x01,       // CMP #$01
         0xF0, 0x10,       // BEQ read    (+16 → $C566)
@@ -278,9 +291,9 @@ void ProDOSHardDiskCard::buildRom()
         // read/write offsets above stay valid — mirrors the identical
         // arrangement (and the BITSY crash it fixed) in
         // SmartPortCard::buildRom.
-        0x4C, 0xC0, kSlotRomHi, // status: JMP $CnC0
-        0xEA                    // pad
-    });
+        0x4C, kStatusOff, kSlotRomHi, // status: JMP $CnC0
+        0xEA                          // pad
+    }).expectEnd(kReadOff);
 
     // ── STATUS routine ($CnC0) ─────────────────────────────────────────
     // ProDOS STATUS (cmd $00) must return total blocks in X (low) /
@@ -288,8 +301,7 @@ void ProDOSHardDiskCard::buildRom()
     // device. The count comes from $C0n4/$C0n5 (deviceSelectRead 0x4/0x5,
     // clamped to $FFFF).
     {
-        uint8_t sp = 0xC0;
-        emit(rom, sp, {
+        b.region(kStatusOff, kHaltOff).emit({
             0xAE, static_cast<uint8_t>(kDeviceBase + 0x04), 0xC0, // LDX $C0n4
             0xAC, static_cast<uint8_t>(kDeviceBase + 0x05), 0xC0, // LDY $C0n5
             0xA9, 0x00,        // LDA #$00
@@ -300,7 +312,7 @@ void ProDOSHardDiskCard::buildRom()
 
     const uint8_t dataReg = static_cast<uint8_t>(kDeviceBase + 0x02);
     const uint8_t statReg = static_cast<uint8_t>(kDeviceBase + 0x03);
-    emit(rom, pc, {
+    b.region(kReadOff, kWriteOff).emit({
         0xAD, statReg, 0xC0, // read: LDA $C0D3 ; status
         0x10, 0x04,       // BPL ok          ; bit-7 set = no image
         0xA9, 0x28,       // LDA #$28        ; NO DEVICE CONNECTED
@@ -323,9 +335,9 @@ void ProDOSHardDiskCard::buildRom()
         0xC6, 0x45,       // DEC $45
         0x18,             // CLC
         0x60              // RTS
-    });
+    }).expectEnd(kWriteOff);
 
-    emit(rom, pc, {
+    b.region(kWriteOff, kStatusOff).emit({
         0xAD, statReg, 0xC0, // write: LDA $C0D3   ; status
         0x29, 0x40,          // AND #$40           ; WP bit
         0xF0, 0x04,          // BEQ ok
@@ -351,6 +363,8 @@ void ProDOSHardDiskCard::buildRom()
         0x18,                // CLC
         0x60                 // RTS
     });
+
+    romLayoutError_ = b.layoutError();
 }
 
 // ── Snapshot / rewind ─────────────────────────────────────────────────────

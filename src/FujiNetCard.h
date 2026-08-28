@@ -238,6 +238,11 @@ public:
     uint64_t callCount()  const { return callCount_; }
     uint64_t localCount() const { return localCount_; }
 
+    /// True when the hand-assembled slot ROM did not fit its declared layout.
+    /// Always false in a healthy build — `fujinet_rom_layout` asserts it, and
+    /// mutation-checks that shrinking a region's budget trips it.
+    bool romLayoutError() const { return romLayoutError_; }
+
 private:
     /// Which unit the built-in N: answers on: whatever the peer calls its
     /// network device, or 11 — where every current FujiNet build puts it —
@@ -300,6 +305,10 @@ private:
     M6502*   cpu_ = nullptr;
 
     std::array<uint8_t, 256> rom_{};
+    /// Set by buildRom() when a hand-assembled region overran its budget or
+    /// stopped ending where the layout's hard-coded branch offsets assume.
+    /// Read by `fujinet_rom_layout`; see SlotRom.h for why it exists.
+    bool                     romLayoutError_ = false;
     /// The owned command surface, and the host lifecycle surface that
     /// normally aliases it. `transport_` is non-owning by design: it points
     /// into `link_` in the production wiring.

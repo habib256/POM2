@@ -100,6 +100,17 @@ int main()
 
     mem.slotBus().plug(kSlot, std::move(card));
 
+    // ── 0. The hand-assembled page fits its declared layout ─────────────
+    // The write routine below has ZERO slack: it ends at $CnBF and STATUS
+    // starts at $CnC0. One extra byte and it eats STATUS — which is exactly
+    // what happened to SmartPortCard (see SlotRom.h). The flag catches a
+    // region growing OR shrinking; the calls below say the routines are also
+    // still where the dispatch table's hand-computed BEQ offsets point.
+    if (raw->romLayoutError()) {
+        std::printf("FAIL: the slot ROM did not fit its declared layout\n");
+        return 1;
+    }
+
     // ── 1. STATUS returns block count in X/Y ────────────────────────────
     callDriver(cpu, mem, /*cmd=*/0x00, /*block=*/0, /*buffer=*/0x0800);
     if (carrySet(cpu) || cpu.getAccumulator() != 0x00) {
@@ -133,6 +144,53 @@ int main()
                         i, mem.memRead(0x0800 + static_cast<uint16_t>(i)),
                         want);
             return 1;
+        }
+    }
+
+    // ── Guard: WRITE through the ROM driver ($Cn91) ─────────────────────
+    // The write routine is the one with no room left, and until now nothing
+    // executed it: the HDV tests all drove the backing store directly. So a
+    // write routine that had been overrun — the SmartPort failure exactly —
+    // would have gone unnoticed here too. Writing a block and reading it back
+    // through the same ROM says the dispatch's `BEQ +55` still lands on the
+    // first byte of the routine and that the routine still ends in its RTS
+    // rather than falling into STATUS.
+    {
+        for (uint16_t i = 0; i < 512; ++i)
+            mem.memWrite(static_cast<uint16_t>(0x0900 + i),
+                         static_cast<uint8_t>((i * 3u + 7u) & 0xFF));
+        callDriver(cpu, mem, /*cmd=*/0x02, /*block=*/2, /*buffer=*/0x0900);
+        if (carrySet(cpu)) {
+            std::printf("FAIL: WRITE of block 2 returned carry set (A=%02X)\n",
+                        cpu.getAccumulator());
+            return 1;
+        }
+        // Read it back through the ROM, into a different buffer.
+        for (uint16_t i = 0; i < 512; ++i)
+            mem.memWrite(static_cast<uint16_t>(0x0800 + i), 0x00);
+        callDriver(cpu, mem, /*cmd=*/0x01, /*block=*/2, /*buffer=*/0x0800);
+        if (carrySet(cpu)) {
+            std::printf("FAIL: READ back of block 2 returned carry set\n");
+            return 1;
+        }
+        for (uint16_t i = 0; i < 512; ++i) {
+            const uint8_t want = static_cast<uint8_t>((i * 3u + 7u) & 0xFF);
+            const uint8_t got  = mem.memRead(static_cast<uint16_t>(0x0800 + i));
+            if (got != want) {
+                std::printf("FAIL: WRITE/READ round trip differs at +%u: "
+                            "%02X want %02X\n", i, got, want);
+                return 1;
+            }
+        }
+        // Block 1 must be untouched — a write routine that ran long would
+        // keep storing past its 512 bytes.
+        callDriver(cpu, mem, /*cmd=*/0x01, /*block=*/1, /*buffer=*/0x0800);
+        for (uint16_t i = 0; i < 16; ++i) {
+            const uint8_t want = static_cast<uint8_t>((i * 5u + 11u) & 0xFF);
+            if (mem.memRead(static_cast<uint16_t>(0x0800 + i)) != want) {
+                std::printf("FAIL: WRITE of block 2 disturbed block 1\n");
+                return 1;
+            }
         }
     }
 

@@ -50,6 +50,11 @@ void testStubRom()
     GrapplerCard card(1);
     assert(!card.isRomLoaded());
 
+    // The stub is the only hand-assembled part of this card (a real roms/
+    // dump is copied verbatim), so it is the only part that can overrun a
+    // region — see SlotRom.h.
+    assert(!card.romLayoutError());
+
     // PR#n entry at $Cn00 — JMP $Cn20.
     assert(card.slotRomRead(0x00) == 0x4C);
     assert(card.slotRomRead(0x01) == 0x20);

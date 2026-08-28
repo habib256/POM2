@@ -342,6 +342,7 @@ set(POM2_DEVICES_HEADERS
     src/FujiNetTransport.h
     src/MountableMediaCard.h
     src/ProDOSBlockCard.h
+    src/SlotRom.h
     src/SuperSerialTransport.h
     src/Via6522.h
     src/W5100Resolver.h
