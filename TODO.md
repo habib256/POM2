@@ -18,8 +18,7 @@ effort in *italics*. File/line in `backticks`.
 
 The two items with the most leverage right now: the
 [hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
-(bounded on 2026-08-28, but the *cure* — P1-1's assembler — is still open, and
-one HDV error code with it) and
+(bounded on 2026-08-28; the *cure* — P1-1's assembler — is still open) and
 [real 3.5" boot through the IWM](#storage-disks--images) for //c, //c+ and a
 Liron card — no longer deferred past 1.0.
 
@@ -54,7 +53,7 @@ its panel in its own `*_ImGui.cpp` and **zero** business logic in
 
 | # | Item | Why |
 | - | ---- | --- |
-| 0-5 | 🟢 **`TnfsClient`: wire it or delete it** — a product call, not an architecture one. The plan's premise was wrong on the detail: it is not untested (`tests/tnfs_client_test.cpp`, 370 lines, two ctest targets, written against a stub server after a bug hunt). What it has no caller for is `src/`. It is now classified RUNTIME so the layer model covers it; what remains is the decision. | 716 lines of hardened, tested code for mounting `tnfs.fujinet.online`, reachable from nothing. Deleting it throws the tests away too. |
+| 0-5 | 🟢 **`TnfsClient`: wire it or delete it** — a product call, not an architecture one. The plan's premise was wrong on the detail: it is not untested (`tests/tnfs_client_test.cpp`, 370 lines, two ctest targets, written against a stub server after a bug hunt). What it has no caller for is `src/`, and it is in no `SOURCES` list either, so only its own tests ever compile it. It is now classified RUNTIME so the layer model covers it; what remains is the decision. **If it is kept, it needs a socket-less path first**: `c++ -D__EMSCRIPTEN__ -fsyntax-only src/TnfsClient.cpp` fails on `disableSigpipe`, `socklen_c` and `closeHostSocketValue`, so it would not survive being added to the build. | 716 lines of hardened, tested code for mounting `tnfs.fujinet.online`, reachable from nothing — and it has already drifted out of compiling for one of POM2's two targets, which is what unwired code does. |
 
 **0-1 to 0-4 landed on 2026-08-28** — see `CHANGELOG.md`. Doing them turned up
 three things the plan did not know about, all recorded there: the version
@@ -458,25 +457,16 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 - 🟠 **ProDOS `STATUS` — the hand-assembled ROM family** *(audited 2026-08-28)* —
   <a id="prodos-status-the-hand-assembled-rom-family"></a>every hand-assembled
-  slot ROM is now bounded (`SlotRom.h`, `CHANGELOG.md`). One half of the
-  `ProDOSHardDiskCard` finding is still open, and it is the interesting half.
+  slot ROM is now bounded (`SlotRom.h`, `CHANGELOG.md`) and both halves of the
+  `ProDOSHardDiskCard` finding are closed. What is still open is the **cure**
+  rather than the fence — P1-1's assembler — which is why the item stays here.
 
-  **Open: an empty HDV bay answers `$2B` "write protected".**
-  `ProDOSHardDiskCard.cpp`'s write path tests the write-protect bit *before*
-  asking whether media is present — the same defect fixed on `SmartPortCard`,
-  where the honest answer is `$28` "no device connected". READ already
-  pre-flights correctly; only WRITE does not.
-
-  It was not fixed with the bound because **the write routine has no room**:
-  it runs `$Cn91-$CnBF` and STATUS starts at `$CnC0`, so there is *zero* slack
-  — one byte from repeating the SmartPort bug exactly. Doing it properly means
-  moving bytes, not adding them. The shape that works: one `BIT $C0n3` answers
-  both questions (N = no media, V = write-protected) as it does on SmartPort,
-  and the shared error tail moves into the 11 free bytes at `$Cn45-$Cn4F`
-  between boot and the driver. That makes both transfer routines *shorter*.
-  Unlike SmartPort, this ROM has no authentic dump overlaid on it, so the page
-  gaps really are free. *~1 h, and `hdv_status_driver` now drives WRITE through
-  the ROM, so the move is verifiable.*
+  The empty-bay WRITE error code —
+  `$2B` "write protected" where the honest answer is `$28` "no device
+  connected" — was fixed on 2026-08-28 by making the routine *shorter*: one
+  `BIT $C0n3` answers both questions (N = no media, V = write-protected) and
+  both transfer routines branch to a shared error tail in the gap after boot.
+  It went from zero slack to eight bytes. → `CHANGELOG.md`
 
   What the audit settled, so nobody re-derives it:
   - `ClockCard` writes nine fixed bytes with no cursor — nothing to bound.
