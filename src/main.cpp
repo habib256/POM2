@@ -15,6 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "CliDispatcher.h"
+#include "Settings.h"
+#include "TnfsMedia.h"
 #include "Pom2Build.h"
 #include "IconsFontAwesome6.h"
 #include "Logger.h"
@@ -43,6 +45,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdio>
+#include <cctype>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -518,6 +521,45 @@ int main(int argc, char* argv[])
         });
 #endif
     ImGui_ImplOpenGL3_Init(glsl_version);
+
+    // ── A boot disk that lives on a TNFS server ──────────────────────────
+    // `POM2 tnfs://host/path/image.po` pulls the image into a local cache and
+    // then becomes an ordinary positional disk — so classifyDiskForSlot picks
+    // the drive, the two-phase mount moves it in off the state mutex, and
+    // writes land on the local copy. TNFS is served read-only here, and a
+    // local copy is the only honest place for a write to go.
+    //
+    // Done HERE, before the window loop rather than inside the boot
+    // countdown: the fetch is seconds of blocking network I/O, and the boot
+    // countdown runs between frames on the UI thread.
+    //
+    // The `tnfs://` scheme is REQUIRED for the positional. parseTnfsUrl also
+    // accepts a bare host/path — convenient in a text field — but a bare
+    // `disks/foo.po` is a relative filename, and the positional argument
+    // cannot be allowed to guess between the two.
+    {
+        std::string lower = plan->bootDiskPath;
+        for (char& ch : lower)
+            ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        if (lower.rfind("tnfs://", 0) == 0) {
+            pom2::Settings settingsForPaths;
+            const std::filesystem::path store(settingsForPaths.getStorePath());
+            const std::filesystem::path cache =
+                (store.has_parent_path() ? store.parent_path()
+                                         : std::filesystem::path("."))
+                / "tnfs_cache";
+            const auto got = pom2::tnfsFetchImage(plan->bootDiskPath, cache.string());
+            if (got.ok) {
+                plan->bootDiskPath = got.localPath;
+            } else {
+                // Same shape as a positional disk that will not mount: say so
+                // and carry on to a usable machine, rather than exiting and
+                // leaving the user with no way to look at anything.
+                pom2::log().error("CLI", "TNFS: " + got.error);
+                plan->bootDiskPath.clear();
+            }
+        }
+    }
 
     MainWindow mainWindow(plan->forceIIPlus);
     if (plan->forceIIPlus) {

@@ -251,13 +251,11 @@ void writeVolumeHeader(std::uint8_t* dst, const std::string& name,
     const std::uint8_t nameLen = static_cast<std::uint8_t>(name.size());
     dst[0x00] = static_cast<std::uint8_t>((kStorageVolDir << 4) | (nameLen & 0x0F));
     std::memcpy(dst + 1, name.data(), nameLen);
-    // ProDOS requires this compatibility pattern in the eight reserved
-    // bytes; zeroes make real ProDOS reject directory traversal with I/O
-    // ERROR even though a permissive host-side decoder can still parse it.
-    static constexpr std::uint8_t kReserved[8] = {
-        0x75, 0x23, 0x00, 0x00, 0xC3, 0x27, 0x0D, 0x00
-    };
-    std::memcpy(dst + 0x10, kReserved, sizeof(kReserved));
+    // Reserved bytes $10-$17 stay ZERO. A volume directory header carries no
+    // marker — measured across every ProDOS image in the tree (10 of 10 have
+    // $00 at entry offset $10; what varies after it is a modification date
+    // some writers leave there). The marker below belongs to SUBDIRECTORY
+    // headers and to nothing else.
     // creation date_time = 0
     dst[0x1C] = 0;
     dst[0x1D] = 0;
@@ -281,17 +279,23 @@ void writeSubdirHeader(std::uint8_t* dst, const std::string& name,
     const std::uint8_t nameLen = static_cast<std::uint8_t>(name.size());
     dst[0x00] = static_cast<std::uint8_t>((kStorageSubdirHeader << 4) | (nameLen & 0x0F));
     std::memcpy(dst + 1, name.data(), nameLen);
-    // The subdirectory magic, and it goes at $14 — NOT at $10, where the
-    // reserved field starts. ProDOS 8 TRM §4.4.3 is specific: relative byte
-    // $14 of a subdirectory header must hold $75, and every ProDOS tool
-    // reproduces the whole eight-byte run ProDOS itself writes there. At $10
-    // the $75 lands four bytes early, which is what `prodos_volume_smoke`
-    // caught: its `hdr[0x14] == 0x75` assertion predates this pattern and is
-    // the contract the pattern was meant to satisfy, not replace.
-    static constexpr std::uint8_t kSubdirMagic[8] = {
-        0x75, 0x23, 0x00, 0x00, 0xC3, 0x27, 0x0D, 0x00
-    };
-    std::memcpy(dst + 0x14, kSubdirMagic, sizeof(kSubdirMagic));
+    // The subdirectory marker. ONE byte, at ENTRY offset $10, and the rest of
+    // the reserved field stays zero.
+    //
+    // The "$14" in the ProDOS 8 TRM is BLOCK-relative — a directory block
+    // opens with a 4-byte prev/next pair, so the header entry starts at block
+    // offset 4 and the TRM's byte $14 is this entry's byte $10. That single
+    // sentence is the whole of a confusion that produced two wrong versions
+    // of this line: `dst[0x14] = 0x75` originally, then an eight-byte "magic
+    // pattern" at $14. Neither is what ProDOS writes.
+    //
+    // Measured, not recalled, across every ProDOS image in the tree: 84 real
+    // subdirectory headers carry $75 (61) or $76 (23) at entry offset $10,
+    // and the seven bytes after it are zero in all but a handful — where they
+    // hold a stale copy of the access/entry_length/entries_per_block trio
+    // from a neighbouring field, which is where the folklore "pattern" came
+    // from. $75 is the TRM's value and the commoner one.
+    dst[0x10] = 0x75;
     dst[0x1C] = 0;
     dst[0x1D] = 0;
     dst[0x1E] = 0xC3;

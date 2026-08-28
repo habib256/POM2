@@ -314,6 +314,8 @@ set(SOURCES
     src/SmartPortUnit.cpp
     src/SmartPort_ImGui.cpp
     src/SnapshotIO.cpp
+    src/TnfsClient.cpp
+    src/TnfsMedia.cpp
     src/SpeakerDevice.cpp
     src/SuperSerialCard.cpp
     src/SuperSerialTcpTransport.cpp
@@ -591,6 +593,7 @@ set(POM2_RUNTIME_SOURCES
     src/Debugger.cpp
     src/MediaMount.cpp
     src/TnfsClient.cpp
+    src/TnfsMedia.cpp
     src/Apple2Display.cpp
     src/AudioDevice.cpp
     src/CharRomCatalog.cpp

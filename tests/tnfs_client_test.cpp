@@ -36,6 +36,11 @@
 //     while allowing TCP is exactly why the preference order exists.
 
 #include "TnfsClient.h"
+#include "TnfsMedia.h"
+
+#include <filesystem>
+#include <fstream>
+#include <iterator>
 
 #include <atomic>
 #include <cstdio>
@@ -52,6 +57,8 @@
 #endif
 
 namespace {
+
+namespace fs = std::filesystem;
 
 constexpr uint16_t kSession   = 0xBEEF;
 constexpr uint8_t  kFileHnd   = 0x07;
@@ -78,6 +85,16 @@ std::vector<uint8_t> reply(const uint8_t* req, uint16_t session,
     r.push_back(req[3]);                    // command
     r.insert(r.end(), payload.begin(), payload.end());
     return r;
+}
+
+/// Does a NUL-terminated request path name the one file this stub serves?
+/// Leading '/' ignored; the directory the listing advertises is accepted too.
+bool pathIsOurs(const uint8_t* p, std::size_t n)
+{
+    std::string s;
+    for (std::size_t i = 0; i < n && p[i]; ++i) s.push_back(static_cast<char>(p[i]));
+    while (!s.empty() && s.front() == '/') s.erase(s.begin());
+    return s == kFileName || s == "SUBDIR" || s.empty();
 }
 
 struct Stub {
@@ -113,10 +130,17 @@ struct Stub {
         }
         case pom2::kTnfsCloseDir:
             return {0x00};
+        // OPEN and STAT name a PATH, and a real server answers ENOENT for
+        // one it does not have. The stub used to answer for anything, which
+        // made "a missing file must fail the fetch rather than produce an
+        // empty disk" untestable.
         case pom2::kTnfsOpen:
+            if (!pathIsOurs(body + 4, bodyLen > 4 ? bodyLen - 4 : 0))
+                return {0x02};                       // TNFS_ENOENT
             filePos = 0;
             return {0x00, kFileHnd};
         case pom2::kTnfsStat: {
+            if (!pathIsOurs(body, bodyLen)) return {0x02};
             std::vector<uint8_t> p{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
             const uint32_t sz = static_cast<uint32_t>(content.size());
             p.push_back(static_cast<uint8_t>(sz & 0xFF));
@@ -358,6 +382,96 @@ int main()
         exercise(c, expect, "udp");
         c.unmount();
         stub.shutdownStub();
+    }
+
+    // ── The URL parser, which is the wiring's untrusted-input surface ────
+    // A TNFS URL reaches this from a command line or a text field, so every
+    // shape it must REFUSE matters more than the ones it accepts.
+    {
+        std::string host, path;
+        std::uint16_t port = 0;
+
+        check(pom2::parseTnfsUrl("tnfs://example.com/disks/game.po", host, port, path) &&
+              host == "example.com" && port == pom2::TnfsClient::kDefaultPort &&
+              path == "/disks/game.po", "scheme + default port");
+        check(pom2::parseTnfsUrl("TNFS://Example.COM:16385/x.po", host, port, path) &&
+              host == "Example.COM" && port == 16385 && path == "/x.po",
+              "the scheme is case-insensitive and an explicit port is kept");
+        check(pom2::parseTnfsUrl("tnfs.fujinet.online/Apple/a.po", host, port, path) &&
+              host == "tnfs.fujinet.online" && path == "/Apple/a.po",
+              "the scheme is optional — a text field may omit it");
+        check(pom2::parseTnfsUrl("h/a b/c.2mg", host, port, path) &&
+              path == "/a b/c.2mg", "spaces in a path survive");
+
+        check(!pom2::parseTnfsUrl("http://example.com/x.po", host, port, path),
+              "another scheme is refused rather than half-parsed");
+        check(!pom2::parseTnfsUrl("example.com", host, port, path),
+              "a host with no file is refused");
+        check(!pom2::parseTnfsUrl("example.com/", host, port, path),
+              "a bare trailing slash names no file");
+        check(!pom2::parseTnfsUrl("/local/path.po", host, port, path),
+              "an absolute local path is not a TNFS URL");
+        check(!pom2::parseTnfsUrl("h:0/x.po", host, port, path), "port 0");
+        check(!pom2::parseTnfsUrl("h:99999/x.po", host, port, path), "port > 65535");
+        check(!pom2::parseTnfsUrl("h:/x.po", host, port, path), "empty port");
+        check(!pom2::parseTnfsUrl("h:12a4/x.po", host, port, path),
+              "a non-numeric port is refused, not silently truncated");
+        check(!pom2::parseTnfsUrl(":16384/x.po", host, port, path), "empty host");
+        check(!pom2::parseTnfsUrl("", host, port, path), "empty string");
+    }
+
+    // ── Fetch a whole image, and then don't fetch it again ───────────────
+    {
+        TcpStub stub;
+        if (!stub.start()) { std::printf("FAIL: cannot start fetch stub\n"); return 1; }
+
+        const auto cache = fs::temp_directory_path() / "pom2_tnfs_fetch_cache";
+        std::error_code ec;
+        fs::remove_all(cache, ec);
+
+        const std::string url = "tnfs://127.0.0.1:" + std::to_string(stub.port) +
+                                "/" + kFileName;
+        const auto got = pom2::tnfsFetchImage(url, cache.string());
+        if (!got.ok) std::printf("      fetch error: %s\n", got.error.c_str());
+        check(got.ok, "fetch succeeds");
+        check(!got.fromCache, "the first fetch is not a cache hit");
+        check(got.bytes == expect.size(), "the whole file arrives");
+
+        // The extension has to survive into the cache name: everything
+        // downstream picks the drive from it (classifyDiskForSlot).
+        check(got.localPath.size() > 3 &&
+              got.localPath.compare(got.localPath.size() - 3, 3, ".PO") == 0,
+              "the cache file keeps the image's extension");
+
+        std::ifstream in(got.localPath, std::ios::binary);
+        const std::vector<std::uint8_t> onDisk(
+            (std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        check(onDisk == expect, "the cached bytes are the served bytes");
+        in.close();
+
+        // Second call: same size, so the server is not asked again.
+        const auto again = pom2::tnfsFetchImage(url, cache.string());
+        check(again.ok && again.fromCache, "the second fetch comes from the cache");
+        check(again.localPath == got.localPath, "and names the same file");
+
+        stub.shutdownStub();
+        fs::remove_all(cache, ec);
+    }
+
+    // A path that is not there must fail the fetch, not produce an empty disk.
+    {
+        TcpStub stub;
+        if (!stub.start()) { std::printf("FAIL: cannot start fetch stub\n"); return 1; }
+        const auto cache = fs::temp_directory_path() / "pom2_tnfs_fetch_cache2";
+        std::error_code ec;
+        fs::remove_all(cache, ec);
+        const auto got = pom2::tnfsFetchImage(
+            "tnfs://127.0.0.1:" + std::to_string(stub.port) + "/NOPE.PO",
+            cache.string());
+        check(!got.ok, "a missing file fails the fetch");
+        check(got.localPath.empty(), "and leaves no half-made image behind");
+        stub.shutdownStub();
+        fs::remove_all(cache, ec);
     }
 
     if (failures) {

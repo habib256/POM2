@@ -101,6 +101,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | 3D voxel view (MicroM8-style) + camera math | `Voxel3DRenderer.*`, `Mat4.h` | [§ 3D voxel](DEV.md#3d-voxel-view) |
 | ProDOS block backing + HDV cards | `Block512Backing.*`, `ProDOSHardDiskCard.*`, `CffaCard.*`, `AtaBlockDevice.*` | [§ HDV](DEV.md#prodosharddiskcard-hdv--synthetic-block-model), [§ CFFA](DEV.md#cffacard-cffa-20--mame-faithful-ide) |
 | ProDOS host folder (a directory served as a volume) | `ProDOSVolume.*`, `ProDOSBlockCard.h` | [§ ProDOS host folder](DEV.md#prodos-host-folder) |
+| TNFS media (fetch a disk image from a TNFS server into a local cache) | `TnfsClient.*`, `TnfsMedia.*` | [§ FujiNet](DEV.md#fujinet-sp-over-slip-relay) |
 | IWM (//c, //c+, Mac, IIgs) | `IWMDevice.*` | [§ IWM](DEV.md#iwm-c-on-board) |
 | SmartPort 3.5" //c+ on-board (`.po`/`.2mg`/`.woz`) | `Disk35Image.*`, `Sony35Drive.*`, `Sony35Gcr.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
@@ -280,6 +281,12 @@ the GUI (`settingsReadOnly()`), preserving the documented "a kiosk session
 can't disturb your desktop setup" promise.
 
 **Positional disk + kiosk**: `POM2 <disk-image>` mounts the image into the slot its type maps to (`classifyDiskForSlot`: 5.25" Disk II / 800K 3.5" / ProDOS HDV) under the saved profile + slot config, then cold-boots. `--kiosk` adds exclusive full-screen with a chrome-free render path. Kiosk is read-only (no settings writes). An HDV with no HDV/SmartPort card in the saved config auto-plugs a `ProDOSHardDiskCard` into a free slot. Pinned: `cli_kiosk`.
+
+The positional may also be a **TNFS URL** — `tnfs://host[:port]/path/image.po`
+— fetched into a local cache (`TnfsMedia.*`) and then booted like any other
+image. The scheme is required there: a bare `host/path` is accepted by the
+parser but is indistinguishable from a relative filename. Cached by host+path,
+and a cache hit opens no socket, so a second run works offline.
 
 ## Version string locations
 

@@ -55,11 +55,13 @@ if any first-party file passes its recorded ceiling. The rule went from 5590 to
 11511 lines while it was only written down; both numbers are why it is wired to
 something now.
 
-### P0 — close what is bleeding · *mostly landed 2026-08-28*
+### P0 — close what is bleeding · *landed 2026-08-28*
 
-| # | Item | Why |
-| - | ---- | --- |
-| 0-5 | 🟢 **`TnfsClient`: wire it or delete it** — a product call, not an architecture one. The plan's premise was wrong on the detail: it is not untested (`tests/tnfs_client_test.cpp`, 370 lines, two ctest targets, written against a stub server after a bug hunt). What it has no caller for is `src/`, and it is in no `SOURCES` list either, so only its own tests ever compile it. It is now classified RUNTIME so the layer model covers it; what remains is the decision. **If it is kept, it needs a socket-less path first**: `c++ -D__EMSCRIPTEN__ -fsyntax-only src/TnfsClient.cpp` fails on `disableSigpipe`, `socklen_c` and `closeHostSocketValue`, so it would not survive being added to the build. | 716 lines of hardened, tested code for mounting `tnfs.fujinet.online`, reachable from nothing — and it has already drifted out of compiling for one of POM2's two targets, which is what unwired code does. |
+**P0 is closed.** 0-5 landed too: `TnfsClient` is wired rather than deleted —
+`POM2 tnfs://host/path/image.po` fetches the image into a local cache and boots
+it like any other disk (`TnfsMedia.*`). It needed a socket-less path first, as
+recorded here, and got one. Phase 1 of the built-in FujiNet
+([Network](#network)) now has a caller.
 
 **0-1 to 0-4 landed on 2026-08-28** — see `CHANGELOG.md`. Doing them turned up
 three things the plan did not know about, all recorded there: the version
@@ -618,9 +620,13 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   build was re-costed and re-rejected (`docs/fujinet_plan.md` § 8).
   Out of scope for the native path, deliberately: the `N:` network device
   (HTTP/SSH/JSON), the modem and CP/M — those stay the relay's job.
-  Phases: (1) TNFS client + tests; (2) the Fuji control device (host/drive
-  slots) so CONFIG sees real state; (3) block serving of a mounted image;
-  (4) the panel's source selector.
+  Phases: (1) TNFS client + tests — **done**, and since 2026-08-28 it has a
+  caller: `TnfsMedia.*` fetches an image from a TNFS server into a local cache
+  and `POM2 tnfs://host/path/image.po` boots it like any other disk. That is
+  not phase 3 — the guest sees an ordinary local image, not a block device
+  backed by the network — but it makes the client reachable and useful now;
+  (2) the Fuji control device (host/drive slots) so CONFIG sees real state;
+  (3) block serving of a mounted image; (4) the panel's source selector.
 - 🟡 **[FujiNet] a `CONTROL` to the peer's PRINTER unit kills it** — measured
   2026-08-21, reproducible three runs out of three. The packet is
   byte-identical in shape to the ones units 10-12 answer normally

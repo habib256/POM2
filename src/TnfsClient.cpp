@@ -27,6 +27,63 @@
 #include <sys/socket.h>
 #endif
 
+// No host sockets under Emscripten, and TNFS is nothing but sockets — so the
+// whole client compiles out there and every entry point refuses with a reason
+// the caller can show. Without this the file could not be added to the build
+// at all: it referenced disableSigpipe, socklen_c and closeHostSocketValue
+// unguarded, which is how a translation unit in no SOURCES list drifts out of
+// compiling for one of POM2's two targets without anyone noticing.
+#if !POM2_HAS_SOCKETS
+
+namespace pom2 {
+
+namespace {
+const char* kNoSockets =
+    "TNFS needs host sockets; this build has none (browser target)";
+}
+
+TnfsClient::~TnfsClient() = default;
+
+bool TnfsClient::mount(const std::string&, uint16_t, const std::string&,
+                       std::string& errOut)
+{
+    errOut = kNoSockets;
+    return false;
+}
+
+void TnfsClient::unmount() {}
+
+bool TnfsClient::listDir(const std::string&, std::vector<DirEntry>&,
+                         std::string& errOut)
+{
+    errOut = kNoSockets;
+    return false;
+}
+
+int TnfsClient::openFile(const std::string&, std::string& errOut)
+{
+    errOut = kNoSockets;
+    return -1;
+}
+
+bool TnfsClient::fileSize(const std::string&, uint32_t&, std::string& errOut)
+{
+    errOut = kNoSockets;
+    return false;
+}
+
+bool TnfsClient::readAt(int, uint32_t, uint8_t*, uint32_t, std::string& errOut)
+{
+    errOut = kNoSockets;
+    return false;
+}
+
+void TnfsClient::closeFile(int) {}
+
+}  // namespace pom2
+
+#else   // POM2_HAS_SOCKETS
+
 namespace pom2 {
 
 namespace {
@@ -541,3 +598,5 @@ void TnfsClient::closeFile(int handle)
 }
 
 }  // namespace pom2
+
+#endif  // POM2_HAS_SOCKETS
