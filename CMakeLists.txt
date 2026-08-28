@@ -145,10 +145,24 @@ set(POM2_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # re-runs whenever CMakeLists.txt changes, so a version bump rebuilds every
 # consumer (main.cpp banner/title, MainWindow About + runtime title).
 set(POM2_GENERATED_DIR ${CMAKE_CURRENT_BINARY_DIR}/generated)
+#
+# The OUTPUT must name the file, not the directory. It used to name both — the
+# directory as the output and `include/Version.h` as a third argument — and
+# configure_file takes exactly two paths, so CMake wrote the header to a FILE
+# called `generated` and dropped the third argument with an author warning
+# nobody reads. Two consequences, and the second is why it survived:
+#
+#   * a clean checkout would not compile at all. `generated` is a file, so
+#     -I it resolves nothing and MainWindow.cpp:27 fails with "'Version.h'
+#     file not found". Every CI job except Linux's died there.
+#   * an EXISTING build tree kept working, on a build/generated/Version.h left
+#     behind by the previous arrangement. It said 0.8.3. So the banner, the
+#     window title and the About box have been reporting a two-release-old
+#     version out of a header the build no longer generates — from the very
+#     mechanism introduced to make the version have one source of truth.
 configure_file(
     ${POM2_SRC_DIR}/Version.h.in
-    ${POM2_GENERATED_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include/Version.h
+    ${POM2_GENERATED_DIR}/Version.h
     @ONLY)
 
 set(SOURCES
@@ -778,7 +792,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${POM2_SRC_DIR}/hgrpaint   # portable HGR Paint editor (shared with POM1)
     ${POM2_SRC_DIR}/hgrsprite  # portable HGR sprite editor (same host seam)
     ${POM2_GENERATED_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include   # generated Version.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include   # the SDK's <pom2/core.hpp>
 )
 
 # ─── Platform deps ───────────────────────────────────────────────────────
@@ -1239,7 +1253,7 @@ add_executable(pom2_headless
 target_include_directories(pom2_headless PRIVATE
     ${POM2_SRC_DIR}
     ${POM2_GENERATED_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include   # generated Version.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/include   # the SDK's <pom2/core.hpp>
     ${IMGUI_DIR}     # only for miniaudio.h location, no ImGui linkage
 )
 if(UNIX AND NOT APPLE)
