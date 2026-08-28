@@ -81,8 +81,6 @@ void MainWindow::registerPanels()
     // always available, and their draw call is attached below. Only the ones
     // sitting behind a card have anything to say, and what they say is the
     // same two things — "is it plugged" and "which slot does the label name".
-    auto card = [](auto** p) { return [p] { return *p != nullptr; }; };
-
     // The 3.5" drive belongs to a SmartPort card on any //e and to the
     // machine itself on a //c+ — the label has to say which, or the user
     // hunts for a card that is not there.
@@ -238,7 +236,7 @@ void MainWindow::registerPanelDraws()
     draw(P::Mouse,        [this] { renderMouseInspectorWindow(); });
     draw(P::NoSlotClock,  [this] { renderNoSlotClockPanelWindow(); });
     draw(P::Crt,          [this] { renderNtscSettingsWindow(); });
-    draw(P::Voxel,        [this] { /* drawn inside renderScreenWindow */ });
+    draw(P::Voxel,        [] { /* drawn inside renderScreenWindow */ });
     draw(P::VoxelSettings,[this] { renderVoxelSettingsWindow(); });
     draw(P::MemViewer,    [this] { renderMemoryViewerWindow(); });
     draw(P::Debugger,     [this] { debuggerPanel->render(*controller,

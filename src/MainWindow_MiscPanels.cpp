@@ -355,9 +355,9 @@ void MainWindow::renderAbstractionPanel()
                          "so it never drops motion — smoother, and less\n"
                          "correct. Needs a compensating absolute cursor sync\n"
                          "the L0 card does not.";
-        const auto mouseInventory = mouseCoordinator_->capture();
-        t.selected     = mouseInventory.mamePlugged ? 0
-                       : (mouseInventory.appleWinPlugged ? 1 : -1);
+        const auto mousePlugged = mouseCoordinator_->capture();
+        t.selected     = mousePlugged.mamePlugged ? 0
+                       : (mousePlugged.appleWinPlugged ? 1 : -1);
         if (t.selected < 0)
             t.note = "Neither is plugged — add a mouse in Slot Configuration "
                      "first, then switch levels here.";

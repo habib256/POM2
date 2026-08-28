@@ -92,13 +92,30 @@ that grows is whichever one is convenient".
 Details for all four in `CHANGELOG.md`, structure in
 [DEV § The MainWindow family](DEV.md#the-mainwindow-family).
 
-### P2 — make the holes visible · *≈ 3-4 d*
+### P2 — make the holes visible · *2-2 and 2-3 landed 2026-08-28*
+
+**2-3 — warnings to zero, and a leg that keeps them there.** 14 → 0, and
+`-DPOM2_WERROR=ON` on the macOS job. One of the fourteen was not a style nit:
+a value-returning lambda in the Super Serial panel fell off its end (UB,
+working only because NRVO put the object where the caller was going to read
+it). Another was an initialiser list in a different order from the
+declarations it initialises. Both are the argument for the flag.
+
+**2-2 — `FujiNetNetDevice`.** The plan's premise was wrong, in the same way
+P0-5's was: it is **not** untested. `tests/fujinet_net_device_test.cpp`
+already covered the happy path, the header split, the STATUS cap, a stalled
+server and a blackholed host. What it did not cover has been added — a reply
+over the 512 KB cap, a reply with no CRLFCRLF, the port-number and empty-host
+refusals, a refused connection, `close()`, and the **error bytes**, which are
+a contract with the guest rather than an implementation detail (FILE NOT FOUND
+is how the firmware's table spells "no such host"; a guest that cannot tell a
+typo'd hostname from a dead server has nothing to show the user). Both new
+paths mutation-checked.
 
 | # | Item | Why |
 | - | ---- | --- |
-| 2-1 | 🟡 **Coverage in CI** — `llvm-cov` on the Linux job, report published, floor set at the first measured value. | Holes are found by hand today. That is how an untested HTTP parser survived. |
-| 2-2 | 🟡 **Test `FujiNetNetDevice`** — local server, truncated responses, malformed headers, deadline exceeded, body over the cap. | The only untested network *input parsing* in the repo, and the best fuzzer candidate. |
-| 2-3 | 🟢 **Warnings to zero, then `-Werror` on one CI leg** — 11 today (9 `-Wmissing-field-initializers`, 1 unused variable, 1 unused lambda capture). | An afternoon. |
+| 2-1 | 🟡 **Coverage in CI** — `llvm-cov` on the Linux job, report published, floor set at the first measured value. | Holes are found by hand today, and badly: the plan asserted that `FujiNetNetDevice` and `TnfsClient` were untested and both had test suites. A number would have said which lines were actually uncovered instead. |
+| 2-3b | 🟢 **Extend `-Werror` to the GCC leg** — it is on for macOS/AppleClang (2026-08-28). GCC's warning set is not clang's and nobody has cleaned it, so turning it on blind would red `main`. Build the Linux job once with it, fix what it names, then wire it. | The leg that catches what clang does not — transitive includes, and its own `-Wmaybe-uninitialized` family. |
 | 2-4 | 🟢 **A test for `FloppyEmuDevice`** — the last device with no pin that is not a declared stub. | |
 
 ### P3 — rulings, not development

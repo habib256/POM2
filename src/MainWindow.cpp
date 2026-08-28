@@ -146,6 +146,28 @@ MainWindow::MainWindow(bool forceIIPlus)
       settings       (std::make_unique<pom2::Settings>()),
       cassetteDeck   (std::make_unique<pom2::CassetteDeck_ImGui>()),
       rewindPanel_   (std::make_unique<pom2::Rewind_ImGui>()),
+      // Declared above the coordinators in MainWindow.h, so initialised above
+      // them here. Members are constructed in DECLARATION order whatever this
+      // list says, and a list that disagrees is how an initialiser comes to
+      // read a member that has not been built yet.
+      disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
+      diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
+      cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
+      hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
+      smartPortPanel (std::make_unique<pom2::SmartPort_ImGui>()),
+      fujiNetPanel   (std::make_unique<pom2::FujiNet_ImGui>()),
+      floppyEmu      (std::make_unique<pom2::FloppyEmuDevice>()),
+      floppyEmuPanel (std::make_unique<pom2::FloppyEmu_ImGui>()),
+      joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
+      printerSound   (std::make_unique<pom2::PrinterSoundDevice>()),
+      printerHistory (std::make_unique<pom2::PrinterHistory>()),
+      imageWriter    (std::make_unique<pom2::ImageWriter>()),
+      imageWriterPanel(std::make_unique<pom2::ImageWriter_ImGui>()),
+      chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
+      toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
+      hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
+      hgrPaintEditor (std::make_unique<hgrpaint::HgrPaintEditor>(hgrPaintHost.get())),
+      hgrSpriteEditor(std::make_unique<hgrsprite::HgrSpriteEditor>(hgrPaintHost.get())),
       mouseCoordinator_(std::make_unique<pom2::MouseCoordinator>(*controller)),
       networkCoordinator_(std::make_unique<pom2::NetworkCoordinator>()),
       printerCoordinator_(std::make_unique<pom2::PrinterCoordinator>()),
@@ -155,11 +177,6 @@ MainWindow::MainWindow(bool forceIIPlus)
           *controller, *settings)),
       storageCoordinator_(std::make_unique<pom2::StorageCoordinator>()),
       slotCardFactory_(std::make_unique<pom2::SlotCardFactory>()),
-      slotConfigCoordinator_(
-          std::make_unique<pom2::SlotConfigurationCoordinator>()),
-      slotProvisioningCoordinator_(
-          std::make_unique<pom2::SlotProvisioningCoordinator>(
-              *slotCardFactory_, *storageCoordinator_)),
       // The rebuild transaction. Every hook is required — the coordinator
       // throws rather than let a half-wired teardown run — and the ORDER is
       // its contract, not this list's: gate AI requests, drop the non-owning
@@ -198,24 +215,11 @@ MainWindow::MainWindow(bool forceIIPlus)
                                    primaryDiskII(), primaryHdvCard());
               },
           })),
-      disk35Panel    (std::make_unique<pom2::Disk35Controller_ImGui>()),
-      diskLibrary    (std::make_unique<pom2::DiskLibrary_ImGui>()),
-      cmdPalette     (std::make_unique<pom2::CommandPalette_ImGui>()),
-      hdvPanel       (std::make_unique<pom2::HdvController_ImGui>()),
-      smartPortPanel (std::make_unique<pom2::SmartPort_ImGui>()),
-      fujiNetPanel   (std::make_unique<pom2::FujiNet_ImGui>()),
-      floppyEmu      (std::make_unique<pom2::FloppyEmuDevice>()),
-      floppyEmuPanel (std::make_unique<pom2::FloppyEmu_ImGui>()),
-      joystickPanel  (std::make_unique<pom2::JoystickPanel_ImGui>()),
-      printerSound   (std::make_unique<pom2::PrinterSoundDevice>()),
-      printerHistory (std::make_unique<pom2::PrinterHistory>()),
-      imageWriter    (std::make_unique<pom2::ImageWriter>()),
-      imageWriterPanel(std::make_unique<pom2::ImageWriter_ImGui>()),
-      chatMauvePanel (std::make_unique<pom2::LeChatMauve_ImGui>()),
-      toolbar        (std::make_unique<pom2::Toolbar_ImGui>()),
-      hgrPaintHost   (std::make_unique<Pom2HgrPaintHost>(controller.get())),
-      hgrPaintEditor (std::make_unique<hgrpaint::HgrPaintEditor>(hgrPaintHost.get())),
-      hgrSpriteEditor(std::make_unique<hgrsprite::HgrSpriteEditor>(hgrPaintHost.get())),
+      slotConfigCoordinator_(
+          std::make_unique<pom2::SlotConfigurationCoordinator>()),
+      slotProvisioningCoordinator_(
+          std::make_unique<pom2::SlotProvisioningCoordinator>(
+              *slotCardFactory_, *storageCoordinator_)),
       joystick       (std::make_unique<JoystickInput>()),
       sscPortInput   (SuperSerialCard::kDefaultPort),
       aiServer       (std::make_unique<pom2::AiControlServer>()),
