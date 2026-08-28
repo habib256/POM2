@@ -5,6 +5,116 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-28 — Three guards that reported success while doing nothing
+
+The P0 pass of the 2026-08-28 architecture plan. Its four items were "bound the
+remaining hand-assembled ROMs, fix the ratchet for bash 3.2, close the layer
+hole". Doing them turned up three separate mechanisms that had been **passing
+without checking anything**, which is worth more than the items themselves.
+
+### The version header was never generated
+
+`configure_file` takes an input and an output. `CMakeLists.txt` gave it three
+paths — the generated *directory*, then `include/Version.h` — so CMake wrote
+the header to a file literally named `generated` and dropped the third argument
+with an author warning nobody reads. Two consequences, and the second is why it
+survived a week:
+
+* **No clean checkout could build.** `generated` is a file, so `-I` it resolves
+  nothing and `MainWindow.cpp:27` fails with `'Version.h' file not found`. The
+  macOS, Windows and WASM CI jobs had all been dying there.
+* **An existing build tree kept working**, on a `build/generated/Version.h`
+  left behind by the previous arrangement — which said **0.8.3**. So the
+  banner, the window title and the About box had been reporting a
+  two-release-old version, read out of a header the build no longer generates,
+  from the very mechanism introduced to give the version one source of truth.
+
+### The file-size ratchet had never run where the code is written
+
+`declare -A` is bash 4. macOS ships bash 3.2 and `#!/usr/bin/env bash` finds it
+there, so the script aborted on `declare: -A: invalid option` — and, because
+the abort happened inside a `while read` with no `set -e`, it aborted with
+**exit status 0**. It printed two error lines and passed. The only machine it
+ever really ran on was CI's Ubuntu.
+
+Rewritten without associative arrays (the budget file is a few dozen lines and
+the tree a few hundred files; a `awk` scan per file is not worth a data
+structure), plus a guard that a budget parsing to *zero* ceilings is a broken
+ratchet — exit 2 — rather than an empty one. Mutation-checked in all four
+directions: growth → 1, stale entry → 1, empty budget → 2, clean → 0.
+
+Once it ran, it immediately failed: `src/MainWindow.cpp` was 8319 lines against
+a ceiling of 8300, and CI's Linux job had been red on it for a day. Three stray
+blank lines left in a comment by the layer-guard commit come out; the remaining
++16 is real code — the host-seam injections the layer guard required — and is
+recorded in `tools/file_size_budget.txt` with the reason and a pointer at
+TODO P1-3, which is the answer to the question the rule exists to ask.
+
+### The layer guard ignored 14 translation units, two of them listed
+
+The guard only ever examined files it had been *told* about and silently
+skipped the rest, so twelve TUs — `MediaMount.cpp` and the four `MainWindow`
+panel TUs among them — were outside the model entirely. An unclassified `.cpp`
+is now a configure error, which is the part that keeps coverage at 100 %: a new
+file cannot be added without someone deciding which layer it is in.
+
+That check then found the second hole, which nobody would have found by
+reading: **`POM2_FOUNDATION_SOURCES` was never read.** The FOUNDATION branch
+set the source variable to the empty string, so `ChildProcess.cpp` and
+`SerialPort.cpp` sat in a manifest, under a comment explaining why they belong
+to foundation, and were never examined.
+
+Reading them surfaced a third thing. The host-API ban — no `<thread>`, no
+socket headers below RUNTIME — applied to FOUNDATION, which is where the
+platform *wrappers* live. `<poll.h>` in `SerialPort.cpp` is where the polling
+is supposed to be. The two platform primitives are exempted **by name**, not
+the layer, so a `<thread>` added to a foundation *contract* still fails.
+
+`MediaMount` moved MEDIA → RUNTIME. The header is pure contract — one
+`<string>` and forward declarations — but the implementation reaches
+`DiskIICard` and `EmulationController`. Nothing below the frontend includes it,
+which is what made the move free, and it is the file the plan named as its
+proof: `#include "MainWindow.h"` there used to pass configure silently and now
+does not.
+
+### Every hand-assembled slot ROM is bounded
+
+`SlotRom.h`'s `SlotRomBuilder` replaces the five remaining copies of
+`rom[pc++]`. It catches **two** failure modes rather than the one the SmartPort
+fix guarded:
+
+* **overflow** — a region grew into its neighbour (the SmartPort bug);
+* **misaligned** — a region no longer ends where the layout says. These ROMs
+  are full of hand-computed branch displacements (`BEQ +55` to reach the next
+  routine), so a routine that *shrinks* breaks them exactly as thoroughly as
+  one that grows — silently, and without changing a byte a hexdump comparison
+  would notice.
+
+Converted: `FujiNetCard`, `ProDOSHardDiskCard`, `PrinterCard`,
+`SuperSerialCard`, and `GrapplerCard`'s fallback stub. `ClockCard` writes nine
+fixed bytes with no cursor and `DiskIICard`'s boot PROM is a verbatim dump —
+neither can trip it.
+
+The audit's finding: **`ProDOSHardDiskCard`'s write-block routine was one byte
+from the same bug.** It ends at `$CnBF` and STATUS starts at `$CnC0` — zero
+slack — and *nothing executed it*: every HDV test drove the backing store
+directly, so an overrun there would have gone unnoticed the same way. That test
+now writes a block and reads it back through the ROM, and checks the
+neighbouring block is undisturbed.
+
+`slot_rom_builder` unit-tests the guard itself, because each card's test can
+only assert the flag is **clear** — which a guard hard-wired to `return false`
+would also satisfy. Something has to assert it can be set.
+
+Still open, and recorded in `TODO.md`: an empty HDV bay answers `$2B` "write
+protected" instead of `$28` "no device connected". It was not fixed here
+precisely *because* the write routine has zero slack — the fix has to move
+bytes rather than add them, which is a different change from putting a fence
+around the current ones.
+
+217/217 ctest, layer guard clean, ratchet clean, clean-checkout configure
+verified in an empty build tree.
+
 ## 2026-08-28 — The SmartPort slot ROM was overwriting itself
 
 `SmartPortCard` hand-assembles a 256-byte slot ROM, and `emit()` did
