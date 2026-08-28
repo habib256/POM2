@@ -1439,12 +1439,9 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 : SuperSerialCard::kDefaultPort;
             const int p = settings->getInt("ssc_port" + sk, portDefault);
 
-            // Give the card its host transport at plug time. The card cannot build
-
-            // one itself — that would be a device reaching into the runtime.
-
+            // Give the card its host transport at plug time. The card cannot
+            // build one itself — that would be a device reaching into runtime.
             raw->setTransport(pom2::makeSuperSerialTcpTransport(*raw, s));
-
             raw->startListening(static_cast<uint16_t>(p));
         }
     };

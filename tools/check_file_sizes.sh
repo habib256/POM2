@@ -76,28 +76,48 @@ if [ ! -f "$BUDGET" ]; then
     exit 2
 fi
 
-declare -A ceiling=()
-while read -r path limit_value _rest; do
-    case "$path" in ''|\#*) continue ;; esac
-    ceiling["$path"]="$limit_value"
-done < "$BUDGET"
+# NO ASSOCIATIVE ARRAYS. `declare -A` is bash 4, macOS ships bash 3.2, and
+# `#!/usr/bin/env bash` finds /bin/bash there. The previous version therefore
+# aborted with "declare: -A: invalid option" on every Mac — and, because the
+# abort happened inside a `while read` with no `set -e`, it aborted with EXIT
+# STATUS 0. The ratchet reported success while checking nothing, on the
+# machine where the code is actually written; it only ever ran on CI's Ubuntu,
+# so a violation was discovered after the push instead of before it.
+#
+# A ceiling is looked up by scanning the budget file instead. It holds a few
+# dozen lines and the source tree a few hundred files, so the quadratic shape
+# is not worth a data structure.
+ceiling_for() {
+    awk -v want="$1" '$1 == want { print $2; exit }' "$BUDGET"
+}
+
+# Guard against the class of failure above: a budget that parses to nothing is
+# a broken ratchet, not an empty one, and must not pass quietly.
+budget_entries=$(grep -c -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' "$BUDGET" || true)
+if [ "${budget_entries:-0}" -eq 0 ]; then
+    echo "check_file_sizes: $BUDGET parsed to zero ceilings — run '$0 --update'" >&2
+    exit 2
+fi
 
 fail=0
 slack_report=""
+checked_list=$(mktemp)
+trap 'rm -f "$checked_list"' EXIT
 
 while read -r f; do
     is_exempt "$f" && continue
+    echo "$f" >> "$checked_list"
     n=$(wc -l < "$f")
-    cap="${ceiling[$f]:-}"
+    cap=$(ceiling_for "$f")
 
     if [ -n "$cap" ]; then
         if [ "$n" -gt "$cap" ]; then
             echo "FAIL  $f: $n lines, ceiling $cap (+$((n - cap)))" >&2
             fail=1
         elif [ $((cap - n)) -ge 100 ]; then
-            slack_report+="      $f: $n lines, ceiling $cap — lower it by $((cap - n))"$'\n'
+            slack_report="${slack_report}      $f: $n lines, ceiling $cap — lower it by $((cap - n))
+"
         fi
-        unset 'ceiling[$f]'
     elif [ "$n" -ge "$LIMIT" ]; then
         echo "FAIL  $f: $n lines and no ceiling — a new file over $LIMIT lines." >&2
         echo "      Split it, or record the ceiling with '$0 --update' and say why." >&2
@@ -106,10 +126,13 @@ while read -r f; do
 done < <(list_sources)
 
 # A ceiling whose file is gone (renamed, split, deleted) is stale.
-for stale in "${!ceiling[@]}"; do
-    echo "FAIL  $BUDGET lists $stale, which no longer exists — run '$0 --update'" >&2
-    fail=1
-done
+while read -r path _limit_value _rest; do
+    case "$path" in ''|\#*) continue ;; esac
+    if ! grep -Fxq "$path" "$checked_list"; then
+        echo "FAIL  $BUDGET lists $path, which no longer exists — run '$0 --update'" >&2
+        fail=1
+    fi
+done < "$BUDGET"
 
 if [ "$fail" -ne 0 ]; then
     echo "" >&2
