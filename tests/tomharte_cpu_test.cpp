@@ -55,7 +55,14 @@
 //   tomharte_cpu_test <nmos|cmos> <dir-of-json> [--max N] [--only hh,hh]
 //                     [--skip hh,hh] [--verbose] [--examples K]
 // Exit 0 = every non-skipped vector matched; 1 = at least one mismatch;
-// 2 = usage / I/O error (no test data → treated as a soft skip, exit 0).
+// 2 = usage / I/O error; 77 = corpus absent, nothing was verified.
+//
+// 77 is ctest's SKIP_RETURN_CODE (wired in tests/CMakeLists.txt), NOT 0.
+// An absent corpus must never read as a pass: this gate is the only
+// cycle-level CPU oracle POM2 has, and a green line saying "Passed 0.00s"
+// for a suite that ran zero vectors is the exact failure shape TODO.md
+// names as the lesson of the 2026-08-28 pass — a mechanism that reports
+// success while doing nothing.
 
 #include "M6502.h"
 #include "Memory.h"
@@ -321,6 +328,10 @@ int opcodeFromStem(const std::string& stem) {
 
 }  // namespace
 
+/// ctest's SKIP_RETURN_CODE. Returned whenever the run verified ZERO vectors,
+/// so an unfetched corpus shows up as "Skipped" rather than "Passed".
+static constexpr int kExitSkip = 77;
+
 int main(int argc, char** argv) {
     if (argc < 3) {
         std::fprintf(stderr, "usage: %s <nmos|cmos> <dir> [--max N] [--only hh,..] "
@@ -350,9 +361,9 @@ int main(int argc, char** argv) {
 
     namespace fs = std::filesystem;
     if (!fs::exists(dir) || !fs::is_directory(dir)) {
-        std::fprintf(stderr, "[tomharte] no test data at '%s' — soft skip "
+        std::fprintf(stderr, "[tomharte] no test data at '%s' — SKIPPED, nothing verified "
                              "(set POM2_FETCH_TOMHARTE=ON or run fetch_tomharte.sh)\n", dir.c_str());
-        return 0;   // absent corpus is not a failure (mirrors Klaus download-miss)
+        return kExitSkip;
     }
 
     std::vector<fs::path> files;
@@ -360,8 +371,9 @@ int main(int argc, char** argv) {
         if (e.is_regular_file() && e.path().extension() == ".json") files.push_back(e.path());
     std::sort(files.begin(), files.end());
     if (files.empty()) {
-        std::fprintf(stderr, "[tomharte] '%s' holds no .json vectors — soft skip\n", dir.c_str());
-        return 0;
+        std::fprintf(stderr, "[tomharte] '%s' holds no .json vectors — SKIPPED, nothing verified\n",
+                     dir.c_str());
+        return kExitSkip;
     }
 
     Memory mem;
@@ -424,8 +436,9 @@ int main(int argc, char** argv) {
                 anyFail ? "FAIL" : "OK", grandPass, grandTotal, filesRun,
                 anyFail ? "  <<< MISMATCH" : "");
     if (filesRun == 0) {
-        std::fprintf(stderr, "[tomharte] no opcode files matched the filter — soft skip\n");
-        return 0;
+        std::fprintf(stderr, "[tomharte] no opcode files matched the filter — SKIPPED, "
+                             "nothing verified\n");
+        return kExitSkip;
     }
     return anyFail ? 1 : 0;
 }

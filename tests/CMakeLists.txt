@@ -187,7 +187,15 @@ endif()
 # and the two ctests soft-skip. tests/fetch_tomharte.sh pulls a full variant for
 # exhaustive local runs (build/test_tomharte_cpu <nmos|cmos> <dir>).
 
-option(POM2_FETCH_TOMHARTE "Download the curated Tom Harte ProcessorTests subset at configure time" OFF)
+# Default ON since 2026-08-29. It used to be OFF "to keep normal builds
+# light", and the price of that was a gate that ran ZERO vectors on every
+# developer machine and every per-push CI job while printing a green line.
+# The corpus is ~140 MB fetched once and skipped on every later configure
+# (the `if(NOT EXISTS)` below), so the cost is one download, not one per
+# build. Turn it off with -DPOM2_FETCH_TOMHARTE=OFF for an offline or
+# bandwidth-constrained checkout — the ctests then report Skipped, never
+# Passed.
+option(POM2_FETCH_TOMHARTE "Download the curated Tom Harte ProcessorTests subset at configure time" ON)
 
 set(TH_DIR_6502  "${CMAKE_CURRENT_BINARY_DIR}/tomharte/6502")
 set(TH_DIR_65C02 "${CMAKE_CURRENT_BINARY_DIR}/tomharte/wdc65c02")
@@ -244,7 +252,13 @@ endif()
 
 add_test(NAME tomharte_6502  COMMAND test_tomharte_cpu nmos "${TH_DIR_6502}")
 add_test(NAME tomharte_65c02 COMMAND test_tomharte_cpu cmos "${TH_DIR_65C02}")
-set_tests_properties(tomharte_6502 tomharte_65c02 PROPERTIES TIMEOUT 120)
+# SKIP_RETURN_CODE, not a bare exit 0: without the corpus these verify NOTHING,
+# and a "Passed 0.00 sec" line for a suite that ran zero vectors is precisely
+# the "reports success while doing nothing" failure TODO.md warns about. The
+# harness returns 77 on every zero-vector path; ctest then prints "Skipped".
+set_tests_properties(tomharte_6502 tomharte_65c02 PROPERTIES
+                     TIMEOUT 120
+                     SKIP_RETURN_CODE 77)
 
 
 # ─── System profile smoke test ─────────────────────────────────────────────
