@@ -263,23 +263,18 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 
 ## Backlog
 
-- **[Storage] //c : ProDOS n'installe pas le port 5 — le jeu meurt a son
-  premier appel MLI.** Etat au 2026-08-30, apres les deux correctifs de
-  `fix/iic-hdv-boot` (auto-interblocage du montage + perçage $C800) : sur un
-  //c ROM 0, un HDV amorce ENTIEREMENT — bloc 0, ProDOS, le .SYSTEM en
-  $2000, le programme en $4000 — puis `RESTART SYSTEM-$0A` des que le
-  programme ouvre un fichier : le dispatch peripherique du noyau (boucle
-  `$E1CF`, dissequee au traceur) cherche l'unite $50 dans sa table de
-  drivers installes, et l'installateur //c de ProDOS n'y a jamais mis le
-  port 5 — il a sonde le port (deux STATUS SmartPort, reponse `02` bien
-  livree dans son tampon, verifie) et n'a rien enregistre. Reproducteur :
-  `POM2_TRACE_HDV=<hdv> build/tests/test_iic_onboard_smartport` (+
-  `POM2_SP_TRACE=1` pour les appels SmartPort). Deux pistes, dans l'ordre :
-  (1) comprendre le critere de l'installateur //c de P8 2.4 (desassembler la
-  phase $28xx du loader relocalise — qu'attend-il d'un port 5 qu'on ne lui
-  montre pas ?) ; (2) sinon, l'installation de driver par le .SYSTEM cote
-  jeu (TN ProDOS 8 #20 : vecteur $BF10+2n, DEVLST/DEVCNT) — mais le
-  dispatch $E1CF lit une table INTERNE ($D910), verifier qu'elle suit.
+- **[Storage] //c + ProDOS : RESOLU (2026-08-30).** Trois couches, chacune
+  masquant la suivante : l'auto-interblocage du montage (routeMountHdv), la
+  banque $C800 du stub jamais percee sur //c-classe (iicCardWindow_), et --
+  la racine -- l'entree ProDOS $Cn0A du stub SANS le `BIT $CFFF` du vrai
+  firmware Liron : appelee par le noyau APRES que le firmware 80 colonnes a
+  latche INTC8ROM, ses JSR vers $CD00/$CD10 executaient la banque INTERNE,
+  le scan //c de P8 2.4.3 partait dans le decor et sa table de devices
+  restait vide (RESTART SYSTEM-$0A au premier MLI du programme, dissection
+  complete au traceur : dispatch $E1C2, installateur $EE82, bloc de config
+  $FExx). Verifie en jeu : SCOSWAMP boote et se joue sur --preset iic.
+  Le harnais de dissection reste dans le test epingle
+  (`POM2_TRACE_HDV=<hdv> test_iic_onboard_smartport`, + oracle //e).
 
 Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each item.
 

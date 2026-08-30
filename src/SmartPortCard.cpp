@@ -572,34 +572,39 @@ void SmartPortCard::buildRom()
     // ── ProDOS driver dispatch ($Cn50) ─────────────────────────────────
     // ProDOS calls here with $42 = command, $43 = unit, $44/$45 = buffer,
     // $46/$47 = block. Unit byte bit 7 = drive (0 = drive 1, 1 = drive 2).
+    // `BIT $CFFF` en tete, comme le vrai firmware Liron sur SON entree — et
+    // ce n'est pas un ornement : l'entree ProDOS est appelee par le noyau
+    // APRES que le firmware 80 colonnes a verrouille la fenetre interne
+    // (tout passage par $C3xx latche INTC8ROM). Sans cette liberation, les
+    // JSR du driver vers $CD00/$CD10 executaient la banque INTERNE — c'est
+    // ainsi que le scan //c de ProDOS 2.4.3 partait dans le decor et que la
+    // table des devices restait vide (RESTART SYSTEM-$0A au premier MLI du
+    // programme charge, 2026-08-30). L'entree SmartPort $Cn0D avait deja le
+    // sien. Les 3 octets viennent du dispatch : tester cmd=0 par un BEQ
+    // direct economise le CMP #$00, et le pad historique fournit le reste.
     a.region("driver", kDriverOff, kReadOff)
-     .emit({ 0xA5, 0x43,            // LDA $43           ; unit byte
+     .emit({ 0x2C, 0xFF, 0xCF,      // BIT $CFFF         ; libere INTC8ROM
+             0xA5, 0x43,            // LDA $43           ; unit byte
              0x0A,                  // ASL A             ; bit7 → carry
              0xA9, 0x00,
              0x2A,                  // ROL A             ; A = drive (0 or 1)
              0x8D, static_cast<uint8_t>(kDeviceBase + 0x00), 0xC0,
                                     // STA $C0n0         ; latch unit
-             0xA5, 0x42,            // LDA $42           ; command
-             0xC9, 0x01 })          // CMP #$01
+             0xA5, 0x42 })          // LDA $42           ; command
+     .branch(0xF0, "dispStatus")    // BEQ — STATUS ($00)
+     .emit({ 0xC9, 0x01 })          // CMP #$01
      .branch(0xF0, "read")
      .emit({ 0xC9, 0x02 })          // CMP #$02
      .branch(0xF0, "write")
-     .emit({ 0xC9, 0x00 })          // CMP #$00
-     .branch(0xF0, "dispStatus")
      .emit({ 0xA9, 0x27,            // bad cmd (incl. FORMAT $03): LDA #$27 —
                                     // a REAL driver error code; the old $01
                                     // is not in the ProDOS $27/$28/$2B set
                                     // and surfaced as a bogus code in Filer.
              0x38,                  // SEC
              0x60 })                // RTS
-     // The STATUS arm jumps to the full routine in the $C800 bank, which
-     // returns the block count in X/Y. Four bytes (JMP + pad) — the pad is a
-     // leftover from when the branch operands above were hand-counted, and
-     // stays only because removing it would change the page for no reason.
      .label("dispStatus")
      .emit({ 0x4C, static_cast<uint8_t>(kStatusAddr & 0xFF),
-                   static_cast<uint8_t>(kStatusAddr >> 8),   // JMP $CD10
-             0xEA });               // pad
+                   static_cast<uint8_t>(kStatusAddr >> 8) });  // JMP $CD10
 
     // ── Read block ($Cn6F) ─────────────────────────────────────────────
     // Pre-flight the bay, stream 512 bytes, then test $C0n4 bit 0 (I/O

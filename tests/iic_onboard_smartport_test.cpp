@@ -35,6 +35,7 @@
 
 #include "M6502.h"
 #include "Memory.h"
+#include "MemoryWatchSink.h"
 #include "SmartPortCard.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortHdvUnit.h"
@@ -368,49 +369,14 @@ static void testRealHdvBootTrace()
 
     struct Trap : M6502DebugHook {
         Memory* mem;
+        M6502*  cpu = nullptr;
         uint16_t ring[256] = {0};
         int      pos = 0;
         int      hits = 0;
-        int      sp_hits = 0;
         long     count = 0;
         bool onInstruction(uint16_t pc) override {
             ring[pos & 255] = pc; pos++;
             count++;
-            if (count > 100000 && pc >= 0xC500 && pc <= 0xC5FF) {
-                const uint16_t prev = ring[(pos - 2) & 255];
-                if ((prev < 0xC500 || prev > 0xC5FF) && sp_hits < 12) {
-                    sp_hits++;
-                    std::printf("  [sp %d @%ld] -> %04X  via:", sp_hits, count, pc);
-                    for (int i = 9; i >= 2; --i)
-                        std::printf(" %04X", ring[(pos - i) & 255]);
-                    std::printf("\n");
-                }
-            }
-            if (pc == 0xE00A && hits == 0) {
-                hits = 1;
-                std::printf("  chemin vers E00A (200 derniers):");
-                for (int i = 200; i >= 2; --i)
-                    std::printf(" %04X", ring[(pos - i) & 255]);
-                std::printf("\n  message $FE27: ");
-                for (uint16_t a = 0xFE27; a < 0xFE27 + 0x14; ++a) {
-                    const uint8_t c = mem->memRead(a) & 0x7F;
-                    std::printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
-                }
-                std::printf("  buffer STATUS $266F: ");
-                for (uint16_t a = 0x266F; a < 0x2677; ++a)
-                    std::printf("%02X ", mem->memRead(a));
-                std::printf("\n");
-                std::printf("  bytes E1C0-E1F4:");
-                for (uint16_t a = 0xE1C0; a <= 0xE1F4; ++a)
-                    std::printf(" %02X", mem->memRead(a));
-                std::printf("\n");
-                std::printf("  X(code)=%02X  ecran $05B2+: ", 0);
-                for (uint16_t a = 0x05B2; a <= 0x05C6; ++a) {
-                    const uint8_t c = mem->memRead(a) & 0x7F;
-                    std::printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
-                }
-                std::printf("\n");
-            }
             // premiere entree dans C800-CFFF DEPUIS l'exterieur
             if (pc >= 0xC800 && pc <= 0xCFFE) {
                 const uint16_t prev = ring[(pos - 2) & 255];
@@ -430,7 +396,9 @@ static void testRealHdvBootTrace()
         }
     } trap;
     trap.mem = &mem;
+    trap.cpu = &cpu;
     cpu.setDebugHook(&trap);
+
     int n = 0;
     while (n < 60000000) n += cpu.run(4096);
     cpu.setDebugHook(nullptr);
@@ -441,6 +409,80 @@ static void testRealHdvBootTrace()
     std::printf("\n");
 }
 
+// L'oracle //e : meme HDV, meme carte, meme boot force a $C500 — seule la
+// ROM change. Si P8 meurt ici aussi, le probleme est la carte face a
+// ProDOS ; s'il boote, la divergence est le chemin //c.
+static void testRealHdvBootIIe()
+{
+    const char* hdv = std::getenv("POM2_TRACE_HDV");
+    if (!hdv) { std::printf("  SKIP: POM2_TRACE_HDV non pose\n"); return; }
+    const std::string rom = firstExisting({
+        "roms/apple2e.rom", "../roms/apple2e.rom",
+    });
+    if (rom.empty()) { std::printf("  SKIP: pas de ROM //e\n"); return; }
+
+    Memory mem;
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.setIIEMode(true);
+    assert(mem.loadAppleIIRom(rom.c_str(), true));
+
+    auto card = std::make_unique<pom2::SmartPortCard>(5);
+    pom2::SmartPortCard* raw = card.get();
+    mem.slotBus().plug(5, std::move(card));
+    if (!raw->loadLironRom("roms/liron.rom"))
+        raw->loadLironRom("../roms/liron.rom");
+
+    raw->setUnit(0, std::make_unique<pom2::SmartPortHdvUnit>());
+    pom2::Block512Backing::PreparedImage prep;
+    std::string err;
+    assert(pom2::Block512Backing::readImageFile(hdv, prep, err));
+    assert(raw->unit(0)->adoptImage(std::move(prep)));
+
+    M6502 cpu(&mem);
+    cpu.hardReset();
+    cpu.setProgramCounter(0xC500);
+
+    struct Peek : M6502DebugHook {
+        Memory* mem; M6502* cpu; int hits = 0;
+        bool onInstruction(uint16_t pc) override {
+            if (pc == 0xE1C2 && hits < 3) {
+                hits++;
+                const uint8_t y = cpu->getYRegister();
+                std::printf("  [//e dispatch #%d] Y=%02X $D801+Y=%02X "
+                            "$FECF=%02X  $D910/30/50/70/90:"
+                            " %02X %02X %02X %02X %02X\n",
+                            hits, y, mem->memRead(0xD801 + y),
+                            mem->memRead(0xFECF),
+                            mem->memRead(0xD910), mem->memRead(0xD930),
+                            mem->memRead(0xD950), mem->memRead(0xD970),
+                            mem->memRead(0xD990));
+            }
+            return false;
+        }
+    } peek;
+    peek.mem = &mem; peek.cpu = &cpu;
+    cpu.setDebugHook(&peek);
+    int n = 0;
+    while (n < 60000000) n += cpu.run(4096);
+    cpu.setDebugHook(nullptr);
+
+    // La page texte 40 colonnes, brute : le jeu affiche sa banniere ou P8
+    // son RESTART SYSTEM — l'un des deux dira qui a gagne.
+    std::printf("  //e: $2000=%02X $4000=%02X  ecran:",
+                mem.memRead(0x2000), mem.memRead(0x4000));
+    for (uint16_t a = 0x05B2; a <= 0x05C6; ++a) {
+        const uint8_t c = mem.memRead(a) & 0x7F;
+        std::printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
+    }
+    std::printf("|");
+    for (uint16_t a = 0x0480; a <= 0x04A8; ++a) {
+        const uint8_t c = mem.memRead(a) & 0x7F;
+        std::printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
+    }
+    std::printf("\n");
+}
+
 int main()
 {
     std::printf("\n[//c on-board SmartPort smoke]\n");
@@ -448,6 +490,7 @@ int main()
     testHdvUnitBlockReadThroughMemory();
     testHdvBootExecution();
     testRealHdvBootTrace();
+    testRealHdvBootIIe();
     testMemoryHolePunch();
     testBlockReadThroughMemory();
     std::printf("[//c on-board SmartPort smoke] ALL PASS\n");
