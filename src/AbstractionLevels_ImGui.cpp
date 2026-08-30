@@ -233,10 +233,13 @@ const std::vector<AbsEntry>& abstractionCatalog()
       "SmartPortCard.*" },
     { "iicsp", "Storage", "//c-class on-board SmartPort", AbsLevel::H1,
       "A $C500-$C5FF hole punched through the //c's forced INTCXROM, armed "
-      "only by an explicit GUI/CLI boot",
+      "only by an explicit GUI/CLI boot — plus the stub's $C800 expansion "
+      "bank, gated by the iicCardWindow_ execution-flow heuristic. ProDOS 8 "
+      "2.4.3 boots and runs end-to-end",
       "A real //c masks all slot ROM, and MAME models no 3.5\" on a plain //c. "
-      "Half an LLE hangs; a complete HLE boots.",
-      "Memory.cpp, SmartPortHub.*" },
+      "An HLE only works once it is complete — bus etiquette included "
+      "(docs/lle_vs_hle.md, the case study).",
+      "Memory.cpp, SmartPortCard.*" },
     { "prodosvol", "Storage", "ProDOS host folder", AbsLevel::H1,
       "POM2 FABRICATES a valid ProDOS volume image once; from then on the "
       "guest does genuine block reads through the real filesystem code",
@@ -354,7 +357,7 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
     Request req;
     if (!open || !*open) return req;
 
-    ImGui::SetNextWindowSize(ImVec2(900, 620), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(640, 560), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin(ICON_FA_LAYER_GROUP " Abstraction Levels (LLE / HLE)"
                       "###abstractionLevels", open)) {
         ImGui::End();
@@ -364,27 +367,10 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
     const Palette& pal = palette();
     const auto u32 = ImGui::ColorConvertU32ToFloat4;
 
-    // ── What the axis means ─────────────────────────────────────────────
-    ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
-    ImGui::TextWrapped(
-        "Where POM2 cuts the emulation boundary. "
-        "%s LLE cuts at the chip's pins: internal state machines and timing "
-        "are modelled and the guest's own firmware runs on top. "
-        "%s HLE cuts at the service: POM2 intercepts a call or a byte stream "
-        "and produces the right result on the host.",
-        levelBadge(AbsLevel::L0), levelBadge(AbsLevel::H1));
-    ImGui::PushStyleColor(ImGuiCol_Text, u32(pal.textDim));
-    ImGui::TextWrapped(
-        "They fail differently, which is the useful part: LLE fails by being "
-        "INCOMPLETE (an unmodelled edge hangs the firmware), HLE fails by "
-        "being OUT OF CONTRACT (software pokes a register the abstraction "
-        "never had, gets a plausible wrong answer, and nothing hangs). "
-        "Full reasoning, with evidence: docs/lle_vs_hle.md.");
-    ImGui::PopStyleColor();
-    ImGui::PopTextWrapPos();
-
-    // ── Legend ──────────────────────────────────────────────────────────
-    ImGui::Spacing();
+    // ── Legende : les cinq niveaux, tout le discours en infobulle ───────
+    // La fenetre etait deux paragraphes, une section de commutateurs, trois
+    // filtres et une table de prose. Elle est maintenant UNE table ; le
+    // raisonnement complet vit dans docs/lle_vs_hle.md et les infobulles.
     {
         static const AbsLevel kAll[] = { AbsLevel::L0, AbsLevel::L1,
                                          AbsLevel::L2, AbsLevel::H1,
@@ -395,144 +381,59 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
             "Chip-faithful. Full register/protocol model at bus timing;\n"
             "firmware-invisible internals deliberately skipped.",
             "Real firmware, host device. The card's real ROM executes, but\n"
-            "what it drives is a host implementation. POM2's preferred\n"
-            "compromise whenever a dump exists but the chip need not.",
+            "what it drives is a host implementation.",
             "Synthetic firmware. POM2 hand-assembles a slot ROM: the guest\n"
-            "6502 code is real, the register protocol behind it is invented,\n"
-            "and the work happens on the host.",
-            "Host function. No guest-visible hardware at all — the function\n"
-            "happens on the host and the result appears out-of-band."
+            "6502 code is real, the register protocol behind it is invented.",
+            "Host function. No guest-visible hardware at all."
         };
         for (int i = 0; i < 5; ++i) {
-            if (i) ImGui::SameLine();
+            if (i) ImGui::SameLine(0.0f, 10.0f);
             levelChip(kAll[i]);
-            ImGui::SameLine(0.0f, 4.0f);
-            ImGui::TextColored(u32(levelIsLle(kAll[i]) ? pal.text : pal.textDim),
-                               "%s", levelName(kAll[i]));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", kTips[i]);
-            if (i == 2) {
-                ImGui::SameLine();
-                ImGui::TextDisabled("|");
-            }
         }
+        ImGui::SameLine(0.0f, 14.0f);
+        ImGui::TextDisabled("LLE = the chip's pins, HLE = the service. "
+                            "Full doc: docs/lle_vs_hle.md");
     }
 
-    // ── Switchable boundaries ───────────────────────────────────────────
-    //
-    // Four subsystems ship both levels behind one interface. That is policy,
-    // not accident ("when both levels have real users, ship both"), but until
-    // now the choice was expressed as a catalog key in Slot Configuration —
-    // you had to already know that `mouseaw` meant "the HLE one". Here the
-    // choice IS the level, with the cost of each side spelled out.
-    ImGui::Spacing();
-    if (ImGui::CollapsingHeader(ICON_FA_TOGGLE_ON " Switchable boundaries",
-                                ImGuiTreeNodeFlags_DefaultOpen)) {
-        if (snap.toggles.empty())
-            ImGui::TextDisabled("None available on this machine.");
-
-        for (const ToggleState& t : snap.toggles) {
-            ImGui::PushID(static_cast<int>(t.id));
-            ImGui::TextUnformatted(t.title.c_str());
-            ImGui::SameLine();
-            if (t.needsRestart)
-                ImGui::TextColored(u32(pal.warn), "(restarts the machine)");
-            else
-                ImGui::TextColored(u32(pal.ok), "(takes effect immediately)");
-
-            // Neither side is live (`selected == -1`) means the peripheral is
-            // not on the bus at all, so there is nothing to switch the LEVEL
-            // of: the host's `swapSlotCardVariant` would find no slot holding
-            // either key and return false without a word. Disable the pair and
-            // let `t.note` ("add one in Slot Configuration first") be the
-            // answer, rather than offering a click that does nothing.
-            const bool switchable = (t.selected >= 0);
-            auto side = [&](const ToggleOption& o, int idx) {
-                const bool on = (t.selected == idx);
-                ImGui::BeginDisabled(!o.available || !switchable);
-                char label[160];
-                std::snprintf(label, sizeof(label), "%s  %s",
-                              levelBadge(o.level), o.label.c_str());
-                // Radio-style: the two sides are exclusive and one is live,
-                // so a pair of buttons would leave "which am I on?" to colour
-                // alone. RadioButton says it structurally.
-                if (ImGui::RadioButton(label, on) && !on && o.available &&
-                    switchable) {
-                    req.toggle = t.id;
-                    req.option = idx;
-                }
-                ImGui::EndDisabled();
-                // AllowWhenDisabled: the whole point of these two tooltips is
-                // to explain why a side is greyed, and a plain IsItemHovered()
-                // reports false for a disabled item — so the explanation for
-                // the greying was the one thing you could never read.
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                    if (!switchable)
-                        ImGui::SetTooltip("Nothing to switch — neither side is "
-                                          "plugged.");
-                    else if (!o.available && !o.blockedBy.empty())
-                        ImGui::SetTooltip("Unavailable — %s", o.blockedBy.c_str());
-                    else if (!o.why.empty())
-                        ImGui::SetTooltip("%s", o.why.c_str());
-                }
-            };
-            ImGui::Indent();
-            side(t.low, 0);
-            side(t.high, 1);
-            if (!t.note.empty()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, u32(pal.textDim));
-                ImGui::TextWrapped("%s", t.note.c_str());
-                ImGui::PopStyleColor();
-            }
-            ImGui::Unindent();
-            ImGui::Spacing();
-            ImGui::PopID();
-        }
-    }
-
-    // ── Filters ─────────────────────────────────────────────────────────
-    ImGui::Spacing();
-    ImGui::SeparatorText("Every subsystem");
-    ImGui::SetNextItemWidth(16.0f * ImGui::GetFontSize());
-    ImGui::Combo("##half", &halfFilter_,
-                 "Everything\0LLE only (L0-L2)\0HLE only (H1-H2)\0"
-                 "Host-side (off-axis)\0");
-    ImGui::SameLine();
-    ImGui::Checkbox("Live only", &onlyLive_);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Hide subsystems with no card on the bus right now.");
-    ImGui::SameLine();
     ImGui::SetNextItemWidth(-FLT_MIN);
-    ImGui::InputTextWithHint("##search", "Filter...", search_, sizeof(search_));
+    ImGui::InputTextWithHint("##search", ICON_FA_MAGNIFYING_GLASS " Filter...",
+                             search_, sizeof(search_));
 
-    // Index the live rows once per frame — the catalog is walked in group
-    // order and a linear scan per row would be quadratic for no reason.
+    // Lignes vivantes indexees une fois par frame.
     std::unordered_map<std::string, const Row*> live;
     for (const Row& r : snap.rows) live[r.id] = &r;
 
-    auto matches = [&](const AbsEntry& e, const Row* r) {
-        if (halfFilter_ == 1 && !levelIsLle(e.level))           return false;
-        if (halfFilter_ == 2 && (levelIsLle(e.level) ||
-                                 e.level == AbsLevel::Host))     return false;
-        if (halfFilter_ == 3 && e.level != AbsLevel::Host)       return false;
-        if (onlyLive_ && r && r->live == Live::NotPlugged)       return false;
-        if (search_[0]) {
-            // Case-insensitive substring over the two columns the user is
-            // most likely to be hunting in.
-            auto hay = std::string(e.subsystem) + " " + e.modelled + " " +
-                       e.group + " " + e.files;
-            std::string needle(search_);
-            auto lower = [](std::string v) {
-                for (char& c : v) c = static_cast<char>(std::tolower(
-                                          static_cast<unsigned char>(c)));
-                return v;
-            };
-            if (lower(hay).find(lower(needle)) == std::string::npos)
-                return false;
+    // Les quatre frontieres commutables, indexees par id de catalogue :
+    // quand une ligne appartient a une paire, son bouton vit DANS la ligne.
+    struct PairSide { const ToggleState* t; int idx; };
+    std::unordered_map<std::string, PairSide> pair;
+    for (const ToggleState& t : snap.toggles) {
+        const char* lo = nullptr; const char* hi = nullptr;
+        switch (t.id) {
+            case AbsToggle::MouseCard:      lo = "mouse";    hi = "mouseaw";     break;
+            case AbsToggle::BlockStorage:   lo = "cffa";     hi = "hdv";         break;
+            case AbsToggle::PrinterIface:   lo = "grappler"; hi = "printercard"; break;
+            case AbsToggle::CompositeVideo: lo = "oe";       hi = "lut";         break;
+            case AbsToggle::None:           break;
         }
-        return true;
+        if (lo) { pair[lo] = { &t, 0 }; pair[hi] = { &t, 1 }; }
+    }
+
+    auto matches = [&](const AbsEntry& e) {
+        if (!search_[0]) return true;
+        auto hay = std::string(e.subsystem) + " " + e.modelled + " " +
+                   e.group + " " + e.files;
+        std::string needle(search_);
+        auto lower = [](std::string v) {
+            for (char& c : v) c = static_cast<char>(std::tolower(
+                                      static_cast<unsigned char>(c)));
+            return v;
+        };
+        return lower(hay).find(lower(needle)) != std::string::npos;
     };
 
-    int lleCount = 0, hleCount = 0, degraded = 0, shown = 0;
+    int degraded = 0;
 
     if (ImGui::BeginTable("##abs", 4,
                           ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersOuter |
@@ -541,11 +442,10 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
                           ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Level",  ImGuiTableColumnFlags_WidthFixed,
                                 3.0f * ImGui::GetFontSize());
-        ImGui::TableSetupColumn("Subsystem", ImGuiTableColumnFlags_WidthStretch, 0.28f);
+        ImGui::TableSetupColumn("Subsystem", ImGuiTableColumnFlags_WidthStretch, 0.55f);
         ImGui::TableSetupColumn("Now",    ImGuiTableColumnFlags_WidthFixed,
                                 7.0f * ImGui::GetFontSize());
-        ImGui::TableSetupColumn("What is actually modelled",
-                                ImGuiTableColumnFlags_WidthStretch, 0.60f);
+        ImGui::TableSetupColumn("Switch", ImGuiTableColumnFlags_WidthStretch, 0.30f);
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
@@ -553,20 +453,14 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
         for (const AbsEntry& e : abstractionCatalog()) {
             auto it = live.find(e.id);
             const Row* r = (it != live.end()) ? it->second : nullptr;
-            if (!matches(e, r)) continue;
-            ++shown;
-            if (levelIsLle(e.level))          ++lleCount;
-            else if (e.level != AbsLevel::Host) ++hleCount;
+            if (!matches(e)) continue;
             if (r && r->live == Live::Degraded) ++degraded;
 
             if (!group || std::strcmp(group, e.group) != 0) {
                 group = e.group;
                 ImGui::TableNextRow();
-                ImGui::TableSetColumnIndex(0);
-                ImGui::PushStyleColor(ImGuiCol_Text, u32(pal.accentDim));
                 ImGui::TableSetColumnIndex(1);
-                ImGui::TextUnformatted(group);
-                ImGui::PopStyleColor();
+                ImGui::TextColored(u32(pal.accentDim), "%s", group);
             }
 
             ImGui::TableNextRow();
@@ -576,11 +470,14 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
             ImGui::TableSetColumnIndex(1);
             ImGui::TextUnformatted(e.subsystem);
             if (ImGui::IsItemHovered()) {
+                // Toute la prose de l'ancienne table vit ici.
                 ImGui::BeginTooltip();
                 ImGui::PushTextWrapPos(30.0f * ImGui::GetFontSize());
                 ImGui::TextColored(u32(levelColour(e.level)), "%s — %s",
                                    levelBadge(e.level), levelName(e.level));
                 ImGui::Separator();
+                ImGui::TextWrapped("%s", e.modelled);
+                ImGui::Spacing();
                 ImGui::TextWrapped("Why not lower: %s", e.whyNot);
                 ImGui::Spacing();
                 ImGui::TextColored(u32(pal.textDim), "%s", e.files);
@@ -589,42 +486,70 @@ AbstractionLevels_ImGui::render(bool* open, const Snapshot& snap)
             }
 
             ImGui::TableSetColumnIndex(2);
-            if (!r) {
-                ImGui::TextColored(u32(pal.textDim), "—");
-            } else switch (r->live) {
-                case Live::Active:
-                    ImGui::TextColored(u32(pal.ok), ICON_FA_CIRCLE_CHECK " live");
-                    break;
-                case Live::Degraded:
-                    // The whole reason this column exists. A degraded path is
-                    // NOT an error — the machine works — which is exactly why
-                    // it needs saying out loud.
-                    ImGui::TextColored(u32(pal.warn),
-                                       ICON_FA_TRIANGLE_EXCLAMATION " %s now",
-                                       levelBadge(r->actual));
-                    break;
-                case Live::NotPlugged:
-                    ImGui::TextColored(u32(pal.textDim), "not plugged");
-                    break;
-                case Live::NotApplicable:
-                    ImGui::TextColored(u32(pal.ok), ICON_FA_CIRCLE_CHECK " live");
-                    break;
+            if (!r || r->live == Live::NotApplicable ||
+                r->live == Live::Active) {
+                ImGui::TextColored(u32(pal.ok), ICON_FA_CIRCLE_CHECK " live");
+            } else if (r->live == Live::Degraded) {
+                // La raison d'etre de cette colonne : un chemin degrade
+                // n'est PAS une panne, c'est pour ca qu'il faut le dire.
+                ImGui::TextColored(u32(pal.warn),
+                                   ICON_FA_TRIANGLE_EXCLAMATION " %s now",
+                                   levelBadge(r->actual));
+            } else {
+                ImGui::TextColored(u32(pal.textDim), "not plugged");
             }
             if (r && !r->detail.empty() && ImGui::IsItemHovered())
                 ImGui::SetTooltip("%s", r->detail.c_str());
 
+            // ── Le bouton de bascule, quand l'autre niveau existe ───────
             ImGui::TableSetColumnIndex(3);
-            ImGui::TextWrapped("%s", e.modelled);
+            auto pit = pair.find(e.id);
+            if (pit != pair.end()) {
+                const ToggleState& t   = *pit->second.t;
+                const int          idx = pit->second.idx;
+                const ToggleOption& me = (idx == 0) ? t.low : t.high;
+                const bool switchable  = (t.selected >= 0);
+                if (t.selected == idx) {
+                    ImGui::TextColored(u32(pal.ok), ICON_FA_CHECK " in use");
+                    if (ImGui::IsItemHovered() && !me.why.empty())
+                        ImGui::SetTooltip("%s", me.why.c_str());
+                } else {
+                    ImGui::PushID(e.id);
+                    ImGui::BeginDisabled(!me.available || !switchable);
+                    char label[96];
+                    std::snprintf(label, sizeof(label),
+                                  ICON_FA_RIGHT_LEFT " use %s",
+                                  levelBadge(me.level));
+                    if (ImGui::SmallButton(label)) {
+                        req.toggle = t.id;
+                        req.option = idx;
+                    }
+                    ImGui::EndDisabled();
+                    if (ImGui::IsItemHovered(
+                            ImGuiHoveredFlags_AllowWhenDisabled)) {
+                        // AllowWhenDisabled : l'explication du grisage est
+                        // exactement ce qu'on veut pouvoir lire.
+                        if (!switchable)
+                            ImGui::SetTooltip("Nothing to switch — neither "
+                                              "side is plugged. Add the card "
+                                              "in Slot Configuration first.");
+                        else if (!me.available && !me.blockedBy.empty())
+                            ImGui::SetTooltip("Unavailable — %s",
+                                              me.blockedBy.c_str());
+                        else
+                            ImGui::SetTooltip("%s%s", me.why.c_str(),
+                                              t.needsRestart
+                                              ? "\n\nSwitching RESTARTS the "
+                                                "machine." : "");
+                    }
+                    ImGui::PopID();
+                }
+            }
         }
         ImGui::EndTable();
     }
 
-    ImGui::Spacing();
-    ImGui::PushStyleColor(ImGuiCol_Text, u32(pal.textDim));
-    ImGui::Text("%d shown — %d LLE, %d HLE.", shown, lleCount, hleCount);
-    ImGui::PopStyleColor();
     if (degraded > 0) {
-        ImGui::SameLine();
         ImGui::TextColored(u32(pal.warn),
                            ICON_FA_TRIANGLE_EXCLAMATION
                            " %d running above its catalogued level "

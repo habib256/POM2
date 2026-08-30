@@ -148,9 +148,7 @@ public:
     Request render(bool* open, const Snapshot& snap);
 
 private:
-    // ── Filters (panel-local UI state) ──────────────────────────────────
-    int         halfFilter_ = 0;   ///< 0 = all, 1 = LLE only, 2 = HLE only, 3 = host-side
-    bool        onlyLive_   = false;
+    // ── Filtre (etat local du panneau) ──────────────────────────────────
     char        search_[64] = {};
 };
 

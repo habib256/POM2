@@ -26,7 +26,9 @@ emulation at the same time (`ImageWriter`), or POM2-original **and** low-level
 
 `Help → Abstraction Levels (LLE / HLE)` renders this document's master table
 **live** (`AbstractionLevels_ImGui.*`, catalog + window; `MainWindow::
-renderAbstractionPanel` supplies the machine state). It adds the two things a
+renderAbstractionPanel` supplies the machine state). Since 2026-08-30 the
+window is a single table — legend chips, a filter box, four columns — with all
+of this document's prose living in the row tooltips. It adds the two things a
 Markdown file cannot:
 
 - **Which level is running right now.** The "Now" column reads *live*,
@@ -37,15 +39,17 @@ Markdown file cannot:
   [Keeping a level once you have it](#keeping-a-level-once-you-have-it) — the
   panel says *degraded*, not merely *missing*, which is the distinction that
   was invisible.
-- **The switchable boundaries.** The four subsystems that ship both levels are
-  presented as a choice of *level*, not of catalog key: Mouse Card (L0 MAME ⇄
-  H1 AppleWin), ProDOS block storage (L2 CFFA ⇄ H1 HDV), printer interface
-  (L2 Grappler+ ⇄ H1 synthetic) and the colour pipeline (L1 OpenEmulator ⇄ H1
-  artifact LUT). The first three swap the card **in place, in its own slot**
-  and restart the machine; the fourth is a render-path change and is instant.
-  Each side is greyed when the dump it needs is missing — offering a switch
-  that would silently land on the fallback would repeat the exact mistake the
-  panel exists to expose.
+- **The switchable boundaries, as in-row buttons.** The four subsystems that
+  ship both levels — Mouse Card (L0 MAME ⇄ H1 AppleWin), ProDOS block storage
+  (L2 CFFA ⇄ H1 HDV), printer interface (L2 Grappler+ ⇄ H1 synthetic) and the
+  colour pipeline (L1 OpenEmulator ⇄ H1 artifact LUT) — carry a "Switch"
+  column: the side in use says so, the other side offers a `use L0`-style
+  button right on its row. The first three swap the card **in place, in its
+  own slot** and restart the machine (the tooltip warns); the fourth is a
+  render-path change and is instant. A side is greyed when the dump it needs
+  is missing, with the reason in the tooltip — offering a switch that would
+  silently land on the fallback would repeat the exact mistake the panel
+  exists to expose.
 
 The catalog is static data mirroring the master table below. **Edit the two
 together**: the doc carries the evidence, the panel carries the conclusion.
@@ -110,8 +114,8 @@ whenever a ROM dump exists but the chip behind it does not need to.
 | **SmartPortHub / Sony35Drive** | **L0/L1** | Zoned GCR, LSTRB register strobes, DSKCHG latch polarity per MAME `floppy.cpp:560/672/723` | — |
 | **CFFA 2.0** (`CffaCard` + `AtaBlockDevice`) | **L2** | **Real 4 KB firmware dump executes** over an ATA taskfile model isomorphic to MAME's `cs0_r/cs0_w` | ATA layer skips DMA / IRQ / SMART; CHD backing is phase 2 |
 | **HDV card** (`ProDOSHardDiskCard`) | **H1** | Hand-assembled 256 B slot ROM + an invented 4-register streaming port; `deviceSelectRead/Write` = host `memcpy`. No GCR, no flux, no ATA | Deliberate: mounts `.hdv`/`.2mg` directly with **no card ROM dump required** |
-| **SmartPort card** (`SmartPortCard`, Liron-class) | **H1 + L2 veneer** | The whole 256 B slot page **and** the full 2 KB `$C800` bank come from `roms/liron.rom`; only the HLE service entries (`$Cn00-02`, `$Cn0A-12`, `$Cn20-E2` — `SmartPortCard.cpp:665-717`) are overlaid, routing to POM2's own `$CE00` 6502 SmartPort handler; block moves are host memcpy | Full Liron LLE needs the IWM bit-shifter **and** the UniDisk drive-side 65C02 — out of scope |
-| **//c-class on-board SmartPort** | **H1 + machine-level lie** | A `$C500-$C5FF` hole punched through the //c's forced INTCXROM, armed only by an explicit GUI/CLI boot | Real //c masks all slot ROM; MAME models no 3.5" on plain //c |
+| **SmartPort card** (`SmartPortCard`, Liron-class) | **H1 + L2 veneer** | The whole 256 B slot page **and** the full 2 KB `$C800` bank come from `roms/liron.rom`; only the HLE service entries (`$Cn00-02`, `$Cn0A-12`, `$Cn20-E2`) are overlaid, routing to POM2's own `$CE00` 6502 SmartPort handler; block moves are host memcpy. Both public entries now open with the real firmware's `BIT $CFFF` — see the case study | Full Liron LLE needs the IWM bit-shifter **and** the UniDisk drive-side 65C02 — out of scope |
+| **//c-class on-board SmartPort** | **H1 + machine-level lie** | A `$C500-$C5FF` hole punched through the //c's forced INTCXROM, armed only by an explicit GUI/CLI boot — **plus, since 2026-08-30, the stub's `$C800-$CFFE` expansion bank**, gated by `iicCardWindow_` (opened by a fetch in the stub's page, closed by any `$C0xx` access outside its device-select). ProDOS 8 2.4.3 boots and runs games end-to-end on `--preset iic` | Real //c masks all slot ROM; MAME models no 3.5" on plain //c. See [the case study](#the-day-the-hle-stub-met-the-memory-system) |
 | **ProDOS host folder** (`ProDOSVolume`) | **H1 authoring / L0 runtime** | POM2 *fabricates* a valid ProDOS volume image once; from then on the guest does genuine block reads through the real filesystem code | The fabrication is the abstraction; nothing below it is faked |
 | **Super Serial Card** | **L1 chip / H1 firmware** | 6551 ACIA register-faithful; the slot ROM is synthetic (PR#n/IN#n hooks + Pascal 1.1 ID block), real SSC ROM not shipped | Chip is right; firmware is a stub because no dump is bundled |
 | **Uthernet I** (`Cs8900aDevice`) | **L1** | Verbatim MAME `machine/cs8900a.cpp` (VICE lineage), packet-level | RX is pull-mode — POM2 has no `device_network_interface` push bus |
@@ -212,6 +216,58 @@ Step 3 is what keeps HLE honest here: the test executes guest code through the
 synthetic firmware, so the contract is verified from the guest's side of the
 boundary.
 
+### The day the HLE stub met the memory system
+
+The 2026-08-30 //c dig is the sharpest lesson this document owns, so it gets
+told in full. Setup: the armed `$C500` stub (H1) under the most demanding real
+guest there is — the ProDOS 8 2.4.3 kernel — on the most hostile memory map —
+the //c's forced INTCXROM. Three defects were stacked, each masking the next,
+and only the first was host-side:
+
+1. **The stub's own `$C800` bank was invisible.** The //c hole covered
+   `$C100-$C7FF` only, but the stub's driver JSRs into `$CD00`/`$CE00` — its
+   expansion bank. The 6502 executed the //c's *internal* ROM as if it were
+   the SmartPort handler. Lesson: **an HLE ROM's footprint is not just its
+   slot page.** If the synthetic firmware follows the real firmware's
+   architecture (and it should — see the `BIT $CFFF` below), the machine
+   model must serve every region that architecture touches.
+
+2. **The root cause: a missing `BIT $CFFF`.** The stub's SmartPort entry
+   (`$Cn0D`) opened with the real Liron's `BIT $CFFF` dance; its ProDOS entry
+   (`$Cn0A → $Cn50`) did not. The kernel calls that entry *after* using the
+   80-column firmware — which latches INTC8ROM on every `$C3xx` pass. With
+   the internal window locked, the driver's own subroutines executed internal
+   ROM again; the kernel's //c port scan wandered, its `$FExx` config block
+   described one device, the `$EE82` installer transcribed one entry, and the
+   first MLI call of the loaded program died in `RESTART SYSTEM-$0A` — the
+   `$E1C2` dispatch hunting the boot unit in an empty table, three layers and
+   forty thousand instructions away from the cause.
+
+   The service contract was **perfect** the whole time: every register
+   answered right, the STATUS response was verified byte-for-byte in the
+   caller's buffer. What was violated was the machine's **bus etiquette** —
+   the claim/release discipline of the shared expansion window. That
+   discipline is an LLE property, and HLE firmware living on a real bus has
+   to speak it. *An HLE boundary is not a permission slip to ignore the
+   contracts below it; it only changes which side of the boundary does the
+   work.*
+
+3. **The detection story vindicates the doctrine below.** The pinned smoke
+   test poked the card's registers from C++ and stayed green throughout —
+   the classic API-side test that "passes either way". The defect only
+   became visible to a harness that **executes the boot from the guest's
+   side**: force `PC = $C500` on a real `M6502` + `Memory`, run, and assert
+   block 0 lands at `$0800`. That harness (plus write-watchpoints on the
+   kernel's tables and a PC-ring tracer, kept in the pinned test behind
+   `POM2_TRACE_HDV`) walked the causal chain link by link. The doc said it
+   before the bug proved it: *a test that exercises the firmware from the
+   guest's side is the only kind that can tell.*
+
+The fix itself is three bytes of 6502 (`BIT $CFFF` first thing in the driver,
+paid for by turning the dispatch's `CMP #$00` into a direct `BEQ` and
+reclaiming a pad byte) plus one honest new heuristic in Memory —
+`iicCardWindow_` — whose price is listed in the seams table below.
+
 ## Where the HLE seams show
 
 Every one of these is documented in-repo. They are the price list.
@@ -220,7 +276,8 @@ Every one of these is documented in-repo. They are the price list.
 |---|---|
 | HDV `$Cn07 = $01` | F8 Autostart only scans `$3C` — HDV needs `PR#n` / `bootFromSlot` |
 | HDV / SmartPort synthetic block model | Real CFFA/SCSI firmware cannot execute; multi-partition CFFA3000 images unsupported |
-| //c on-board SmartPort "armed" gate | Persisted SmartPort media does **not** auto-reboot; the stub must stay hidden during the //c ROM's own autostart or the banner garbles |
+| //c on-board SmartPort "armed" gate | Persisted SmartPort media does **not** auto-reboot; the stub must stay hidden during the //c ROM's own autostart or the banner garbles. And while armed, the stub **shadows the //c's internal `$C5xx` firmware** for the whole session — a program calling the internal port-5 serial/AppleTalk entries would reach the stub instead |
+| `iicCardWindow_` execution-flow heuristic | The stub's `$C800` bank is served only while the flow "came from" the stub's page (opened by a `$C5xx` fetch, closed by any foreign `$C0xx` access). An interrupt handler touching soft switches in the middle of a driver call would close the window under the running driver — no IRQ source is armed in the supported //c flows, but the risk is asserted, not emergent |
 | `SmartPortCard` CONTROL calls | Only code 0 works — the stub has no guest→device control-list copy; extended `$4x` calls return `$01` |
 | Grappler `/STROBE` collapsed | The 7-clock pulse timer is invisible; anything timing the strobe would see zero width |
 | `PrinterCard` Pascal block absent | Pascal printer drivers (PINIT/PREAD/PWRITE/PSTATUS) cannot bind — BASIC `PR#n` only |
@@ -239,8 +296,10 @@ is the one place where LLE is *present but incomplete*. The IWM itself is
 verbatim MAME, yet the firmware's Sony boot path never reaches a bootable disk
 because the full bit-shift state machine plus the UniDisk drive-side 65C02 are
 missing. The HLE path (host-served SmartPort at slot 5) is what actually boots
-3.5" and HDV on every //c-class profile. **Half an LLE hangs; a complete HLE
-works.**
+3.5" and HDV on every //c-class profile — though "complete" had to be earned:
+it took the 2026-08-30 case study's three fixes before ProDOS itself would
+finish booting on the //c. **Half an LLE hangs; an HLE only works once it is
+actually complete — including the bus etiquette.**
 
 ## The decision rule POM2 actually follows
 
@@ -317,6 +376,13 @@ The pattern to copy is `mouse_card_axis_parity_test`: it boots **both** real
 ROMs on a full `M6502` + `Memory` and drives ProDOS `InitMouse/SetMouse/
 ReadMouse`. A test that exercises the firmware from the guest's side is the only
 kind that can tell L0 from H1 — a C++-API test passes either way.
+
+That doctrine stopped being theoretical on 2026-08-30: the //c SmartPort smoke
+had poked the stub's registers for weeks and stayed green while the *executed*
+boot path was broken at two different layers (see the case study). The test now
+also forces `PC = $C500` on a real CPU and asserts block 0 lands — and keeps
+the full dissection harness (PC-ring tracer, table watchpoints) armed behind
+`POM2_TRACE_HDV` for the next dig.
 
 Explicitly **not** moving: `ImageWriter` (nothing to emulate), `PrinterCard`
 (no PROM), `ProDOSHardDiskCard` (H1 *is* the feature — direct `.hdv`/`.2mg`
