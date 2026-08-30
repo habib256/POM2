@@ -263,6 +263,19 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 
 ## Backlog
 
+- **[Storage] //c + ProDOS : RESOLU (2026-08-30).** Trois couches, chacune
+  masquant la suivante : l'auto-interblocage du montage (routeMountHdv), la
+  banque $C800 du stub jamais percee sur //c-classe (iicCardWindow_), et --
+  la racine -- l'entree ProDOS $Cn0A du stub SANS le `BIT $CFFF` du vrai
+  firmware Liron : appelee par le noyau APRES que le firmware 80 colonnes a
+  latche INTC8ROM, ses JSR vers $CD00/$CD10 executaient la banque INTERNE,
+  le scan //c de P8 2.4.3 partait dans le decor et sa table de devices
+  restait vide (RESTART SYSTEM-$0A au premier MLI du programme, dissection
+  complete au traceur : dispatch $E1C2, installateur $EE82, bloc de config
+  $FExx). Verifie en jeu : SCOSWAMP boote et se joue sur --preset iic.
+  Le harnais de dissection reste dans le test epingle
+  (`POM2_TRACE_HDV=<hdv> test_iic_onboard_smartport`, + oracle //e).
+
 Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each item.
 
 ### [Memory] paging & RAM expansion

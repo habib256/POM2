@@ -67,11 +67,28 @@ jobs:
           git -C imgui checkout -q FETCH_HEAD
           test "$(git -C imgui rev-parse HEAD)" = "$IMGUI_COMMIT"
 
+      # The Tom Harte corpus, cached by manifest hash. ~140 MB of curated,
+      # SHA-256-pinned vectors that only change when a manifest does, so a
+      # normal run restores it and opens no socket.
+      - name: Tom Harte ProcessorTests corpus
+        uses: actions/cache@v4
+        with:
+          path: build/tests/tomharte
+          key: tomharte-${{ hashFiles('tests/tomharte_6502.manifest', 'tests/tomharte_wdc65c02.manifest') }}
+
+      # POM2_FETCH_TOMHARTE=ON here, and ONLY here. It is the single
+      # cycle-level CPU oracle in the tree: Klaus proves the instruction set
+      # is functionally right, Tom Harte proves every cycle of every
+      # addressing mode is. Leaving it off on the per-push job meant the
+      # oracle ran at release time only — four weeks of pushes could regress
+      # a bus cycle before anything noticed. macOS and Windows stay light:
+      # a cycle count is not platform-dependent, so running it once is enough.
       - name: Configure (Release, tests on)
         run: |
           cmake -S . -B build \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPOM2_ENABLE_TESTS=ON
+            -DPOM2_ENABLE_TESTS=ON \
+            -DPOM2_FETCH_TOMHARTE=ON
 
       - name: Build everything
         run: cmake --build build --parallel 2

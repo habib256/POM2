@@ -33,13 +33,17 @@
 //   3. The block-transfer protocol ($C0D0-$C0D4 device-select, never masked)
 //      streams block 0 of the mounted image through Memory end-to-end.
 
+#include "M6502.h"
 #include "Memory.h"
+#include "MemoryWatchSink.h"
 #include "SmartPortCard.h"
 #include "SmartPort35Unit.h"
+#include "SmartPortHdvUnit.h"
 
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -194,10 +198,299 @@ static void testBlockReadThroughMemory()
     std::printf("  ok: block 0 streams through Memory $C0D3 (slot-5 device-select)\n");
 }
 
+// The UI's //c HDV route (routeMountHdv) does NOT go through mountBay: it
+// swaps in a SmartPortHdvUnit and adopts a prepared image, the MediaMount
+// two-phase way. That combination had never met the $C500 stub until
+// SCOSWAMP.HDV booted a //c (2026-08-30) and hung with block 0 never read.
+static void testHdvUnitBlockReadThroughMemory()
+{
+    const std::string rom = firstExisting({
+        "roms/apple2c-32Kv0.rom", "roms/apple2cp.rom",
+    });
+    if (rom.empty()) {
+        std::printf("  SKIP: no 32 KB //c-class ROM present\n");
+        return;
+    }
+
+    Memory mem;
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.setIIEMode(true);
+    assert(mem.loadAppleIIRom(rom.c_str(), /*pickLowerHalf=*/true));
+
+    auto card = std::make_unique<pom2::SmartPortCard>(5);
+    pom2::SmartPortCard* raw = card.get();
+    mem.slotBus().plug(5, std::move(card));
+
+    // A minimal HDV: 16 uniform blocks of 0x5A.
+    const fs::path img = fs::temp_directory_path() / "pom2_iic_sp_hdv.hdv";
+    {
+        std::ofstream f(img, std::ios::binary);
+        std::vector<char> blk(512, 0x5A);
+        for (int i = 0; i < 16; ++i) f.write(blk.data(), blk.size());
+    }
+
+    raw->setUnit(0, std::make_unique<pom2::SmartPortHdvUnit>());
+    pom2::Block512Backing::PreparedImage prep;
+    std::string err;
+    assert(pom2::Block512Backing::readImageFile(img.string(), prep, err));
+    assert(raw->unit(0)->adoptImage(std::move(prep)));
+
+    mem.setIicSmartPortArmed(true);
+    assert(mem.memRead(0xC500) == 0x4C);   // hole open: unit isLoaded()
+
+    mem.memWrite(0xC0D0, 0x00);   // unit select 0
+    mem.memWrite(0xC0D1, 0x00);   // block LO
+    mem.memWrite(0xC0D2, 0x00);   // block HI
+    for (int i = 0; i < 512; ++i) {
+        const uint8_t b = mem.memRead(0xC0D3);
+        assert(b == 0x5A);
+    }
+    const uint8_t status = mem.memRead(0xC0D4);
+    assert((status & 0x01) == 0); // no I/O error
+    assert((status & 0x80) == 0); // media present
+
+    fs::remove(img);
+    std::printf("  ok: HDV unit streams block 0 through $C0D3 like the 3.5\n");
+}
+
+// Execute the ACTUAL boot: arm, force PC to $C500 like bootFromSlot does,
+// and let the 6502 run the stub. Traces the first divergence instead of
+// poking registers by hand — this is the experiment the register test
+// above cannot do.
+static void testHdvBootExecution()
+{
+    const std::string rom = firstExisting({
+        "roms/apple2c-32Kv0.rom", "roms/apple2cp.rom",
+    });
+    if (rom.empty()) {
+        std::printf("  SKIP: no 32 KB //c-class ROM present\n");
+        return;
+    }
+
+    Memory mem;
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.setIIEMode(true);
+    assert(mem.loadAppleIIRom(rom.c_str(), /*pickLowerHalf=*/true));
+
+    auto card = std::make_unique<pom2::SmartPortCard>(5);
+    pom2::SmartPortCard* raw = card.get();
+    mem.slotBus().plug(5, std::move(card));
+
+    const fs::path img = fs::temp_directory_path() / "pom2_iic_boot_hdv.hdv";
+    {
+        std::ofstream f(img, std::ios::binary);
+        std::vector<char> blk(512, 0x00);
+        blk[0] = 0x01; blk[1] = 0x60;   // block 0: "1 block loader" + RTS
+        f.write(blk.data(), blk.size());
+        std::vector<char> rest(512 * 15, 0x00);
+        f.write(rest.data(), rest.size());
+    }
+
+    raw->setUnit(0, std::make_unique<pom2::SmartPortHdvUnit>());
+    pom2::Block512Backing::PreparedImage prep;
+    std::string err;
+    assert(pom2::Block512Backing::readImageFile(img.string(), prep, err));
+    assert(raw->unit(0)->adoptImage(std::move(prep)));
+
+    mem.setIicSmartPortArmed(true);
+    M6502 cpu(&mem);
+    cpu.hardReset();
+    cpu.setProgramCounter(0xC500);
+
+    // Trace des premieres instructions : ou le stub deraille-t-il ?
+    struct Tracer : M6502DebugHook {
+        std::vector<uint16_t> pcs;
+        bool onInstruction(uint16_t pc) override {
+            if (pcs.size() < 400) pcs.push_back(pc);
+            return false;
+        }
+    } tracer;
+    cpu.setDebugHook(&tracer);
+
+    // 200k cycles is far more than block 0 needs (the stub loop is ~5k).
+    int n = 0;
+    while (n < 200000) n += cpu.run(1024);
+    cpu.setDebugHook(nullptr);
+    std::printf("  trace:");
+    uint16_t last = 0; int reps = 0;
+    for (uint16_t pc : tracer.pcs) {
+        if (pc == last) { reps++; continue; }
+        if (reps > 1) std::printf("(x%d)", reps);
+        std::printf(" %04X", pc);
+        last = pc; reps = 1;
+    }
+    std::printf("\n");
+
+    const uint8_t b0 = mem.memRead(0x0800);
+    const uint8_t b1 = mem.memRead(0x0801);
+    std::printf("  $0800 = %02X %02X (attendu 01 60)\n", b0, b1);
+    assert(b0 == 0x01 && b1 == 0x60);   // block 0 landed and loader ran
+
+    fs::remove(img);
+    std::printf("  ok: the 6502 boots block 0 off the HDV unit via $C500\n");
+}
+
+// Boot the REAL game HDV headless and trap the first executions inside
+// $C800-$CFFF: who enters the expansion window, and from where?
+static void testRealHdvBootTrace()
+{
+    const char* hdv = std::getenv("POM2_TRACE_HDV");
+    if (!hdv) { std::printf("  SKIP: POM2_TRACE_HDV non pose\n"); return; }
+    const std::string rom = firstExisting({
+        "roms/apple2c-32Kv0.rom", "roms/apple2cp.rom",
+    });
+    if (rom.empty()) { std::printf("  SKIP: pas de ROM //c\n"); return; }
+
+    Memory mem;
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.setIIEMode(true);
+    assert(mem.loadAppleIIRom(rom.c_str(), true));
+    auto card = std::make_unique<pom2::SmartPortCard>(5);
+    pom2::SmartPortCard* raw = card.get();
+    mem.slotBus().plug(5, std::move(card));
+
+    // La face du port compte : ProDOS //c sonde $C507 (classe SmartPort) —
+    // l'overlay Liron la fournit, comme au runtime.
+    if (!raw->loadLironRom("roms/liron.rom"))
+        raw->loadLironRom("../roms/liron.rom");
+    raw->setUnit(0, std::make_unique<pom2::SmartPortHdvUnit>());
+    pom2::Block512Backing::PreparedImage prep;
+    std::string err;
+    assert(pom2::Block512Backing::readImageFile(hdv, prep, err));
+    assert(raw->unit(0)->adoptImage(std::move(prep)));
+
+    mem.setIicSmartPortArmed(true);
+    M6502 cpu(&mem);
+    cpu.hardReset();
+    cpu.setProgramCounter(0xC500);
+
+    struct Trap : M6502DebugHook {
+        Memory* mem;
+        M6502*  cpu = nullptr;
+        uint16_t ring[256] = {0};
+        int      pos = 0;
+        int      hits = 0;
+        long     count = 0;
+        bool onInstruction(uint16_t pc) override {
+            ring[pos & 255] = pc; pos++;
+            count++;
+            // premiere entree dans C800-CFFF DEPUIS l'exterieur
+            if (pc >= 0xC800 && pc <= 0xCFFE) {
+                const uint16_t prev = ring[(pos - 2) & 255];
+                const bool fromStub = (prev >= 0xC500 && prev <= 0xC5FF);
+                if (false) {
+                    hits++;
+                    std::printf("  [entree %d @%ld] %04X -> %04X owner=%d "
+                                "intC8=%d ; via:", hits, count, prev, pc,
+                                mem->slotBus().getActiveExpansionSlot(),
+                                0);
+                    for (int i = 8; i >= 2; --i)
+                        std::printf(" %04X", ring[(pos - i) & 255]);
+                    std::printf("\n");
+                }
+            }
+            return false;
+        }
+    } trap;
+    trap.mem = &mem;
+    trap.cpu = &cpu;
+    cpu.setDebugHook(&trap);
+
+    int n = 0;
+    while (n < 60000000) n += cpu.run(4096);
+    cpu.setDebugHook(nullptr);
+    std::printf("  fin: %ld instr, $2000=%02X, $4000=%02X, derniers PC:",
+                trap.count, mem.memRead(0x2000), mem.memRead(0x4000));
+    for (int i = 24; i >= 1; --i)
+        std::printf(" %04X", trap.ring[(trap.pos - i) & 255]);
+    std::printf("\n");
+}
+
+// L'oracle //e : meme HDV, meme carte, meme boot force a $C500 — seule la
+// ROM change. Si P8 meurt ici aussi, le probleme est la carte face a
+// ProDOS ; s'il boote, la divergence est le chemin //c.
+static void testRealHdvBootIIe()
+{
+    const char* hdv = std::getenv("POM2_TRACE_HDV");
+    if (!hdv) { std::printf("  SKIP: POM2_TRACE_HDV non pose\n"); return; }
+    const std::string rom = firstExisting({
+        "roms/apple2e.rom", "../roms/apple2e.rom",
+    });
+    if (rom.empty()) { std::printf("  SKIP: pas de ROM //e\n"); return; }
+
+    Memory mem;
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    mem.setIIEMode(true);
+    assert(mem.loadAppleIIRom(rom.c_str(), true));
+
+    auto card = std::make_unique<pom2::SmartPortCard>(5);
+    pom2::SmartPortCard* raw = card.get();
+    mem.slotBus().plug(5, std::move(card));
+    if (!raw->loadLironRom("roms/liron.rom"))
+        raw->loadLironRom("../roms/liron.rom");
+
+    raw->setUnit(0, std::make_unique<pom2::SmartPortHdvUnit>());
+    pom2::Block512Backing::PreparedImage prep;
+    std::string err;
+    assert(pom2::Block512Backing::readImageFile(hdv, prep, err));
+    assert(raw->unit(0)->adoptImage(std::move(prep)));
+
+    M6502 cpu(&mem);
+    cpu.hardReset();
+    cpu.setProgramCounter(0xC500);
+
+    struct Peek : M6502DebugHook {
+        Memory* mem; M6502* cpu; int hits = 0;
+        bool onInstruction(uint16_t pc) override {
+            if (pc == 0xE1C2 && hits < 3) {
+                hits++;
+                const uint8_t y = cpu->getYRegister();
+                std::printf("  [//e dispatch #%d] Y=%02X $D801+Y=%02X "
+                            "$FECF=%02X  $D910/30/50/70/90:"
+                            " %02X %02X %02X %02X %02X\n",
+                            hits, y, mem->memRead(0xD801 + y),
+                            mem->memRead(0xFECF),
+                            mem->memRead(0xD910), mem->memRead(0xD930),
+                            mem->memRead(0xD950), mem->memRead(0xD970),
+                            mem->memRead(0xD990));
+            }
+            return false;
+        }
+    } peek;
+    peek.mem = &mem; peek.cpu = &cpu;
+    cpu.setDebugHook(&peek);
+    int n = 0;
+    while (n < 60000000) n += cpu.run(4096);
+    cpu.setDebugHook(nullptr);
+
+    // La page texte 40 colonnes, brute : le jeu affiche sa banniere ou P8
+    // son RESTART SYSTEM — l'un des deux dira qui a gagne.
+    std::printf("  //e: $2000=%02X $4000=%02X  ecran:",
+                mem.memRead(0x2000), mem.memRead(0x4000));
+    for (uint16_t a = 0x05B2; a <= 0x05C6; ++a) {
+        const uint8_t c = mem.memRead(a) & 0x7F;
+        std::printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
+    }
+    std::printf("|");
+    for (uint16_t a = 0x0480; a <= 0x04A8; ++a) {
+        const uint8_t c = mem.memRead(a) & 0x7F;
+        std::printf("%c", (c >= 0x20 && c < 0x7F) ? c : '.');
+    }
+    std::printf("\n");
+}
+
 int main()
 {
     std::printf("\n[//c on-board SmartPort smoke]\n");
     testExposesRomOnlyWithMedia();
+    testHdvUnitBlockReadThroughMemory();
+    testHdvBootExecution();
+    testRealHdvBootTrace();
+    testRealHdvBootIIe();
     testMemoryHolePunch();
     testBlockReadThroughMemory();
     std::printf("[//c on-board SmartPort smoke] ALL PASS\n");

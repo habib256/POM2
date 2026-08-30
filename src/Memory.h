@@ -141,7 +141,8 @@ public:
     /// during a normal reboot corrupts a multi-device boot (Disk II + the
     /// on-board SmartPort). Exposing the stub only for an explicit GUI
     /// "Boot" (bootFromSlot) avoids that. See project_iic_smartport_boot.
-    void setIicSmartPortArmed(bool on) { iicSmartPortArmed_ = on; }
+    void setIicSmartPortArmed(bool on) { iicSmartPortArmed_ = on;
+                                         iicCardWindow_ = false; }
     bool iicSmartPortArmed() const     { return iicSmartPortArmed_; }
 
     /// Apple II expansion bus — slots 0-7. Cards plug directly via the
@@ -901,6 +902,10 @@ private:
 
     // //c-class on-board SmartPort ROM-exposure gate (see setIicSmartPortArmed).
     bool iicSmartPortArmed_ = false;
+    /// //c-classe : le flux d'execution est-il "chez" la carte percee ?
+    /// Ouvert par un fetch dans sa page $C5xx, referme par tout acces
+    /// $C0xx hors de son device-select. Gouverne le perçage $C800-$CFFE.
+    bool iicCardWindow_ = false;
 
     // VBL (vertical-blank) state. Apple II frame = 262 NTSC scanlines
     // × 65 CPU cycles = 17030 cycles (the long-cycle stretch is not
