@@ -15,6 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "SmartPortCard.h"
+#include <cstdio>
+#include <cstdlib>
 #include "SlotRomAsm.h"
 
 #include "FloppySoundSink.h"
@@ -852,6 +854,13 @@ uint8_t SmartPortCard::spExecute()
     const uint8_t cmd    = spCollect_[0];
     const uint8_t pcount = spCollect_[1];
     const uint8_t unitNo = spCollect_[2];
+    // Trace de chantier, armee par l'environnement — voir 2026-08-30.
+    static const bool trace = std::getenv("POM2_SP_TRACE") != nullptr;
+    if (trace)
+        std::fprintf(stderr, "[sp] cmd=%02X pcount=%u unit=%u collectN=%u "
+                     "p=[%02X %02X %02X %02X]\n", cmd, pcount, unitNo,
+                     unsigned(spCollectN_), spCollect_[3], spCollect_[4],
+                     spCollect_[5], spCollect_[6]);
 
     auto unitFor = [&](uint8_t n) -> SmartPortUnit* {
         if (n == 0 || n > kMaxUnits) return nullptr;

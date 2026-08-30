@@ -243,30 +243,39 @@ bool MainWindow::routeMountHdv(const std::string& path, int& bootSlotOut,
         }
     }
     if (primarySmartPortCard()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
         const std::string base =
             "smartport_slot" + std::to_string(primarySmartPortCard()->getSlot()) +
             "_unit0";
-        pom2::SmartPortUnit* u = primarySmartPortCard()->unit(0);
+        pom2::SmartPortUnit* u;
         bool replaced = false;
-        if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
-            // Flush before setUnit destroys it — see routeMount35 above for
-            // why the destructor's best-effort save is not good enough.
-            if (u && !u->saveDirty()) {
-                errOut = "unsaved changes on SmartPort unit 1 could not be "
-                         "written: " + u->lastError();
-                return false;
-            }
-            primarySmartPortCard()->setUnit(
-                0, std::make_unique<pom2::SmartPortHdvUnit>());
+        {
+            // Le verrou couvre l'inspection et l'echange d'unite — PAS le
+            // montage. mountSmartPortUnit prend stateMutex lui-meme (les deux
+            // phases), et stateMutex est non recursif : quand la conversion
+            // deux-phases (47f7485) a remplace le loadImage inline, la garde
+            // englobante heritee de l'ancien code re-verrouillait le meme
+            // mutex dans le meme fil — POM2 gelait sur TOUT boot HDV //c,
+            // fenetre comprise. Le pointeur d'unite reste valide hors verrou :
+            // la table des unites est confinee au fil UI (voir blockCards()).
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
             u = primarySmartPortCard()->unit(0);
-            replaced = true;
+            if (!u || u->kindKey() != pom2::SmartPortHdvUnit::kKindKey) {
+                // Flush before setUnit destroys it — see routeMount35 above
+                // for why the destructor's best-effort save is not enough.
+                if (u && !u->saveDirty()) {
+                    errOut = "unsaved changes on SmartPort unit 1 could not "
+                             "be written: " + u->lastError();
+                    return false;
+                }
+                primarySmartPortCard()->setUnit(
+                    0, std::make_unique<pom2::SmartPortHdvUnit>());
+                u = primarySmartPortCard()->unit(0);
+                replaced = true;
+            }
         }
-        // Same two-phase mount as the dedicated HDV card above: the unit
-        // swap needs the lock (it mutates the card's unit table), the 32 MiB
-        // read does not. The 3.5" branch above deliberately stays inline —
-        // its unit has no block backing, so it would pay for a phase-1 read
-        // it then discards.
+        // Deux phases : lecture sans verrou, echange sous verrou — dans
+        // mountSmartPortUnit. Le 3,5" au-dessus reste inline a dessein :
+        // son unite n'a pas de dos de blocs, la phase 1 serait perdue.
         if (!pom2::mountSmartPortUnit(*controller, *u, path, errOut))
             return false;
         settings->setString(base + "_type",

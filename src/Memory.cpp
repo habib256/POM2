@@ -2037,6 +2037,14 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
     // so the hang detector can show which register a frozen loop polls.
     if (addr <= 0xC0FF) noteIoRead(addr);
 
+    // //c-class : tout acces $C0xx etranger au device-select du slot 5
+    // referme la fenetre $C800 de la carte percee (voir iicCardWindow_ au
+    // perçage). Le firmware interne tape les soft-switches en permanence,
+    // le stub du SmartPort jamais — c'est ce qui les departage.
+    if (iicCardWindow_ && addr <= 0xC0FF &&
+        (addr < 0xC0D0 || addr > 0xC0DF))
+        iicCardWindow_ = false;
+
     // $C000-$C07F — built-in I/O page (keyboard, speaker, cassette,
     // display soft switches, paddles).
     if (addr <= 0xC07F) return softSwitchAccess(addr, /*isWrite=*/false, 0);
@@ -2160,9 +2168,37 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
                 const bool armOk = (slot != 5) || iicSmartPortArmed_;
                 if (armOk) {
                     if (SlotPeripheral* p = slots.peripheral(slot);
-                        p && p->exposesIicOnboardRom())
+                        p && p->exposesIicOnboardRom()) {
+                        // Le flux d'execution entre chez la carte : sa banque
+                        // $C800 redevient visible (voir iicCardWindow_).
+                        if (slot == 5) iicCardWindow_ = true;
                         return slots.slotRomRead(addr);
+                    }
                 }
+            }
+            // //c-class $C800-$CFFF : la banque d'EXTENSION de la carte
+            // percee. Le driver du stub $C500 saute en $CD00/$CE00 — le
+            // vrai firmware Liron fait le meme BIT $CFFF + JMP $CE00 — et
+            // sans ce perçage le //c executait le ROM interne comme si
+            // c'etait le gestionnaire SmartPort : le boot HDV pendait en
+            // boucle firmware, bloc 0 jamais lu (2026-08-30).
+            //
+            // La garde fine est iicCardWindow_ : sur un vrai //c cette
+            // region est TOUJOURS interne (le reset moteur fait JSR $CE4D
+            // sans toucher $C3xx), donc le proprietaire SlotBus ne suffit
+            // pas — apres un appel du pilote il restait au slot 5 et le
+            // premier JMP $CExx du moniteur ($FB4F, trace du 2026-08-30)
+            // executait la banque carte. La fenetre ne s'ouvre que par un
+            // fetch dans la page $C5xx du stub et se referme au premier
+            // acces $C0xx etranger au device-select du slot (le firmware
+            // interne tape les soft-switches en permanence, le stub
+            // jamais). intC8Rom garde en plus le firmware 80 colonnes.
+            if (iicProfile_ && addr >= 0xC800 && addr <= 0xCFFE &&
+                !intC8Rom && iicSmartPortArmed_ && iicCardWindow_ &&
+                slots.getActiveExpansionSlot() == 5) {
+                if (SlotPeripheral* p = slots.peripheral(5);
+                    p && p->exposesIicOnboardRom())
+                    return slots.expansionRomRead(addr);
             }
             uint8_t romVal = internalIORom[addr - 0xC000];
             // Dallas DS1216E "No-Slot Clock" — AppleWin parity. On //e /
@@ -2312,6 +2348,9 @@ void Memory::memWriteSlow(uint16_t addr, uint8_t value)
         softSwitchAccess(addr, /*isWrite=*/true, value);
         return;
     }
+    if (iicCardWindow_ && addr >= 0xC000 && addr <= 0xC0FF &&
+        (addr < 0xC0D0 || addr > 0xC0DF))
+        iicCardWindow_ = false;
     if (addr <= 0xC0FF) {
         if (addr <= 0xC08F) {
             languageCardSwitchAccess(addr, /*isWrite=*/true);
