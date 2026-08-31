@@ -65,6 +65,31 @@ original bytes, and re-checks that table slot 15 still points at an
 re-reads a built image. DIX is GPLv3 and its sources carry the code this
 patch reasons about; the modification is described byte-for-byte above.
 
+## 2026-08-31 — The file-size gate goes green, and what that cost
+
+`tools/check_file_sizes.sh` had been failing on `main` since **2026-08-29** —
+in 15 s, before the Linux job compiled anything, so it was also hiding that
+job's build and its GLES tier behind an X nobody could see past. Two ceilings
+were raised to their exact current sizes:
+
+* `src/ImageWriter.cpp` 2152 → 2501 (+349)
+* `src/Memory.cpp` 2402 → 2442 (+40)
+
+**This is the mechanism working, not being switched off.** The script's own
+header says the point of the budget file is that growing a god-object "requires
+editing the budget file in the same commit, which is exactly the moment someone
+should be asked whether the new code belongs in a new translation unit". The
+question was asked and answered: unblock the gate now, split later. Both
+numbers are the **exact** current sizes, so the ratchet fails on the next line
+either file gains, and the debt is tracked in TODO § [Arch].
+
+Worth being precise about the second one, because it is the smaller and the
+more recent: exactly **one** of `Memory.cpp`'s 40 lines is the foreign-bus
+dispatch that lets a coprocessor card run the 6502 over its own map. The other
+39 predate it. `ImageWriter.cpp` is the real debt — the printer head, the paper
+tray, PDF export and the PostScript / screen-dump seams are four concerns in
+one translation unit, with edges clean enough to cut along.
+
 ## 2026-08-31 — The handshake works, and it was one wrong number
 
 POM2 now services AppleShare's driver call. `ATINIT` calls the card at

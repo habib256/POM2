@@ -952,6 +952,31 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Arch] refactor & tooling
 
+- 🟠 **Two ceilings were raised instead of splitting — the debt.** *(~1 d for
+  ImageWriter, less for Memory)* <a id="file-size-debt"></a>The file-size
+  ratchet had been failing on `main` since **2026-08-29**, in 15 s, before the
+  Linux job compiled anything — so it was also hiding that job's build and its
+  GLES tier behind a red X nobody could see past. On 2026-08-31 the two
+  ceilings were raised to their exact current sizes to get the gate green
+  again. That is what `tools/file_size_budget.txt` is for (its script's header
+  says editing it is precisely the moment someone should be asked), and it is
+  the lesser half of the answer.
+
+  - **`src/ImageWriter.cpp` 2152 → 2501 (+349)** — the printer work put the
+    ImageWriter head, the paper tray, PDF export and the PostScript /
+    screen-dump seams in one translation unit. Those are already separate
+    concerns with clean edges; this one wants splitting, and the project's own
+    rule ("new code for an existing window group belongs in its own
+    translation unit") says so.
+  - **`src/Memory.cpp` 2402 → 2442 (+40)** — smaller, and not one change.
+    Exactly **one** line of it is the foreign-bus dispatch that lets a
+    coprocessor card run the 6502 over its own map
+    (`docs/PERFORMANCE.md` § 9); the other 39 predate it.
+
+  Both are recorded at their **exact** current size, so the ratchet still
+  fails on the next line either of them gains — the debt cannot quietly grow.
+
+
 - 🟢 **Z80/SoftCard cleanup backlog** (2026-07-12 bug-hunt survivors — quality,
   not correctness): SoftCardZ80 SFZ2 blob → `pom2::byteio` putU16/Reader like
   every other card (3 hand-synced layout copies today);
