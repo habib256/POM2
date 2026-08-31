@@ -179,6 +179,39 @@ head of `.return` (`MENU/main.a:213`). Initialising `CurrentChoice` to 1
 instead would lose the `DEMOX` prompt and the first-boot intro trigger at
 `MENU/main.a:66-67`.
 
+#### `DIX-fix.po` — the patched disk (2026-08-31)
+
+`tools/make_dix_fix.py` builds `disks_3.5/DIX-fix.po` from the pristine
+`DIX.po` (12 bytes differ) so the dead keystroke does the most useful thing
+available instead of dying: **RETURN or SPACE on the fresh menu launches
+menu entry 16, "ALL DEMOS IN AUTOMATIC MODE"** (`AUTOMODE`,
+`loader.a:132-148` — `ExpoMode = 1`, all fifteen parts chained forever).
+Index 0 keeps its `DEMOX` prompt and its first-boot intro trigger; only the
+*accept* path changes.
+
+The loader image is packed solid ($D000-$DDFF, blocks 1-7, the demo-name
+text cut mid-word at `$DDFF`), but the boot block reads **8** blocks
+(`boot_unidisk.a` `SP_BLOCKS2READ = 8`), so block 8 lands at `$DE00-$DFFF`
+and its tail `$DF56-$DFFE` is 169 resident zero bytes. Nine of them hold the
+stub:
+
+```
+$D02C  20 60 DF  JSR PICKDEMO     ; was  AE FF DF  LDX CurrentChoice
+$D02F  EA        NOP              ; was  CA        DEX
+$DF60  AE FF DF  LDX CurrentChoice / CA DEX / 10 02 BPL + / A2 0F LDX #15 / 60 RTS
+```
+
+`JSR`/`RTS` leave X alone and `LDA DemosL,X` ignores the incoming flags, so
+the selected-demo path stays bit-identical. Verified by booting both images
+through `dix_return_crash_probe --disk` on the same machine with the same
+RETURN at 20 s: `DIX.po` → `RUNAWAY: BRK at $17E4` + 25 s frozen;
+`DIX-fix.po` → `expo=1`, part code at `$7xxx`, video moving for 70 s, loader
+re-entry at 87 s (AUTOMODE chaining). RIGHT-then-RETURN still runs demo 1
+with `expo=0`. The patcher refuses any image whose two sites are not the
+exact original bytes, and re-checks that table slot 15 still points at an
+`AUTOMODE` starting with `LDA #1 / STA ExpoMode`; `--verify` re-reads a
+built image.
+
 ---
 
 ## 2. Disk II controller hell (flux / WOZ)
