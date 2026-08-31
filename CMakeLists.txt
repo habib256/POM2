@@ -288,6 +288,8 @@ set(SOURCES
     src/hgrsprite/HgrSpriteBlit.cpp
     src/hgrsprite/HgrSpriteEditor.cpp
     src/SlotBus.cpp
+    src/Scc8530Device.cpp
+    src/WorkstationCard.cpp
     src/Cs8900aDevice.cpp
     src/UthernetCard.cpp
     src/W5100Device.cpp
@@ -378,6 +380,7 @@ set(POM2_DEVICES_SOURCES
     src/PhasorCard.cpp
     src/PrinterCard.cpp
     src/ProDOSHardDiskCard.cpp
+    src/Scc8530Device.cpp
     src/SmartPort35Unit.cpp
     src/SmartPortCard.cpp
     src/SmartPortHdvUnit.cpp
@@ -389,6 +392,7 @@ set(POM2_DEVICES_SOURCES
     src/UthernetCard.cpp
     src/UthernetIICard.cpp
     src/W5100Device.cpp
+    src/WorkstationCard.cpp
 )
 
 # Platform primitives with ZERO first-party includes: process supervision and
@@ -716,6 +720,8 @@ set(HEADERS
     src/NetworkBackend.h
     src/SlirpNetworkBackend.h
     src/Cs8900aDevice.h
+    src/Scc8530Device.h
+    src/WorkstationCard.h
     src/UthernetCard.h
     src/W5100Device.h
     src/UthernetIICard.h
@@ -1162,6 +1168,8 @@ set(POM2_CORE_SOURCES
     src/FloppyEmuDevice.cpp
     src/Settings.cpp
     src/SlotBus.cpp
+    src/Scc8530Device.cpp
+    src/WorkstationCard.cpp
     src/Cs8900aDevice.cpp
     src/UthernetCard.cpp
     src/W5100Device.cpp

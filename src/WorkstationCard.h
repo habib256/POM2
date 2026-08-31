@@ -1,0 +1,282 @@
+// POM2 Apple II Emulator
+// Copyright (C) 2026 VERHILLE Arnaud
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program. If not, see <https://www.gnu.org/licenses/>.
+
+// WorkstationCard — the Apple II Workstation Card, the board that put a IIe
+// on LocalTalk so it could netboot from an AppleShare server and reach the
+// LaserWriters on the same net.
+//
+// IT IS A COPROCESSOR, NOT A ROM CARD. That is the whole reason this file
+// looks nothing like GrapplerCard. On board: a **65C02 of its own**, 28 KiB
+// of its own RAM, a **Zilog 8530 SCC** doing LocalTalk's SDLC, an interval
+// timer, and 64 KiB of ROM banked into a 32 KiB window. The Apple II never
+// executes that firmware; it talks to the card through a shared RAM page and
+// a handful of `$C0nX` strobes. So POM2 runs a second `M6502` here, over the
+// card's own address space, through `Memory::ForeignBus`.
+//
+// EVERY LINE OF THE MAP BELOW WAS READ OUT OF THE DUMP, then confirmed by
+// running the firmware — the derivation is in `docs/printer_plan_2.md` § 5.2
+// and pinned by `scc8530_workstation_firmware`. It is written here as the
+// card's specification, with the evidence, because there is no MAME oracle
+// for this board: MAME has no Workstation Card at all.
+//
+//   $0000-$6FFF  RAM (28 KiB). The reset routine sizes it by writing
+//                $40 $41 $42 $43 to $0000/$2000/$4000/$6000 and reading
+//                them back — the classic aliasing probe.
+//   $0200-$02FF  ...of which this page is ALSO what the Apple II sees at
+//                $Cn00 (see below).
+//   $7000        Status / progress code. The POST writes $03, $0B, $0F, $07
+//                at its phase boundaries and $04 just before halting.
+//   $7200        Read-only entropy. `$DBCC: LDY $7200` feeds an eight-`ROL`
+//                scramble that seeds LocalTalk's random backoff, so it wants
+//                to be free-running, not constant.
+//   $7500-$7503  Zilog 8530 SCC, wired A1 = A//B and A0 = D//C (MAME's
+//                `ab_dc` ordering). `$EE13: LDA #$03 / STA $7502 /
+//                LDA $7502` polls RR3, which exists in channel A only.
+//   $7800-$7900  Eight-bit read/write latches; the POST checks the readback.
+//   $7A00        A **five**-bit latch: the POST writes $FF with a `DEC` and
+//                then compares against `#$1F` ($F131-$F139).
+//   $7B00        Latch, plus the interval timer: **bit 6 reads as the timer
+//                interrupt flag** and writing bit 0 = 1 acknowledges it
+//                (`$EDBD: BIT $7B00 / BVC` … `LDA #$01 / TRB / TSB`).
+//   $7C00        **ROM bank select**, bit 1 picking the 32 KiB half. Proved
+//                by the trampoline the firmware relocates into RAM at
+//                $42D1: `LDA $40BB / STA $7C00 / JSR $CC32 / LDA $029A /
+//                STA $7C00` — a far call that has to switch the ROM out
+//                from under itself, which is exactly why it lives in RAM.
+//   $8000-$FFFF  ROM, 32 KiB window over the 64 KiB dump. The power-on half
+//                is the upper one (its vector table at file $FFFA gives
+//                RESET $C000, and $C000 is the RAM-sizing probe).
+//
+// THE APPLE II SIDE.
+//
+//   $Cn00-$CnFF  A read/write **window onto the card's RAM page $0200**, not
+//                a ROM page. Its published layout, read off a running card:
+//                entry points from `$Cn14` (each `LDY #cmd` then a branch to
+//                the common body at `$Cn36`), the node address at `$CnF0`,
+//                and **`ATLK` at `$CnF9-$CnFC`** — the signature guest
+//                software identifies the card by, since it is neither a
+//                Pascal 1.1 device nor a ProDOS block device. The driver proves it: the $Cn00 code sets
+//                `$FB/$FC` to $Cn00 and then does `STA ($FB),Y` — it writes
+//                into its own firmware page. What the host reads there is
+//                what the card put there, copied out of ROM at boot
+//                (`$C0DA: LDX #$E3 / LDA $C3D9,X / STA $01FF,X`, i.e. ROM
+//                $C3DA-$C4BC into RAM $0200-$02E2). The correspondence is
+//                checkable: the driver reads `$Cn9A` and the card's own
+//                code uses `$029A`.
+//   $C800-$CFFF  Expansion ROM, served from the dump at file $C800. The
+//                $Cn00 page enters it with `JMP $CC00` after the usual
+//                `STA $07F8` / `LDX $CFFF` dance.
+//   $C0n0-$C0nF  Strobes between the two CPUs. **Not established.** Reads
+//                answer $FF and writes are recorded by `hostStrobeLog()` for
+//                whoever finishes the job. What IS known, so it does not have
+//                to be re-derived:
+//                  * The $Cn00 page writes $71 to `$C080,X` and `$C081,X`,
+//                    the expansion ROM writes $50 to `$C080,X`, and a later
+//                    entry does `STA $C080,X` at `$CnB8` with X taken from
+//                    `$CnEB` and the byte from `$CnEA` — both host-written
+//                    slots in the shared page.
+//                  * The card firmware has **no IRQ path** for any of it: at
+//                    `$EE07` it counts anything that is neither SCC nor timer
+//                    as spurious.
+//                  * It does have an **NMI path**, and arms it. `$ED57` tests
+//                    bit 7 of `$3A` and dispatches through `($01FE)`; the
+//                    card sets that bit at `$DBD6` about 5 s into its life.
+//                    The vector still points at an RTS (`$ED5E`) at that
+//                    point, so /NMI is the leading hypothesis for the strobe
+//                    rather than a proven one — POM2 does not wire it,
+//                    because guessing would be worse than $FF.
+//                  * Writing `$02E7`/`$02EB` alone does NOT make the card
+//                    rebuild its page: tried, nothing moved. The card does
+//                    read `$02F1` (`CMP #$12` at `$C1BF`) and consumes
+//                    `$02EB` when it builds the OTHER page image, the one in
+//                    the low ROM half at `$81B8`.
+//                → TODO § Workstation Card
+//
+// WHAT THIS COSTS. The card runs a second 6502 at the Apple II's own rate,
+// so plugging it roughly doubles the emulation work. That is what a
+// coprocessor card is; it is not a defect to optimise away.
+
+#ifndef POM2_WORKSTATION_CARD_H
+#define POM2_WORKSTATION_CARD_H
+
+#include "M6502.h"
+#include "Memory.h"
+#include "Scc8530Device.h"
+#include "SlotPeripheral.h"
+
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace pom2 {
+
+class WorkstationCard : public SlotPeripheral
+{
+public:
+    /// The card's crystal, derived rather than assumed: the firmware ends up
+    /// with WR12/WR13 = 6 and WR4's x1 clock, and 3686400 / (6 + 2) / 2 is
+    /// exactly 230400 — the LocalTalk bit rate.
+    static constexpr uint32_t kSccClockHz = 3686400;
+    /// Size of the dump the card needs.
+    static constexpr std::size_t kRomBytes = 0x10000;
+    /// Card RAM, $0000-$6FFF.
+    static constexpr std::size_t kRamBytes = 0x7000;
+    /// Where the Apple II's $Cn00 window lands in that RAM.
+    static constexpr uint16_t kSharedPage = 0x0200;
+    /// Offsets in the dump of the two host-visible slices.
+    static constexpr std::size_t kExpansionRomOffset = 0xC800;
+
+    explicit WorkstationCard(int slot);
+    ~WorkstationCard() override;
+
+    WorkstationCard(const WorkstationCard&) = delete;
+    WorkstationCard& operator=(const WorkstationCard&) = delete;
+
+    /// Load the 64 KiB firmware (Apple 341-0358-A). Returns false — and
+    /// leaves the card inert — if the file is missing or the wrong size.
+    /// Without it the card CPU has nothing to run, so `plug` sites should
+    /// treat a false return as "do not plug".
+    bool loadRom(const std::string& path);
+    bool romLoaded() const { return romLoaded_; }
+
+    // ─── SlotPeripheral ──────────────────────────────────────────────────
+    std::string_view name() const override { return "Apple II Workstation Card"; }
+    int getSlot() const { return slot_; }
+
+    uint8_t deviceSelectRead (uint8_t low4) override;
+    void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
+    uint8_t slotRomRead (uint8_t low8) override;
+    void    slotRomWrite(uint8_t low8, uint8_t v) override;
+    uint8_t expansionRomRead (uint16_t offset) override;
+
+    void onPlug()  override;
+    void onReset() override;
+    void advanceCycles(int cycles) override;
+    void setCpuClock(double hz) override;
+
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
+
+    // ─── Inspection (tests, debug panel) ─────────────────────────────────
+
+    /// Where the card's own CPU is.
+    uint16_t cardPc() const { return cardCpu_ ? cardCpu_->getProgramCounter() : 0; }
+    bool cardHalted() const { return cardCpu_ && cardCpu_->isHalted(); }
+    /// The firmware's POST error accumulator at $0100; 0 means every test
+    /// passed. It halts at $C174 when a bit survives its `AND #$EF` mask.
+    uint8_t postErrors() const { return ram_[0x0100]; }
+    static constexpr uint16_t kPostHaltPc = 0xC174;
+    /// True once the card has run far enough to have finished its self-test
+    /// without reporting a fault.
+    bool postPassed() const { return started_ && postErrors() == 0 && !postFailed_; }
+
+    uint8_t cardRam(uint16_t addr) const
+    { return addr < kRamBytes ? ram_[addr] : 0; }
+    const Scc8530Device& scc() const { return scc_; }
+    Scc8530Device& scc() { return scc_; }
+    /// Which 32 KiB half of the dump is currently at $8000-$FFFF.
+    bool romHighHalf() const { return romBase_ == 0x8000; }
+    /// The $7000 progress code the firmware last wrote.
+    uint8_t statusCode() const { return latch_[0x0]; }
+
+    // ─── What the card publishes to the Apple II ─────────────────────────
+    // The shared page carries more than the driver image; these are the two
+    // fields guest software actually looks at, and they are how the card is
+    // found at all.
+
+    /// Offsets inside the `$Cn00` window, read out of the published page.
+    static constexpr uint8_t kPageNodeId   = 0xF0;  ///< LocalTalk node address
+    static constexpr uint8_t kPageSignature = 0xF9; ///< four bytes: "ATLK"
+
+    /// True once the card has published its driver page — i.e. once the
+    /// `ATLK` signature guest software identifies it by is on the bus.
+    bool signaturePublished() const;
+
+    /// The LocalTalk node address the card acquired, or 0 before it has one.
+    /// The same value ends up in the SCC's WR6 as its SDLC address filter.
+    uint8_t localTalkNode() const
+    { return ram_[kSharedPage + kPageNodeId]; }
+
+    /// The host `$C0nX` accesses seen so far, oldest first, as
+    /// `(register, value, isWrite)`. Empty until the guest touches them, and
+    /// capped so a polling guest cannot grow it without bound. This exists
+    /// because the strobe semantics are NOT established; it is the evidence a
+    /// future session needs, not a feature. Written by the CPU worker, so a
+    /// UI reader takes `stateMutex` like any other emulated state.
+    struct HostStrobe { uint8_t reg; uint8_t value; bool write; };
+    const std::vector<HostStrobe>& hostStrobeLog() const { return strobes_; }
+
+private:
+    /// The card CPU's address space. Handed to its private `Memory` through
+    /// `Memory::ForeignBus`, which costs the Apple II's own bus nothing —
+    /// see Memory.h § Foreign bus.
+    struct Bus final : Memory::ForeignBus {
+        explicit Bus(WorkstationCard& o) : owner(o) {}
+        uint8_t read(uint16_t addr) override  { return owner.busRead(addr); }
+        void write(uint16_t addr, uint8_t v) override { owner.busWrite(addr, v); }
+        WorkstationCard& owner;
+    };
+
+    uint8_t busRead(uint16_t addr);
+    void    busWrite(uint16_t addr, uint8_t value);
+    uint8_t ioRead(uint16_t addr);
+    void    ioWrite(uint16_t addr, uint8_t value);
+    void    updateIrqLine();
+    void    startCardCpu();
+
+    int slot_;
+    bool romLoaded_ = false;
+    bool started_   = false;
+    bool postFailed_ = false;
+
+    std::vector<uint8_t> rom_;              ///< the 64 KiB dump
+    std::vector<uint8_t> ram_;              ///< card RAM, $0000-$6FFF
+    std::size_t romBase_ = 0x8000;          ///< which half is at $8000
+
+    std::array<uint8_t, 16> latch_{};       ///< the $7x00 selects
+
+    // Interval timer. The period is NOT established by the dump; 1 ms is
+    // what the firmware was driven with when it completed its boot, and its
+    // own prescalers (/$25, /$38, /$30 at $EDD5-$EDF4) are consistent with a
+    // tick in that range. Change it only with evidence.
+    static constexpr int kTimerPeriodCycles = 1020;
+    /// How finely `advanceCycles` interleaves the card CPU with the SCC and
+    /// the timer. Below one poll iteration of the firmware's self-test
+    /// loop — see the note in advanceCycles for why this is correctness,
+    /// not tuning.
+    static constexpr int kSliceCycles = 24;
+    int  timerAcc_   = 0;
+    bool timerFlag_  = false;
+    /// Free-running counter behind $7200, the LocalTalk backoff entropy.
+    uint8_t entropy_ = 0;
+
+    bool sccInt_ = false;
+    uint64_t sccAcc_ = 0;                   ///< PCLK accumulator
+    uint64_t cpuClockHz_ = 1020000;
+
+    std::unique_ptr<Bus>    bus_;
+    std::unique_ptr<Memory> cardMem_;
+    std::unique_ptr<M6502>  cardCpu_;
+    Scc8530Device scc_;
+
+    std::vector<HostStrobe> strobes_;
+};
+
+} // namespace pom2
+
+#endif // POM2_WORKSTATION_CARD_H

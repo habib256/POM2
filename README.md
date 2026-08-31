@@ -267,7 +267,29 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `grappler` | Orange Micro Grappler+ | `echoplus` | Cricket / Echo SSI263 |
 | `uthernet` | Uthernet I (CS8900A NIC) | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
 | `uthernet2` | Uthernet II (W5100 TCP/IP) | `softcard` | Microsoft SoftCard Z80 (CP/M) |
-| `fujinet` | FujiNet relay (SP over SLIP) | | |
+| `fujinet` | FujiNet relay (SP over SLIP) | `workstation` | Apple II Workstation Card (LocalTalk) |
+
+**Apple II Workstation Card.** The board that put a IIe on LocalTalk, and the
+only card here that is a **computer of its own**: a 65C02, 28 KB of RAM, a
+Zilog 8530 SCC and 64 KB of banked ROM, all running inside the card while your
+Apple II gets on with its own program. POM2 runs Apple's real 341-0358-A
+firmware on it — it completes the card's power-on self-test, including a
+255-byte loopback check of the SCC, and configures the chip for LocalTalk at
+230.4 kbit/s. Needs `roms/341-0358-A.bin` (64 KiB); without it the slot stays
+empty rather than presenting a card that cannot work.
+
+It gets further than "configured": with SDLC framing in place — modelled from
+the Zilog manual, since MAME does not emulate it — the card's firmware
+**acquires a LocalTalk node address and starts transmitting**. `0B 0B 81` is
+LLAP's node-address enquiry; once it holds node `$0B` it broadcasts AppleTalk
+datagrams. And if you boot **CardCat** on the emulated //e, it names the card
+in slot 4, which is the check that matters: real 1980s-descended software
+identifying it by its firmware signature.
+
+One honest limit remains: the **handshake between the two CPUs** at `$C0nX` is
+not worked out, so guest AppleTalk software will find the card and then wait.
+Note the card runs a second 6502 at the Apple II's own rate, so it roughly
+doubles the emulation work while plugged.
 
 **FujiNet.** POM2 does not emulate a [FujiNet](https://fujinet.online/) — it **relays** to a real one. Put the `fujinet` card in **slot 7** (the //e scans it before the Disk II in slot 6, so the machine boots straight into FujiNet's CONFIG) and point it at either:
 

@@ -326,6 +326,100 @@ add_test(NAME iwm_device_smoke COMMAND test_iwm_device)
 set_tests_properties(iwm_device_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── Zilog Z8530 SCC smoke ────────────────────────────────────────────────
+# Pins the MAME port at src/Scc8530Device.{h,cpp}: reset values, the
+# two-step register pointer, the Workstation Card firmware's own RR3 poll,
+# the BRG arithmetic, byte-time-accurate loopback, the receive FIFO and the
+# interrupt block. Device-only — no Memory, no slot bus.
+
+add_executable(test_scc8530
+    scc8530_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Scc8530Device.cpp
+)
+target_include_directories(test_scc8530 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME scc8530_smoke COMMAND test_scc8530)
+set_tests_properties(scc8530_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── Z8530 against the Workstation Card's own firmware ────────────────────
+# Runs Apple's 341-0358-A ROM until it finishes its power-on self-test and
+# programs the chip for LocalTalk. The POST includes a 255-byte loopback
+# ping-pong on both channels with a fixed poll budget, so it fails unless the
+# transmit timing and the status bits are right. ROM-gated: SKIPs cleanly.
+# Needs M6502 + Memory (flat test mode), hence the full core sources.
+
+add_executable(test_scc8530_workstation_firmware
+    scc8530_workstation_firmware_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Scc8530Device.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_scc8530_workstation_firmware
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_scc8530_workstation_firmware PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME scc8530_workstation_firmware
+         COMMAND test_scc8530_workstation_firmware
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(scc8530_workstation_firmware PROPERTIES TIMEOUT 30)
+
+
+# ─── Apple II Workstation Card ────────────────────────────────────────────
+# The same firmware, but over the card's REAL bus this time: its own RAM,
+# $7x00 I/O, interval timer and $7C00 ROM banking, behind Memory::ForeignBus
+# and paced through advanceCycles the way the slot bus paces it. Asserts the
+# card's 65C02 completes the power-on self-test and configures the SCC for
+# LocalTalk. ROM-gated: SKIPs cleanly.
+
+add_executable(test_workstation_card
+    workstation_card_smoke_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/WorkstationCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Scc8530Device.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_workstation_card PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_workstation_card PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME workstation_card_smoke
+         COMMAND test_workstation_card
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(workstation_card_smoke PROPERTIES TIMEOUT 30)
+
+
+# ─── The card, identified by real guest software ──────────────────────────
+# Boots Henry Lowe's CardCat off disks_3.5 on an enhanced //e and reads the
+# slot table off the text screen — with a negative control, so the card's
+# name has to come off POM2's bus rather than out of CardCat's text. Two
+# full 40 M-instruction boots, hence `slow`. Gated on the //e ROM, the card
+# ROM and the disk; SKIPs without any of them.
+
+add_executable(test_workstation_card_cardcat
+    workstation_card_cardcat_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/WorkstationCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Scc8530Device.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_workstation_card_cardcat
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_workstation_card_cardcat PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME workstation_card_cardcat
+         COMMAND test_workstation_card_cardcat
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(workstation_card_cardcat PROPERTIES TIMEOUT 120 LABELS slow)
+
+
 # ─── SmartPort 3.5" Phase 1 smoke ─────────────────────────────────────────
 # Exercises Disk35Image (load + size guard), Sony35Drive (sense / motor),
 # and SmartPortHub (recalc_active_device port from MAME

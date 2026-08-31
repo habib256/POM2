@@ -607,3 +607,57 @@ it is paid only by the session that armed a read watch, only while it is
 armed. The machine still runs at well over 100× real time under the bench, so
 a debugging session does not notice; the panel's tooltip says so, and defaults
 to a write watch, which stays free in both states.
+
+## 9. A second CPU on a foreign bus — 2026-08-31
+
+The Apple II Workstation Card is a coprocessor: its own 65C02, its own RAM,
+its own I/O, its own banked ROM. POM2 has exactly one 6502 core and `M6502`
+reaches memory through `Memory`, so the card needed that core over a
+completely different map.
+
+**§ 8 decided this before it was attempted.** A branch on the bus path costs
++13-16 % (§ 8.2); merely *testing a flag* there costs +7.2 % (§ 8.5). So the
+two obvious shapes were both out: `if (bus_)` inside `M6502`'s memory helpers,
+and a flag tested at the top of `memRead`. The third — templating `M6502` on
+the bus type with explicit instantiation — is genuinely zero-cost for the
+Apple II path, but it duplicates a 2159-line core in the binary next to the
+hottest function in the emulator, which is the same code-growth risk § 8.2
+located. It was not needed.
+
+**The shipped shape adds nothing, by folding into tests already made.** Both
+slow paths (`memReadSlowBody`, `memWriteSlow`) and `memWrite`'s fast path
+already began with a `testMode` test. That test became `flatBus_`
+(`testMode || foreignBus_ != nullptr`) — **one byte load for another** — and
+`foreignBus_` folds into `plainRead_` / `iieFastRead_` / `romFastRead_`
+exactly the way `readDivert_` does, so `memRead` is not touched at all. A
+Memory with a foreign bus fails every fast-path gate and takes the slow path
+for everything, which is free: nothing else in POM2 shares that instance.
+
+Host: Apple M1, the ordinary `build/` release configuration, the two binaries
+side by side and run interleaved, best of 5 each, two passes. **RAM and
+framebuffer hashes byte-identical on every run** — the same identity check
+§§ 1-8 are held to.
+
+| Workload | Before | With the foreign bus (none attached) | Δ |
+|---|---|---|---|
+| `--frames 30000` (][+ banner), pass 1 | 2.170 s | 2.130 s | −1.8 % |
+| `--frames 30000` (][+ banner), pass 2 | 2.180 s | 2.130 s | −2.3 % |
+| `--rom apple2e.rom --iie --frames 30000`, pass 1 | 2.510 s | 2.460 s | −2.0 % |
+| `--rom apple2e.rom --iie --frames 30000`, pass 2 | 2.520 s | 2.490 s | −1.2 % |
+
+The honest reading is **no measurable cost**, not "faster". Nothing was
+removed from either path; the sub-2 % is this host's layout luck, and a number
+that flatters the change is one to distrust — § 8.3 threw one away for the
+same reason.
+
+**What it costs while a card IS attached** is a different question and is not
+folded into the table: the card runs a second 6502 at the Apple II's own rate,
+so plugging it roughly doubles the emulation work. That is what a coprocessor
+board is, and it is paid only by the session that plugs one.
+
+**One trap, caught by reading rather than measuring.** `Memory::advanceCycles`
+runs the Apple II's scanline bookkeeping once the cycle counter passes
+`vblNextEventCycle_`. A card's Memory has no beam and no display, so
+`setForeignBus` parks that threshold at the end of time — otherwise every
+emulated instruction of the card would have paid for video events nobody
+reads.

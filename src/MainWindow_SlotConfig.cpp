@@ -439,6 +439,19 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         st.memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugWorkstation = [&](int s) {
+        // Apple II Workstation Card. Hard ROM gate in the factory: no
+        // firmware, no card. It runs a second 65C02 at the Apple II's own
+        // rate, so plugging it roughly doubles the emulation work — that is
+        // what a coprocessor board costs, not a defect.
+        auto made = slotCardFactory_->create(
+            { "workstation", s, cpuIsCmosForSlots, activeProfile });
+        if (!made.warning.empty())
+            pom2::log().warn(made.warningCategory.c_str(), made.warning);
+        if (!made) return;
+        st.memory().slotBus().plug(s, std::move(made.card));
+    };
+
     auto plugGrappler = [&](int s) {
         // Orange Micro Grappler+ — ROM-gated parallel printer. Loads
         // roms/grappler_plus.bin if present; falls back to a synthetic
@@ -589,6 +602,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         else if (kind == "echoplus")    plugEchoPlus(s);
         else if (kind == "echoplus_tms") plugEchoPlusTms(s);
         else if (kind == "grappler")    plugGrappler(s);
+        else if (kind == "workstation") plugWorkstation(s);
         else if (kind == "uthernet")    plugUthernet(s);
         else if (kind == "uthernet2")   plugUthernetII(s);
         else if (kind == "smartport35") plugSmartPort35(s);

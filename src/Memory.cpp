@@ -2009,8 +2009,8 @@ uint8_t Memory::memReadSlow(uint16_t addr)
 // that reaches it behaves exactly as it always did.
 inline uint8_t Memory::memReadSlowBody(uint16_t addr)
 {
-    // Klaus harness: flat 64 KB RAM, no side effects.
-    if (testMode) return mem[addr];
+    // Flat test RAM, or a card CPU's own bus. → Memory.h ForeignBus
+    if (flatBus_) return foreignBus_ ? foreignBus_->read(addr) : mem[addr];
 
     // Fast path: RAM below $C000. In IIe mode the read may route to aux RAM
     // (RAMRD / ALTZP / 80STORE+PAGE2). In II+ mode, plain main bank.
@@ -2275,8 +2275,9 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
 
 void Memory::memWriteSlow(uint16_t addr, uint8_t value)
 {
-    // Klaus harness: flat 64 KB RAM, no side effects.
-    if (testMode) { mem[addr] = value; return; }
+    // Flat test RAM, or a card CPU's own bus — see memReadSlowBody.
+    if (flatBus_) { if (foreignBus_) foreignBus_->write(addr, value);
+                    else             mem[addr] = value;  return; }
 
     // Write watchpoints (Memory.h § Write watchpoints). Armed addresses below
     // $C000 are diverted here by having their `writable[]` byte cleared;

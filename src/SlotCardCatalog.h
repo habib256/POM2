@@ -112,6 +112,11 @@ inline constexpr CardType kCardTypes[] = {
     // models silent in v1; the register decode is enough for software
     // detection. See markadev/AppleII-RevEng/Street-Electronics-Corp-ECHO+.
     { "echoplus_tms", "Echo+ (TMS5220 + 2×AY) — silent, detect-only" },
+    // Apple II Workstation Card — LocalTalk/AppleTalk, and a coprocessor:
+    // its own 65C02 + 8530 SCC run inside the card. ROM-gated on the 64 KiB
+    // 341-0358-A dump; the host handshake at $C0nX is not yet established,
+    // so the guest's AppleTalk stack will not complete a transaction.
+    { "workstation",  "Apple II Workstation Card (LocalTalk) — boots, host link WIP" },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).

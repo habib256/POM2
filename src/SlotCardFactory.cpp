@@ -24,6 +24,7 @@
 #include "MouseCardAppleWin.h"
 #include "ProDOSHardDiskCard.h"
 #include "ResourcePaths.h"
+#include "WorkstationCard.h"
 #include "SlotPeripheral.h"
 #include "SmartPortCard.h"
 
@@ -153,6 +154,31 @@ SlotCardFactory::Result SlotCardFactory::create(const Request& request) const
                 std::to_string(request.slot) +
                 " without a 4 KB ROM dump (roms/grappler_plus.bin) — "
                 "graphics dump commands unavailable, PR#n still works";
+        }
+        result.card = std::move(card);
+        return result;
+    }
+
+    if (request.key == "workstation") {
+        // Apple II Workstation Card. Hard ROM gate, unlike the Grappler: the
+        // card is a coprocessor, so without its firmware there is nothing for
+        // its 65C02 to run and a plugged card would be a dead $Cn00 page the
+        // guest could still find. Better to refuse.
+        auto card = std::make_unique<WorkstationCard>(request.slot);
+        for (const std::string_view candidate : {
+                 "roms/341-0358-A.bin", "roms/341-0358-a.bin"}) {
+            const std::string rom = locate_(candidate);
+            if (!rom.empty() && card->loadRom(rom)) {
+                result.resourcePath = rom;
+                break;
+            }
+        }
+        if (!card->romLoaded()) {
+            result.warningCategory = "Workstation";
+            result.warning = "Apple II Workstation Card requested in slot " +
+                std::to_string(request.slot) +
+                " but roms/341-0358-A.bin (64 KiB) is missing — slot left empty";
+            return result;   // no card: the gate is deliberate
         }
         result.card = std::move(card);
         return result;

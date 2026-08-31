@@ -5,6 +5,298 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-31 — SDLC, and the card talks LocalTalk
+
+### What the card publishes, and how far the handshake got
+
+The `$Cn00` page's layout is now read off a running card rather than guessed:
+entry points from `$Cn14` (each `LDY #cmd` then a branch to the common body at
+`$Cn36`), the acquired LocalTalk node address at `$CnF0`, and **`ATLK` at
+`$CnF9-$CnFC`**. That signature is the card's identity on the bus — it is
+neither a Pascal 1.1 device nor a ProDOS block device, so software finds it by
+this and not by `$Cn05`/`$Cn07`, which is exactly why the "no Pascal
+signature" note two entries down meant nothing about the mapping.
+`signaturePublished()` and `localTalkNode()` expose both, and
+`workstation_card_smoke` pins them.
+
+The `$C0nX` handshake is still not settled, and static analysis has now been
+taken about as far as it goes. Recorded so it is not re-derived:
+
+* The strobe sites: `$71` to `$C080,X`/`$C081,X` from the page, `$50` from the
+  expansion ROM, and `$CnB8: STA $C080,X` with X from `$CnEB` and the byte
+  from `$CnEA` — both host-written shared-page slots.
+* The card has **no IRQ path** for it (`$EE07` counts anything that is neither
+  SCC nor timer as spurious) but **does have an NMI path and arms it**:
+  `$ED57` tests bit 7 of `$3A` and dispatches through `($01FE)`, and the card
+  sets that bit at `$DBD6` about five seconds in. The vector still points at
+  an RTS there, so **/NMI is the leading hypothesis, not a fact** — and POM2
+  does not wire it, because a guess here would be worse than answering `$FF`.
+* A negative result worth as much: writing `$02E7`/`$02EB` alone does **not**
+  make the card rebuild its page. Tried; nothing moved.
+
+The unblock is a **guest AppleTalk disk** — driven the way
+`workstation_card_cardcat` drives CardCat, so the firmware answers instead of
+being guessed at. There is not one in the repo.
+
+
+The Workstation Card now puts **real LocalTalk frames on the wire**. Apple's
+LAP driver, running on the card's own 65C02, acquires a node address and
+broadcasts:
+
+```
+0B 0B 81            lapENQ — "is node $0B taken?"
+FF 0B 84            LLAP broadcast
+FF 0B 01 00 06 …    a short DDP datagram
+```
+
+Nothing in POM2 knows what LLAP is. That output is the emulated chip and the
+emulated card agreeing well enough for 1988 firmware to run its protocol.
+
+### SDLC is a documented deviation from "MAME is the oracle"
+
+MAME does not model SDLC: `do_sccreg_wr4` logs *"SDLC - not implemented"* and
+every CRC reset code in WR0 is a no-op there. LocalTalk is SDLC, so
+`Scc8530Device` models it from the Zilog SCC/ESCC user manual (UM010902)
+instead. Every site that does is marked **`SDLC (datasheet, not MAME)`** so
+the boundary between ported and derived stays visible while reading.
+
+What is modelled is what a byte-granular seam can carry: frame delimitation,
+the Tx Underrun/EOM latch that closes a frame, Sync/Hunt and Enter Hunt,
+address search against WR6 with the `$FF` broadcast, Send Abort, and End Of
+Frame with its residue code as a special receive condition — so the FIFO locks
+until Error Reset, exactly as the manual describes. What is not modelled is
+what only exists *between* the bytes: bit stuffing, the flag patterns, the
+FM0/DPLL line coding. No register can see any of it.
+
+**One number that would have been silently wrong.** MAME's `update_serial`
+always hands diserial a start bit. That is harmless in MAME, which does no
+SDLC — but an SDLC byte is exactly its data bits, so carrying the start bit
+over would have made every byte 9/8 too long and put a 230.4 kbit/s driver
+12 % off. `frameHalfBits` special-cases it, and `scc8530_smoke` measures the
+byte time to the tick.
+
+### Two things learned by watching the firmware, not by reading
+
+* **The card disables its receiver while it transmits** — LocalTalk is
+  half-duplex — and re-enables it after. An endpoint answering a frame has to
+  wait for WR3 D0 to come back, not merely for an inter-frame gap: a reply
+  100 cycles after the frame closed is dropped, correctly, because the
+  receiver is off. That cost an hour of "why is my ACK vanishing", so it is
+  written down.
+* **Answering lapENQ with lapACK does not move the card off `$0B`.** The frame
+  is accepted — the FIFO fills, the interrupt fires — and the driver keeps
+  enquiring anyway. Timing window, missing status bit, or just what this
+  firmware does on a dead network: open. → `TODO.md`
+
+### CardCat says so too
+
+`workstation_card_cardcat` boots Henry Lowe's **CardCat** off
+`disks_3.5/CardCat 1.94.po` on an enhanced //e and reads the slot table off
+the text screen:
+
+```
+ 4   Apple II Workstation Card
+```
+
+That is real guest software identifying the card by its firmware signature
+bytes, which is a much harder thing to satisfy than any assertion POM2 writes
+about itself. The test carries a **negative control** — the same boot with the
+slot empty must not print the name — because otherwise it would only be
+proving that CardCat contains that string.
+
+### The snapshot gap is closed
+
+`Scc8530Device` carries its own blob now (every register, both FIFOs, the
+interrupt block, the three clock accumulators and the SDLC frame in flight),
+and `WorkstationCard`'s snapshot appends it. A rewind no longer lands the chip
+on its reset values waiting for the firmware to notice. Both refuse foreign,
+short and truncated blobs rather than restoring half of one.
+
+## 2026-08-31 — The Apple II Workstation Card boots
+
+The card is emulated: `src/WorkstationCard.{h,cpp}`, catalog key
+`workstation`, pinned by `workstation_card_smoke`. Apple's real 341-0358-A
+firmware runs on it, completes the card's power-on self-test — including the
+255-byte SCC loopback — and configures the chip for LocalTalk at 230400 bit/s,
+all with the card plugged into a real `SlotBus` and paced by
+`Memory::advanceCycles`.
+
+### It is a computer, not a card
+
+That is the whole shape of this change. On board: a **65C02 of its own**,
+28 KB of RAM, the 8530 SCC, an interval timer, and 64 KB of ROM banked into a
+32 KB window. The Apple II never executes that firmware — it reaches the card
+through a shared RAM page. So POM2 runs a second `M6502` over the card's own
+address space.
+
+**There is no MAME oracle**: MAME has no Workstation Card at all. Every line
+of the map was read out of the dump with a disassembler and then confirmed by
+*running* the firmware. Two that show the shape of the evidence:
+
+* **`$7A00` is five bits wide** — the card's own POST writes `$FF` into it
+  with a `DEC` and compares against `#$1F`. The firmware documents its
+  hardware for us.
+* **`$7C00` is the ROM bank select** — proved by a trampoline the firmware
+  relocates *into RAM* at `$42D1`: `LDA $40BB / STA $7C00 / JSR $CC32 /
+  LDA $029A / STA $7C00`. It lives in RAM precisely because it switches the
+  ROM out from under itself, and the card crashed into the stack page in
+  every experiment until the banking was modelled.
+
+And a correction to the entry below: the `$Cn00` page is **not** a ROM slice.
+It is a read/write window on card RAM `$0200`. The driver settles it — its own
+`$Cn00` code sets `$FB/$FC` to `$Cn00` and stores *through* it — and the
+correspondence is checkable, since the driver reads `$Cn9A` and `$029A` is
+where the card keeps its bank value. What the guest reads there is what the
+card published at boot from ROM `$C3DA-$C4BC`.
+
+### The second CPU cost the first one nothing
+
+`M6502` reaches memory through `Memory`, so a coprocessor needed that core
+over a foreign map — and PERFORMANCE §§ 8.2/8.5 had already priced the obvious
+answers: a branch on the bus path is +13-16 %, *testing a flag* there is
++7.2 %. So nothing was added. `Memory::ForeignBus` folds into tests that were
+already being made: `flatBus_` **replaces** the `testMode` test both slow paths
+and `memWrite`'s fast path made — one byte load for another — and
+`foreignBus_` folds into the three derived read gates the way `readDivert_`
+does, leaving `memRead` untouched. Measured interleaved, best-of-5, two passes,
+both workloads: −1.2 % to −2.3 %, RAM and framebuffer hashes byte-identical.
+The honest reading is **no measurable cost**; the sub-2 % is layout luck, and
+a flattering number is one to distrust. → PERFORMANCE § 9
+
+One trap caught by reading rather than measuring: `Memory::advanceCycles` runs
+Apple II scanline bookkeeping past `vblNextEventCycle_`, and a card's Memory
+has no beam — `setForeignBus` parks that threshold at the end of time.
+
+### `advanceCycles` interleaves, and that is correctness
+
+The slot bus hands out ~4096 cycles at a time. Running the card CPU for all of
+them before the SCC moves makes the chip stand still for four byte-times while
+the firmware burns the **fixed poll budget** of its self-test, and the POST
+then fails on a timeout no real card would ever see. The card interleaves at
+24 cycles — below one poll iteration. This is written down because it looks
+exactly like a tuning constant and is not one; widening it makes
+`workstation_card_smoke` fail.
+
+### What is still missing, and it is not a detail
+
+* **The `$C0nX` handshake between the two CPUs.** The driver writes `$71` to
+  `$C080,X` and `$C081,X` and `$50` from the expansion ROM, and the card
+  firmware has **no interrupt path** for any of it — its handler counts
+  anything that is neither SCC nor timer as spurious, at `$EE07` — so the
+  handshake is presumably a poll of the shared page. Reads answer `$FF` and
+  `hostStrobeLog()` records what the guest does. Guest AppleTalk software will
+  find the card and then wait.
+* **SDLC framing**, on both sides of the SCC port. MAME does not model it
+  either, so there is no oracle and no LocalTalk traffic yet.
+* **The SCC's register file is not in the card's snapshot.** A rewind lands
+  the chip on its reset values and the firmware reprograms it; survivable,
+  because nothing outside the card observes it mid-frame, but it is a gap.
+
+## 2026-08-31 — The Z8530 SCC, and what the Workstation Card dump really is
+
+### `Scc8530Device` — a MAME port of `z80scc`
+
+The Zilog 8530 is now emulated: `src/Scc8530Device.{h,cpp}`, ported from MAME
+`src/devices/machine/z80scc.{h,cpp}` at commit `588eeb33` (2026-08-29), pinned
+by `scc8530_smoke` (11 cases). Same chip as the Macintosh and IIgs serial
+ports, so it is useful well beyond the card that motivated it.
+
+Three decisions worth keeping:
+
+* **The variant mask is folded away.** MAME's one class covers eight parts
+  behind `m_variant`; POM2 instantiates the NMOS `TYPE_SCC8530` and constant-
+  folds every test of it — no Z-Bus, no ESCC extended read, 3-byte Rx FIFO and
+  a one-slot Tx buffer. Each folded branch is marked at its site so widening
+  the port later is un-folding, not re-deriving. The visible consequence:
+  after the fold, `scc_register_read`'s NMOS remap is unconditional, so
+  RR4-RR7, RR9 and RR11 are permanently images of other registers. They have
+  no handlers because they are **unreachable**, not because they were skipped.
+* **The wire is byte-granular, everything above it is not.** MAME shifts bits
+  through `device_serial_interface`; POM2 holds a byte in the shift register
+  for exactly the frame time the same programming implies — `frameHalfBits`
+  reproduces `set_data_frame(1, data, parity, stop)` in half-bit units so 1.5
+  stop bits lands on a boundary — and delivers it whole. Nothing on an Apple II
+  can see the difference, and it is where a LocalTalk endpoint wants to attach.
+* **`tick()` counts PCLK, not CPU cycles**, because every rate in the chip
+  descends from PCLK and that is the only way the BRG arithmetic stays equal to
+  the datasheet's `TC = clock / (2 × rate × mode) − 2`. Both internal clocks
+  use an exact integer accumulator, so ticking once per 4096-cycle chunk loses
+  no edges.
+
+One MAME divergence is kept **on purpose** and pinned so a future change to it
+is deliberate: on receive overrun MAME parks the offending byte in the slot the
+write pointer sits on and never advances past it, so the Overrun bit never
+reaches RR1 through a data read. Real silicon discards the byte and reports the
+error. Reproducing MAME keeps the oracle usable.
+
+### The 341-0358-A dump is not a slot ROM
+
+The [entry below](#the-workstation-card-identified-not-built) recorded
+that there is "no Pascal 1.1 signature and no ProDOS block dispatch trio at any
+256-byte alignment, so the `$Cn00` page is not a plain slice of the image".
+The first half is true; the conclusion was wrong, and the reason it was wrong
+is the interesting part.
+
+**The card has its own 65C02.** The dump is that CPU's firmware, not a slot
+ROM: 65C02-only opcodes throughout, its own vector table at `0xFFFA`
+(RESET `$C000` lands on a RAM-sizing probe), RAM at `$0000-$6FFF`, I/O selects
+at `$7x00` — and the 8530 at `$7500-$7503`, identified by the `LDA #$03 /
+STA $7502 / LDA $7502` at `$EE13`, which is an RR3 poll and therefore also
+proves the `A1 = A//B, A0 = D//C` pin ordering. The 64 KiB is two 32 KiB images
+for one `$8000-$FFFF` window, both live: the LocalTalk strings are in the upper
+half, the LaserWriter `IWEm` procset in the lower.
+
+The Apple II side of the firmware **is** a plain slice, at `0xC400-0xC4FF` for
+the `$Cn00` page and `0xC800-0xCFFF` for the `$C800` expansion ROM — a textbook
+slot page, complete with the `JSR $00FB` / `TSX` slot-discovery trick,
+`STA $07F8`, `LDX $CFFF` and `STA $C080,X` with X = slot × 16. There is no
+Pascal or ProDOS signature because an AppleTalk card is neither of those kinds
+of device; software finds it by other means (note the `ATLK` string at
+`0xC518`). Absence of a signature was evidence about the *device class*, not
+about the mapping.
+
+So the blocker moved rather than lifting: the card needs its 65C02 run over a
+foreign bus, and `M6502` is bound to `Memory` through non-virtual inlined
+`memRead`/`memWrite` on the hot path. That is a decision to take on its own
+terms, with `docs/PERFORMANCE.md` open — not a side effect of building a card.
+
+### The firmware runs, and it signs off on the SCC
+
+The blocker above is about shipping a *card*. It is not a reason to leave the
+evidence unread, so the firmware was driven anyway: POM2's `M6502` over a flat
+test bus, `Scc8530Device` at `$7500`, the other `$7x00` selects modelled as
+latches. **It completes its power-on self-test**, and then programs the chip
+for LocalTalk — WR4 = `$20` (SDLC, x1 clock), WR3 = `$DD` (receiver on, 8
+bits, address search, hunt), WR11 = `$F2` (receive clock from the DPLL),
+230400 bit/s. Shipped as `scc8530_workstation_firmware`, ROM-gated.
+
+That POST is a far harder test than any unit test written from a datasheet: it
+is a **255-byte loopback ping-pong on both channels inside a fixed 8000-poll
+budget**, so it fails unless the transmit timing, the TBE/RxCA status bits and
+the one-slot transmit buffer all agree. Two hardware facts came out of running
+it that reading the dump could not give:
+
+* **The crystal.** The firmware ends with WR12/WR13 = 6 and WR4's x1 clock,
+  and `3686400 / (6 + 2) / 2` is exactly 230400 — the LocalTalk rate. /RTxC
+  and PCLK are a 3.6864 MHz crystal, derived rather than assumed.
+* **A ceiling on the CPU speed.** The ping-pong's fixed budget closes at
+  every rate tried up to 2.0 MHz against that 3.6864 MHz SCC clock and fails
+  from 2.05 MHz up, because a faster CPU burns its 8000 polls before the 255th
+  byte lands. That is an upper bound on the card CPU, not a measurement of it
+  — worth stating precisely, because the test is silent about how much slower
+  it might be.
+
+A third fact is negative and worth as much: over 2.5 M instructions the
+firmware never writes above `$8000`, which is what a correct RAM/ROM split
+predicts and the test asserts.
+
+The harness is deliberately **not** a card emulation — it borrows `Memory` in
+flat test mode and shims the I/O page by decoding effective addresses around
+each step. It exists so the SCC could be validated now instead of after the
+`M6502` bus decision, and its header says so, so nobody mistakes it for the
+beginning of a card.
+→ `docs/printer_plan_2.md` § 5.2, `TODO.md`
+
 ## 2026-08-31 — Nine bugs, five more printers, and the LaserWriter
 
 ### The bug hunt, and the three it could not finish
@@ -115,6 +407,8 @@ Four things worth keeping:
 * **The page model was always an intensity ramp** and merely had no source of
   greys, so anti-aliased PostScript text keeps its edges through
   `adoptRenderedPage` rather than being thresholded to one bit.
+
+<a id="the-workstation-card-identified-not-built"></a>
 
 ### The Workstation Card: identified, not built
 

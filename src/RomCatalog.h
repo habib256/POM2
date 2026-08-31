@@ -123,6 +123,16 @@ inline const std::vector<RomCatalogEntry>& romCatalog()
           { "roms/mouse_341-0269.bin" }, 2048, 0, "",
           "The MAME-faithful mouse card refuses to plug; the AppleWin HLE "
           "variant, which only needs the slot EPROM, still works." },
+        { "Reference dumps (oracle only)",
+          "Apple II Workstation Card firmware (341-0358-A, 64 KB)",
+          { "roms/341-0358-A.bin", "roms/341-0358-a.bin" }, 65536, 0x63819DCBu,
+          "sha1 59c8e8c88bac5c31ada1306b412edfcf5912a720",
+          "Nothing — no card reads it yet. Catalogued because the dump is "
+          "the analysed one (docs/printer_plan_2.md \u00a7 5.1): the Apple II "
+          "side of the firmware is at file offsets 0xC400 ($Cn00 page) and "
+          "0xC800-0xCFFF (expansion ROM), and the card's own 65C02 image is "
+          "the upper 32 KB." },
+
         { "Other cards", "ThunderClock+ slot ROM (Thunderware)",
           { "roms/thunderclock_u9_v1.3.bin", "roms/thunderclock_u9.bin",
             "roms/thunderclock.rom" }, 0, 0, "",

@@ -155,8 +155,44 @@ public:
     /// by the Klaus Dormann functional test, which expects the whole
     /// address space to behave as RAM. Must NOT be enabled in normal
     /// emulation; no safety checks remain.
-    void setTestMode(bool enabled) { testMode = enabled; refreshReadFastFlags(); }
+    void setTestMode(bool enabled) { testMode = enabled; refreshBusFlags(); }
     bool isTestMode() const        { return testMode; }
+
+    // ── Foreign bus (a coprocessor card's private address space) ─────────
+    // POM2 has exactly one 6502 core, and `M6502` reaches memory through
+    // this class. An intelligent card — the Apple II Workstation Card is the
+    // first — runs the same core over a completely different map: its own
+    // RAM, its own I/O selects, its own banked ROM, none of it Apple II.
+    //
+    // The rule this obeys is PERFORMANCE § 8.2/8.5: a branch added to the
+    // bus path costs +13-16 %, and merely TESTING a flag there costs +7.2 %.
+    // So nothing is added. `flatBus_` replaces the `testMode` test that both
+    // slow paths and `memWrite`'s fast path already made — one byte load for
+    // another — and `foreignBus_` is folded into the three derived read
+    // gates the same way `readDivert_` is, so `memRead` is untouched. A
+    // Memory with a foreign bus takes the slow path for everything, which is
+    // free: nothing else in POM2 shares that instance.
+    struct ForeignBus {
+        virtual ~ForeignBus() = default;
+        virtual uint8_t read(uint16_t addr) = 0;
+        virtual void    write(uint16_t addr, uint8_t value) = 0;
+    };
+
+    /// Route every access on this Memory to `bus` instead of the Apple II
+    /// map. Pass nullptr to detach. Mutually exclusive with test mode: both
+    /// claim the same bypass, and a card that wanted flat RAM would not need
+    /// a bus in the first place.
+    void setForeignBus(ForeignBus* bus) {
+        assert(!(bus && testMode) && "foreign bus and test mode are exclusive");
+        foreignBus_ = bus;
+        refreshBusFlags();
+        // A card's CPU has no beam. Park the video event threshold at the end
+        // of time so advanceCycles() never runs Apple II scanline bookkeeping
+        // — which it would otherwise do on every emulated instruction of a
+        // machine that has no display.
+        if (bus) vblNextEventCycle_ = ~uint64_t{0};
+    }
+    ForeignBus* foreignBus() const { return foreignBus_; }
 
     /// Test/debug accessor for the current floating-bus byte (the value an
     /// undriven soft-switch read returns) at EXACTLY `cycleCounter` — no
@@ -279,7 +315,7 @@ public:
     // the env flag here.
     void memWrite(uint16_t addr, uint8_t value)
     {
-        if (addr < 0xC000 && !testMode && writable[addr]
+        if (addr < 0xC000 && !flatBus_ && writable[addr]
             && static_cast<uint16_t>(addr - 0x0400u) > 0x27u) {
             if (!iieMode) { mem[addr] = value; return; }
             if (!bankTrace_) {
@@ -735,10 +771,24 @@ private:
     bool                 plainRead_   = true;
     bool                 iieFastRead_ = false;
     bool                 romFastRead_ = true;
+    // A card's private address space, or null for the Apple II map. It is
+    // folded into the three gates below exactly the way `readDivert_` is, so
+    // a foreign bus closes them all and every read falls through to
+    // memReadSlow without memRead testing anything new.
+    ForeignBus*          foreignBus_ = nullptr;
+    // The test BOTH slow paths and memWrite's fast path already made, widened
+    // from `testMode` to "testMode or a foreign bus" — the two cases where
+    // none of the Apple II decode applies. Same one test, not one more.
+    bool                 flatBus_     = false;
     void refreshReadFastFlags() {
-        plainRead_   = (!iieMode || testMode) && !readDivert_;
-        iieFastRead_ = iieMode && !testMode && !bankTrace_ && !readDivert_;
-        romFastRead_ = !iicProfile_ && !readDivert_;
+        plainRead_   = (!iieMode || testMode) && !readDivert_ && !foreignBus_;
+        iieFastRead_ = iieMode && !testMode && !bankTrace_ && !readDivert_
+                       && !foreignBus_;
+        romFastRead_ = !iicProfile_ && !readDivert_ && !foreignBus_;
+    }
+    void refreshBusFlags() {
+        flatBus_ = testMode || foreignBus_ != nullptr;
+        refreshReadFastFlags();
     }
     // Apple II/II+ 16 KB Language Card. $D000-$DFFF has two 4 KB banks;
     // $E000-$FFFF is one shared 8 KB bank. Together with base 48 KB RAM

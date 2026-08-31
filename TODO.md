@@ -527,65 +527,93 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Cards] slot cards & peripherals
 
-- 🟠 **Apple II Workstation Card — the ROM is identified, the 8530 is not
-  written.** *(~4-6 d; the SCC is most of it)*
+- 🟡 **Apple II Workstation Card — the card boots; the host handshake does
+  not.** *(~2-4 d to finish)*
   <a id="apple-ii-workstation-card"></a>The card that put a IIe on LocalTalk,
   so it could netboot from an AppleShare server and reach the LaserWriters on
-  the same net. Full analysis in
-  [`docs/printer_plan_2.md` § 5](docs/printer_plan_2.md#5-the-apple-ii-workstation-card--not-implemented);
-  this is the working checklist.
+  the same net. Emulated as `WorkstationCard` (catalog `workstation`), pinned
+  by `workstation_card_smoke`.
+  → [DEV](DEV.md#apple-ii-workstation-card-workstationcard),
+  [plan 2 § 5](docs/printer_plan_2.md#5-the-apple-ii-workstation-card--it-boots)
 
-  **State: one of two blockers lifted.**
+  **What works.** Apple's real 341-0358-A firmware runs on the card's own
+  65C02 — over `Memory::ForeignBus`, so the Apple II's hot path pays nothing
+  (measured: PERFORMANCE § 9) — completes the power-on self-test including the
+  255-byte SCC loopback, configures the chip for **LocalTalk, SDLC,
+  230400 bit/s**, and then **acquires a node address and transmits real LLAP
+  frames** (`0B 0B 81` lapENQ, then `FF 0B 84` and short DDP broadcasts). The
+  `$Cn00` window, the `$C800-$CFFF` expansion ROM, the `$7C00` ROM banking,
+  the interval timer and the snapshot (chip included) all work with the card
+  in a real `SlotBus` — and **CardCat, booted on the emulated //e, names the
+  card in slot 4**.
 
-  1. ✅ **The firmware dump exists and is identified.** 64 KiB, sha1
-     `59c8e8c88bac5c31ada1306b412edfcf5912a720`, crc32 `0x63819dcb`, md5
-     `5e3aa2e0e5d70d762f1d92f11a4347ac`, supplied as `3410358A.bin` (Apple part
-     341-0358-A). **It is NOT in the tree** — copying it in was refused by the
-     sandbox on the machine that analysed it, so it still has to be dropped
-     into `roms/341-0358-a.bin` by hand. Verify with the sha1 above before
-     trusting it.
-  2. ❌ **The Zilog 8530 SCC is not written.** This is the substantial piece
-     and the whole remaining blocker. POM2's convention wants a MAME port
-     citing file + line range (`machine/z80scc.cpp`) and pinned by a smoke
-     test, so **step one is getting the MAME source to hand** — a datasheet
-     reconstruction from memory would be a documented deviation from the
-     convention, not a shortcut. The same chip is the Mac and IIgs serial
-     port, so the work is reusable well beyond this card.
+  **What remains, in order:**
 
-  **What the dump proves, so nobody re-derives it.** Identified from CONTENTS,
-  not from a part-number lookup:
-  - `STA $C080,X` / `STA $C08F,X` — slot-card firmware. `$C080,X` with
-    X = slot×16 is *the* Apple II device-select idiom, and those sixteen
-    registers are where the 8530 sits.
-  - `THOMAS EAGER WROTE THE LAP DRIVERS` at `0x0DB7F` — LAP = LocalTalk Link
-    Access Protocol. **The link layer is in this ROM**, which is why the
-    emulation seam is the chip and not the protocol: the layers above LAP are
-    software the guest loads from disk.
-  - `Apple //e Boot` at `0x0D5A8` — the netboot path.
-  - `%%IncludeProcSet IWEm 1 1` at `0x04A1D` — a LaserWriter print path.
-    `IWEm` is the ImageWriter Emulator procset: the card sends PostScript
-    asking the LaserWriter to render an ImageWriter-shaped page. This is the
-    direct tie to the printer work.
-  - 8 × 8 KiB banks, all distinct — 64 KiB live, no mirroring.
+  1. ❌ **The `$C0nX` handshake between the two CPUs.** This is what stops a
+     guest AppleTalk stack from completing a transaction: it finds the card
+     and then waits. **Static and dynamic analysis have been taken about as
+     far as they go**; what they produced, so nobody repeats it:
 
-  **What the dump does NOT settle, and it matters.** There is **no Pascal 1.1
-  signature and no ProDOS block dispatch trio at any 256-byte alignment**, so
-  the `$Cn00` page is not a plain slice of the image. **The banking scheme has
-  to be worked out before anything else** — identifying a dump is not knowing
-  how the card maps it. Start there: find which of the sixteen `$C08x,X`
-  writes select a bank, and what window they page into.
+     - The published `$Cn00` page layout: entry points from `$Cn14` (each
+       `LDY #cmd` + branch to the common body at `$Cn36`), the acquired
+       LocalTalk node at `$CnF0`, and **`ATLK` at `$CnF9-$CnFC`** — the
+       signature guest software finds the card by. Pinned by
+       `workstation_card_smoke`, and confirmed from outside by CardCat.
+     - The strobe sites: `$71` to `$C080,X`/`$C081,X` from the page, `$50` to
+       `$C080,X` from the expansion ROM, and `$CnB8: STA $C080,X` with X from
+       `$CnEB` and the byte from `$CnEA` — both host-written shared-page
+       slots.
+     - The card has **no IRQ path** for the strobe (`$EE07` counts anything
+       that is neither SCC nor timer as spurious) but **does have an NMI
+       path**, and arms it: `$ED57` tests bit 7 of `$3A` and dispatches
+       through `($01FE)`, and the card sets that bit at `$DBD6` ~5 s in. The
+       vector is still `$ED5E` (an RTS) at that point, so **/NMI is the
+       leading hypothesis, not a fact** — POM2 does not wire it, because
+       guessing here would be worse than answering `$FF`.
+     - Negative result: writing `$02E7`/`$02EB` alone does **not** make the
+       card rebuild its page. It does read `$02F1` (`CMP #$12` at `$C1BF`)
+       and consumes `$02EB` when it builds the OTHER page image, the low-half
+       one at `$81B8`.
 
-  **Order of work.** (a) place the ROM and add a `RomCatalog` entry; (b) map
-  the banking from the dump; (c) 8530 SCC as its own `Scc8530Device.h/.cpp`
-  with a MAME citation and a smoke test; (d) `WorkstationCard` wiring ROM +
-  SCC onto the slot; (e) a host-side LocalTalk endpoint. The LAP driver in the
-  ROM then drives itself.
+     **The way in is a guest AppleTalk disk** — an AppleShare workstation
+     disk, or anything with the `.ATP`/ATALK driver — driven exactly the way
+     `workstation_card_cardcat` drives CardCat: boot it, log
+     `hostStrobeLog()` and the shared page, and read the answer off the
+     firmware instead of guessing. **There is no such disk in the repo**;
+     adding one is the unblock. *~1 d once there is one.*
+  2. ❌ **Why lapACK does not move the node.** Answering the card's lapENQ
+     with lapACK is accepted by the chip — the FIFO fills, the interrupt fires
+     — and the driver enquires again anyway rather than picking another
+     address. Timing window, a status bit that is not set, or simply what this
+     firmware does on a dead network. Worth an hour before (3). *~0.5 d.*
+  3. ❌ **A host-side LocalTalk endpoint** — bridge the card's frames to a
+     real or emulated AppleTalk network. `setFrameCallback` and
+     `receiveFrame` are the seam and both work; note the card **disables its
+     receiver while transmitting**, so an endpoint must wait for WR3 D0 to
+     come back before answering. *~1-2 d.*
 
-  **Worth knowing before starting:** given the LaserWriter's PostScript path
-  already ships (plan 2 § 4), this card buys an *alternative transport* for
-  PostScript that the Super Serial Card already carries — not a new capability.
-  It is worth doing for netboot and AppleShare, and for being the way most
-  sites actually wired a LaserWriter; it is not the only way to print to one.
+  ~~**SDLC framing.**~~ **Done** — datasheet-derived (MAME has no SDLC),
+  marked `SDLC (datasheet, not MAME)` at every site, pinned by
+  `scc8530_smoke`. ~~**The SCC's register file is not in the snapshot.**~~
+  **Done** — `Scc8530Device::appendSnapshot`/`restoreSnapshot`, carried by the
+  card's own blob.
+
+  **Smaller gaps, worth knowing.** The interval timer's period is a **chosen**
+  1 ms, not a derived one: the dump does not settle it and the firmware boots
+  with it. And the card runs a second 6502 at the Apple II's own rate, so
+  plugging it roughly doubles the emulation work.
+
+  **Do not "optimise" `advanceCycles`.** Its 24-cycle interleave is
+  correctness, not tuning: the POST's self-test has a fixed poll budget, and
+  running the CPU for a whole 4096-cycle slot-bus chunk before the SCC moves
+  fails it on a timeout no real card would see.
+
+  **Worth knowing before finishing it:** given the LaserWriter's PostScript
+  path already ships (plan 2 § 4), this card buys an *alternative transport*
+  for PostScript that the Super Serial Card already carries — not a new
+  capability. It is worth doing for netboot and AppleShare, and for being the
+  way most sites actually wired a LaserWriter; it is not the only way to print
+  to one.
 
 - 🟢 **ProDOS `STATUS` — the hand-written ROM family** *(closed 2026-08-28)* —
   <a id="prodos-status-the-hand-assembled-rom-family"></a>kept as a record, not

@@ -8,7 +8,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - `docs/test_corpus.md` — edge-case integration corpus; **[DIX](https://github.com/Fr3nchT0uch/DIX/)** (French Touch anthology) is the priority gold-standard benchmark.
 - `docs/lle_vs_hle.md` — abstraction level per subsystem (silicon vs contract), the HLE seams, and the rule POM2 follows when picking a level.
 - `docs/printer_plan.md` — dot-matrix printer gap analysis vs `web-a2e` + phased plan (character ROMs, screen dump, more heads).
-- `docs/printer_plan_2.md` — round two: the Epson generations, the C. Itoh cousins, and the LaserWriter (Diablo 630, then PostScript by delegation). Also states what the Apple II Workstation Card is blocked on.
+- `docs/printer_plan_2.md` — round two: the Epson generations, the C. Itoh cousins, and the LaserWriter (Diablo 630, then PostScript by delegation). § 5 is the Apple II Workstation Card: the dump's memory map, and what the card still needs.
 - `tools/coverage.sh` — line coverage over the code the tests link, with a
   floor that may rise and may not fall (`tools/coverage_floor.txt`). Run it
   before claiming something is untested: the 2026-08-28 plan named three such
@@ -40,6 +40,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
   diagnose. Spawn through `pom2::guardedThread(tag, fn)` or wrap the body in
   `pom2::runGuarded` (`ThreadGuard.h`). Pinned by `thread_guard`, which forks a
   child so the regression fails a test instead of killing the runner.
+- **A card CPU gets a `Memory::ForeignBus`, never a branch in `M6502`** — POM2 has one 6502 core and it reaches memory through `Memory`. A coprocessor card (`WorkstationCard`) runs that core over its own map by putting a private `Memory` in foreign-bus mode. The rule this obeys is `docs/PERFORMANCE.md` §§ 8.2/8.5: a branch on the bus path costs 13-16 %, testing a flag there 7.2 %. So nothing was added — `flatBus_` *replaces* the `testMode` test both slow paths already made, and `foreignBus_` folds into the derived read gates the way `readDivert_` does. Measured at no cost, hashes identical (§ 9). → [DEV § Foreign bus](DEV.md#foreign-bus-memoryforeignbus)
 - **Reach the emulated state through the lock** — `controller->lockState()` returns a `pom2::StateAccess` RAII handle that hands back `Memory` and the CPU, so `st.memory()` cannot be written without having taken `stateMutex`. Bare `stateMutex()` is reserved for mutual exclusion that touches neither (serialising a card pointer against a profile switch, say). It is **non-recursive** — a helper called from both locked and unlocked callers takes a `const pom2::StateAccess&` and lets the caller prove ownership (`MainWindow::plugSlotsFromSettings`). Only three things may reach `memory()`/`cpu()` unlocked: code running before the CPU worker starts, the keyboard latch / paste queue (own `Memory::kbMutex`) and atomics, and UI-thread-confined SlotBus *topology* reads.
 - **Docs in English** — English is the reference language for all Markdown docs (README, CLAUDE, DEV, TODO, CHANGELOG, `docs/`). Write new docs and edits in English; the historical snapshots under `docs/archive/` are unmaintained and may still be French.
 
@@ -107,6 +108,8 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | SmartPort 3.5" //c+ on-board (`.po`/`.2mg`/`.woz`) | `Disk35Image.*`, `Sony35Drive.*`, `Sony35Gcr.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
 | Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
+| Zilog Z8530 SCC (Mac / IIgs / Workstation Card serial chip) | `Scc8530Device.h/.cpp` | [§ Z8530 SCC](DEV.md#zilog-z8530-scc-scc8530device) |
+| Apple II Workstation Card (LocalTalk coprocessor: own 65C02 + RAM + SCC) — catalog `workstation` | `WorkstationCard.h/.cpp` | [§ Workstation Card](DEV.md#apple-ii-workstation-card-workstationcard) |
 | Uthernet I (CS8900A NIC) | `UthernetCard.*`, `Cs8900aDevice.*` | [§ Uthernet I](DEV.md#uthernet-i-cs8900a) |
 | Uthernet II (W5100 hardware TCP/IP) | `UthernetIICard.*`, `W5100Device.*` | [§ Uthernet II](DEV.md#uthernet-ii-w5100) |
 | Ethernet host transport (libslirp, optional — Linux/macOS) | `NetworkBackend.h`, `SlirpNetworkBackend.*` | [§ Network backends](DEV.md#network-backends) |

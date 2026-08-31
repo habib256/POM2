@@ -6,9 +6,10 @@ FX-80. That plan closed with four printers emulated. This one asks the
 question the Grappler+ was already asking: **the card in slot 1 models a
 seven-position printer-type DIP switch, so what are the other positions?**
 
-**Status: four of five items shipped.** The Apple II Workstation Card is
-specified here and NOT implemented — see [§ 5](#5-the-apple-ii-workstation-card--not-implemented),
-which says exactly what it is blocked on.
+**Status: all five items shipped**, with the Workstation Card at "boots and
+configures LocalTalk" rather than "carries traffic" — see
+[§ 5](#5-the-apple-ii-workstation-card--it-boots) for exactly what that means
+and what is left.
 
 ## Table of contents
 
@@ -16,7 +17,7 @@ which says exactly what it is blocked on.
 - [2. Epson generations and C. Itoh cousins ✅](#2-epson-generations-and-c-itoh-cousins-)
 - [3. The LaserWriter, palier 1 — Diablo 630 ✅](#3-the-laserwriter-palier-1--diablo-630-)
 - [4. The LaserWriter, palier 2 — PostScript by delegation ✅](#4-the-laserwriter-palier-2--postscript-by-delegation-)
-- [5. The Apple II Workstation Card — NOT implemented](#5-the-apple-ii-workstation-card--not-implemented)
+- [5. The Apple II Workstation Card — it boots](#5-the-apple-ii-workstation-card--it-boots) · [5.1 the dump](#51-the-341-0358-a-dump) · [5.2 the memory map](#52-the-memory-map-the-dump-implies) · [5.3 what is left](#53-what-is-left-in-order)
 - [6. Still proposed: the HP LaserJet](#6-still-proposed-the-hp-laserjet)
 - [7. What changed against the plan](#7-what-changed-against-the-plan)
 
@@ -179,10 +180,14 @@ start the next job rather than being lost.
 (`indexToRgb`) and merely had no source of greys before, so anti-aliased
 PostScript text keeps its edges instead of being thresholded to one bit.
 
-## 5. The Apple II Workstation Card — NOT implemented
+## 5. The Apple II Workstation Card — it boots
 
-This is the honest part of the plan. The card is specified here; it is not
-built, and the reason is not scope.
+The card is built: its 65C02 runs Apple's own firmware, passes the power-on
+self-test and configures the 8530 for LocalTalk. What is left is the handshake
+between the two CPUs and SDLC framing — § 5.3. This section keeps its history
+because the blocker moved three times (a missing dump, then missing MAME
+source, then the discovery that the board is a coprocessor), and each move
+changed what "support for this card" meant.
 
 **What it is.** The Apple II Workstation Card put a IIe on LocalTalk so it could
 reach an AppleShare server and the LaserWriters hanging off the same net —
@@ -201,10 +206,9 @@ ROM carrying the card's half of the AppleTalk stack.
    guest software reaches the card through the 8530's registers and through
    Apple's own ROM entry points, so a synthesised interface would be one no
    actual Apple II software knows how to call.
-2. **An 8530 SCC device.** A MAME port, per the project's convention of citing
-   the MAME file and line range and pinning with a smoke test. Substantial but
-   bounded, and independently useful — the Mac and IIgs serial ports are the
-   same chip.
+2. ~~**An 8530 SCC device.**~~ **Shipped** as `Scc8530Device`, a MAME port of
+   `z80scc.{h,cpp}` pinned by `scc8530_smoke`. Independently useful, as
+   predicted — the Mac and IIgs serial ports are the same chip.
 3. **The protocol stack above it**, to whatever depth the goal needs. For
    reaching a LaserWriter that is LLAP → DDP → ATP → **PAP** (Printer Access
    Protocol); for AppleShare it is also NBP and ASP. Note that on real hardware
@@ -220,6 +224,9 @@ would make it work the way most sites actually wired it.
 (1), and let the guest's own AppleTalk software drive it — matching what
 `docs/lle_vs_hle.md` says about picking a level. An HLE at the protocol layer
 is the tempting shortcut and is the wrong one here, for the reason in (1).
+§ 5.2 shows why the seam is even lower than that paragraph assumed: the card
+is a coprocessor, so "let the guest's software drive it" is really "let the
+*card's* firmware drive it, and let the guest talk to the card".
 
 ### 5.1 The 341-0358-A dump
 
@@ -235,20 +242,166 @@ so a future reader can re-check it rather than trust it:
 | `Apple //e Boot` | `0x0D5A8` | The netboot path — a //e booting from an AppleShare server, which is what this card was for. |
 | `%%IncludeProcSet IWEm 1 1` | `0x04A1D` | A LaserWriter print path. `IWEm` is the **ImageWriter Emulator** procset: the card sends PostScript that asks the LaserWriter to render an ImageWriter-shaped page. |
 | 8 × 8 KiB banks, all distinct | — | 64 KiB of real content, banked — no mirroring, so the whole dump is live. |
-| No Pascal 1.1 signature, no ProDOS block trio, at any 256-byte alignment | — | The `$Cn00` page is not a plain slice of this image; the banking scheme has still to be worked out. |
+| No Pascal 1.1 signature, no ProDOS block trio, at any 256-byte alignment | — | Correct, and it means less than it looked like — see § 5.2. An AppleTalk card is neither a Pascal device nor a ProDOS block device, so the absence is what a *correct* `$Cn00` page for this card looks like. |
 
-That last row is the honest one: identifying the dump is not the same as
-knowing how the card maps it, and the mapping is the first thing an
-implementation has to establish.
+The "8 × 8 KiB banks, all distinct" row is the one to distrust: bank 3 (file
+`0x6000-0x7FFF`) is `$FF` fill apart from six bytes of vector table. § 5.2
+replaces that partitioning with the map the code actually implies.
 
-**What remains after the ROM.** Item (2), the 8530 SCC, is untouched and is the
-substantial piece. POM2's convention is that a hardware port cites its MAME
-file and line range and is pinned by a smoke test; that convention wants the
-MAME source at hand rather than a datasheet reconstruction from memory, and
-getting it is the next concrete step. Item (3) then largely takes care of
-itself for the LocalTalk case — the LAP driver is in this ROM, and the layers
-above it are software the guest loads, so the emulation seam really is the
-chip.
+**What remains after the ROM.** Item (2), the 8530 SCC, **is now written** —
+`src/Scc8530Device.{h,cpp}`, a MAME port pinned by `scc8530_smoke`
+(→ [DEV § Z8530 SCC](../DEV.md#zilog-z8530-scc-scc8530device)). Item (3) does
+*not* take care of itself the way this section used to claim: MAME does not
+model SDLC either, so the framing LocalTalk runs on has no oracle. That is
+now the honest remaining gap, and § 5.3 says what is left in order.
+
+### 5.2 The memory map the dump implies
+
+Read out of the dump with a 65C02 disassembler, and stated with the evidence
+so it can be re-checked rather than trusted.
+
+**This is an intelligent card: it has its own 65C02.** The image is 65C02
+code (`STZ`, `BRA`, `TSB`, `TRB` throughout) with its own vector table, its
+own RAM and its own I/O — not a slot ROM the Apple II executes. That single
+fact reorganises everything below it, and it is why the card was never going
+to be a `SlotPeripheral` with a ROM in it.
+
+| Card-CPU address | What | Evidence |
+|---|---|---|
+| `$0000-$6FFF` | RAM | The reset routine sizes it by writing `$40 $41 $42 $43` to `$0000/$2000/$4000/$6000` and reading them back — the classic aliasing probe for an 8/16/32 KB fit. |
+| `$7000-$7FFF` | I/O, decoded in 256-byte selects | Every absolute reference in the whole dump that falls in this page lands on `$7x00`: `$7000`, `$7500-$7503`, `$7800`, `$7900`, `$7A00`, `$7B00`, `$7C00`. |
+| `$7500-$7503` | **Zilog 8530 SCC**, wired A1 = A//B, A0 = D//C | `LDA #$03 / STA $7502 / NOP / NOP / LDA $7502` at `$EE13` is a poll of RR3, which exists in channel A only; `$10` then `$30` to `$7500` are the WR0 Reset External/Status and Error Reset commands. Nothing else in an 8-bit design looks like that. |
+| `$7A00` | a **five-bit** latch | The POST writes `$FF` into it with a `DEC $7A00` and then compares against `#$1F` (`$F131-$F139`). The other selects read back all eight bits. |
+| `$7000` | status / progress code | Written with `$03`, `$0B`, `$0F`, `$07`, `$04` at each phase boundary, and `$04` immediately before the halt loop. |
+| `$8000-$FFFF` | ROM, 32 KB window | Two 32 KB images share it. The firmware never writes above `$8000` — checked over 2.5 M instructions. |
+
+**The banking is one bit, not three.** File `0x8000-0xFFFF` is a single
+coherent image at `$8000-$FFFF`: its `JSR`/`JMP` targets stay inside that
+window (142/235 in the top 8 KB alone, and the strays go to the other three
+quarters of the same window), its vector table at `0xFFFA` gives
+NMI `$ED53` / RESET `$C000` / IRQ `$EE0F`, and all three land on code that
+disassembles cleanly — the IRQ handler at `$EE13` is the SCC poll above, and
+RESET `$C000` is the RAM-sizing probe. File `0x0000-0x7FFF` is a *second*
+32 KB image for the same window, self-consistent the same way, empty above
+`$E000`. Both are live: the LocalTalk strings (`THOMAS EAGER WROTE THE LAP
+DRIVERS`, `Apple //e Boot`) are in the upper image, the LaserWriter one
+(`%%IncludeProcSet IWEm 1 1`) is in the lower. Which of the `$7x00` latches
+selects the half is **not yet established**; `$7000` and `$7C00` are the
+candidates, since the reset routine rewrites both between two attempts at the
+RAM probe.
+
+**The Apple II side of the firmware is in the image, at a fixed offset.**
+This is the part the earlier note got backwards. File `0xC400-0xC4FF` is a
+textbook slot `$Cn00` page and `0xC800-0xCFFF` its `$C800` expansion ROM:
+
+```
+C400: A0 04     LDY #$04        ; entry 1
+C404: A0 02     LDY #$02        ; entry 2
+C408: 48 98 48 A9 00 2A A8 68   ; entry 3, Y from carry
+...
+C41B: A9 60     LDA #$60        ; the "which slot am I in?" trick:
+C41D: 85 FB     STA $FB         ;   put an RTS at $00FB,
+C41F: 20 FB 00  JSR $00FB       ;   call it, and read the return
+C422: BA        TSX             ;   address off the stack
+C423: BD 00 01  LDA $0100,X     ; A = $Cn
+C426: 2C 18 C0  BIT $C018       ; RD80STORE
+C42A: 8D 00 C0  STA $C000       ; 80STORE off
+C42D: 2C 14 C0  BIT $C014       ; RDRAMWRT
+C431: 8D 04 C0  STA $C004       ; RAMWRT main
+C434: 8D F8 07  STA $07F8       ; claim $C800 for slot n
+C443: AE FF CF  LDX $CFFF       ; release everyone else's expansion ROM
+C44C: 0A 0A 0A 0A / AA          ; X = slot × 16
+C451: A9 71     LDA #$71
+C453: 9D 80 C0  STA $C080,X     ; the host↔card mailbox
+C466: 4C 00 CC  JMP $CC00       ; into the expansion ROM
+```
+
+Every idiom in that block is Apple II host code, and none of it means
+anything in the card CPU's own address space (`$C004` is ROM there). So the
+card serves these bytes onto the Apple II bus while its own CPU treats them
+as data. The offsets are the image's own: the page was assembled at `$C400`
+and the hardware ignores the slot bits, which is why it works in any slot —
+the `$Cn` in the code is discovered at run time, never assumed.
+
+That also disposes of the "no Pascal 1.1 signature" worry. There is no
+signature because there should not be one: this is neither a Pascal character
+device nor a ProDOS block device. Software finds it as an AppleTalk card —
+note the `ATLK` string at `0xC518` — not by scanning `$Cn05`/`$Cn07`.
+
+**What the host actually pokes.** The sixteen `$C08x,X` registers are the
+mailbox between the two CPUs: the `$Cn00` page writes `$71` to `$C080,X` and
+`$C081,X`, the expansion ROM writes `$50` to `$C080,X` and hits `$C08F,X`.
+The *semantics* of those bytes are not established, and cannot be by reading
+the host side alone — they are answered by firmware running on the card.
+
+**The firmware runs, and it validates the SCC.** The map above is not a
+reading — it was executed. Driving the upper 32 KB with POM2's `M6502` over a
+flat test bus, with `Scc8530Device` at `$7500` and the other selects modelled
+as latches, the firmware completes its **power-on self-test** and goes on to
+program the chip. Two things fall out of that, and neither could be got from
+reading:
+
+* **The clocks are derived, not guessed.** The POST's SCC test is a 255-byte
+  loopback ping-pong on *both* channels inside a fixed 8000-poll budget
+  (`$F000-$F09E`: `$0105`/`$0106` count down, `$0107`/`$0109` are the send
+  cursors, `$0108`/`$010A` the expected-receive cursors). The budget puts a
+  **ceiling** on how fast the card CPU may be relative to the SCC: against a
+  3.6864 MHz chip clock it passes at every rate tried up to 2.0 MHz and fails
+  from 2.05 MHz up, because a faster CPU burns the 8000 polls before the 255th
+  byte arrives. That bounds the ratio from one side only — it says the card
+  CPU is at most ~2 MHz, not that it is 1 MHz. Independently, the firmware's
+  final configuration is WR12/WR13 = 6 with WR4 selecting the x1 clock, and
+  `3686400 / (6 + 2) / 2` is exactly **230400** — the LocalTalk bit rate. So
+  **/RTxC and PCLK are a 3.6864 MHz crystal**, and that one is pinned from
+  both sides.
+* **Where it ends up.** WR4 = `$20` (SDLC, x1 clock), WR3 = `$DD` (receiver
+  enabled, 8 bits, address search, hunt), WR11 = `$F2` (receive clock from the
+  DPLL, transmit from the BRG), WR14 = `$41` (BRG enabled from /RTxC), 230400
+  bit/s. That is a LocalTalk node, configured by Apple's own driver, against
+  POM2's chip.
+
+This is pinned as `scc8530_workstation_firmware`
+(`tests/scc8530_workstation_firmware_test.cpp`), ROM-gated so it skips
+cleanly. Read the header comment there before changing it: the harness is
+deliberately **not** a card emulation — it borrows `Memory` in flat test mode
+and shims the I/O page by decoding effective addresses around each step,
+precisely so this evidence did not have to wait for step 2 below.
+
+### 5.3 What is left, in order
+
+1. ~~An 8530 SCC device.~~ **Done** — `Scc8530Device`, MAME-cited, pinned
+   twice: against the datasheet and against this card's own firmware.
+2. ~~Give `M6502` a bus that is not `Memory`.~~ **Done**, and it cost the
+   Apple II nothing. `Memory::ForeignBus` folds into tests the bus paths were
+   already making rather than adding any — `docs/PERFORMANCE.md` § 9 has the
+   shape and the numbers, and § 8's measurements are why the two obvious
+   designs were never attempted.
+3. ~~Build the card.~~ **Done** — `WorkstationCard`, catalog `workstation`,
+   pinned by `workstation_card_smoke`. The firmware boots on the card's own
+   65C02, passes its POST and configures LocalTalk at 230400 bit/s with the
+   card in a real slot.
+4. ❌ **Map the host handshake** (`$C0nX`). The way in is a guest AppleTalk
+   disk driven the way `workstation_card_cardcat` drives CardCat — static
+   reading has been taken about as far as it goes.
+   Original notes: This is what remains between the
+   card and a working AppleTalk guest: the driver writes `$71` to `$C080,X`
+   and `$C081,X` and `$50` from the expansion ROM, and the card firmware has
+   **no interrupt path** for any of it (`$EE07` counts anything that is
+   neither SCC nor timer as spurious), so the handshake is presumably a poll
+   of the shared page. `WorkstationCard::hostStrobeLog()` records what a guest
+   does; that plus an AppleTalk disk is the way in.
+5. ~~SDLC framing.~~ **Done** — from the Zilog manual rather than MAME,
+   which does not model it; marked `SDLC (datasheet, not MAME)` at every site.
+   With it, the card's firmware acquires a LocalTalk node address and
+   transmits: `0B 0B 81` is lapENQ, and once it holds `$0B` it broadcasts
+   short DDP datagrams.
+6. ❌ **A host-side LocalTalk endpoint.** The seam exists and works
+   (`setFrameCallback` / `receiveFrame`); note the card disables its receiver
+   while transmitting, so an endpoint must wait for WR3 D0 before answering.
+
+Step 1 is independently useful whatever happens to the card — the same chip is
+the Mac and IIgs serial port — and it is the best-evidenced part of the whole
+peripheral stack, because Apple's own driver signs off on it.
 
 ## 6. Still proposed: the HP LaserJet
 
