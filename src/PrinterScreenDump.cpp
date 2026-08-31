@@ -148,7 +148,8 @@ void buildScreenDumpImageWriter(const uint32_t* pixels, int w, int h,
 
 void buildScreenDumpEpson(const uint32_t* pixels, int w, int h, int stride,
                           const ScreenDumpOptions& opt,
-                          std::vector<uint8_t>& out)
+                          std::vector<uint8_t>& out,
+                          EpsonDumpCmd cmd)
 {
     if (!pixels || w <= 0 || h <= 0) return;
     if (stride <= 0) stride = w;
@@ -161,8 +162,17 @@ void buildScreenDumpEpson(const uint32_t* pixels, int w, int h, int stride,
 
     for (int bandTop = 0; bandTop < h; bandTop += kBandRows) {
         out.push_back(kEsc);
-        out.push_back('*');
-        out.push_back(kMode72Dpi);
+        if (cmd == EpsonDumpCmd::K60) {
+            // The one graphics command every ESC/P head has had since 1980.
+            // 60 dpi rather than 72, so the picture comes out ~20 % wider —
+            // which is what an MX-80 actually did with a 72-dpi-minded
+            // driver, and better than the alternative of `ESC *` printing
+            // its own data bytes as a screenful of text.
+            out.push_back('K');
+        } else {
+            out.push_back('*');
+            out.push_back(kMode72Dpi);
+        }
         // TWO BINARY BYTES, low first — not four ASCII digits.
         out.push_back(static_cast<uint8_t>(w & 0xFF));
         out.push_back(static_cast<uint8_t>((w >> 8) & 0xFF));

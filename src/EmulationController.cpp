@@ -203,14 +203,68 @@ EmulationController::~EmulationController()
 
 // ─── Cassette transport ───────────────────────────────────────────────────
 
+namespace {
+
+/// Two-phase tape file I/O, for the reason in MediaMount.h: `stateMtx` is
+/// held by the CPU worker every 4096-cycle chunk and by the UI thread on
+/// every frame, and a tape load is not a small read — `.mp3/.ogg/.flac` go
+/// through `CassetteDevice::loadMiniaudioTape`, which decodes the WHOLE file
+/// (up to 30 emulated minutes) and runs pulse extraction over every frame.
+/// Holding the lock across that froze the machine and the window together,
+/// exactly like the 800K read `mount35` below moved out of the lock.
+///
+/// The deck cannot be staged the way a disk image is — it is one live object
+/// wired to the bus, not a payload that can be decoded detached and then
+/// swapped in — so the phases invert: unhook it from the bus (that is the
+/// only thing the CPU worker reaches it through, and every use site in
+/// Memory is null-guarded), let the file work run with the lock released,
+/// then hook it back. The machine keeps executing throughout, blind to the
+/// cassette port for the duration of the load, and the UI thread can still
+/// take the lock to paint.
+///
+/// The audio thread is untouched by this: it reaches the deck through
+/// `AudioDevice`, never through `stateMtx`, so it raced the loader exactly
+/// the same way before (CassetteDevice guards that side with `audioMutex` /
+/// `audioStreamMutex`).
+///
+/// RAII so an exception escaping the decoder cannot leave the deck off the
+/// bus.
+class TapeOffBus
+{
+public:
+    TapeOffBus(std::mutex& mtx, Memory& mem, CassetteDevice* dev)
+        : mtx_(mtx), mem_(mem), dev_(dev)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        mem_.setCassetteDevice(nullptr);
+    }
+    ~TapeOffBus()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        mem_.setCassetteDevice(dev_);
+    }
+    TapeOffBus(const TapeOffBus&)            = delete;
+    TapeOffBus& operator=(const TapeOffBus&) = delete;
+
+private:
+    std::mutex&     mtx_;
+    Memory&         mem_;
+    CassetteDevice* dev_;
+};
+
+} // namespace
+
 bool EmulationController::loadTape(const std::string& path)
 {
-    std::lock_guard<std::mutex> lk(stateMtx);
+    TapeOffBus offBus(stateMtx, mem, tape.get());
     return tape->loadTape(path);
 }
 bool EmulationController::saveTape(const std::string& path)
 {
-    std::lock_guard<std::mutex> lk(stateMtx);
+    // Same shape: the write serialises the recorded transition list, which
+    // the CPU worker appends to on every $C020 toggle — off the bus it
+    // cannot, so the snapshot the writer walks is stable without the lock.
+    TapeOffBus offBus(stateMtx, mem, tape.get());
     return tape->saveTape(path);
 }
 void EmulationController::playTape()         { std::lock_guard<std::mutex> lk(stateMtx); tape->playTape(); }

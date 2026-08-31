@@ -230,7 +230,10 @@ private:
     std::string                serialPath_;
     int                        serialBaud_ = SerialPort::kDefaultBaud;
 
-    std::unique_ptr<SpTransport> transport_;   ///< owned; swapped under stop()
+    /// Owned. Created by start() and destroyed by stop() — the destruction
+    /// under `callMtx_`, because transact() reaches it through a raw pointer
+    /// and only that mutex keeps the two apart (see stop()).
+    std::unique_ptr<SpTransport> transport_;
 
     std::thread                worker_;
     std::atomic<bool>          running_{false};

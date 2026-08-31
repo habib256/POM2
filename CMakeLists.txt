@@ -300,6 +300,7 @@ set(SOURCES
     src/SmartPortCard.cpp
     src/SerialPort.cpp
     src/ChildProcess.cpp
+    src/PostScriptRender.cpp
     src/PrinterScreenDump.cpp
     src/PrinterSoundDevice.cpp
     src/PrinterHistory.cpp
@@ -606,6 +607,7 @@ set(POM2_RUNTIME_SOURCES
     src/MachineSnapshot.cpp
     src/Pom2Core.cpp
     src/PrinterHistory.cpp
+    src/PostScriptRender.cpp
     src/PrinterScreenDump.cpp
     src/PrinterSoundDevice.cpp
     src/RewindBuffer.cpp
@@ -1171,6 +1173,7 @@ set(POM2_CORE_SOURCES
     src/SmartPortCard.cpp
     src/SerialPort.cpp
     src/ChildProcess.cpp
+    src/PostScriptRender.cpp
     src/PrinterScreenDump.cpp
     src/PrinterSoundDevice.cpp
     src/PrinterHistory.cpp

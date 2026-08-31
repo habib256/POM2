@@ -48,7 +48,11 @@ public:
 
     /// Apply a frame's requests. Everything that touches the card is done in
     /// ONE critical section after re-resolving it; the host-side halves (the
-    /// serial scan, the helper program, the status line) are done outside it.
+    /// serial scan, the helper program's path, the status line) are done
+    /// outside it. The single exception is STOPPING the helper process, whose
+    /// 2 s grace period would freeze the CPU worker and the paint thread with
+    /// it — that one runs between two critical sections, with the card
+    /// re-resolved for the second.
     void applyFujiNetPanel(EmulationController& controller,
                            const FujiNet_ImGui::Result& command);
 

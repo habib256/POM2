@@ -178,11 +178,13 @@ uint8_t IIcClassProfile::migRead(uint16_t migOffset, uint8_t floatBus)
     // Side-effects on read are part of the MIG contract — the firmware
     // walks the MIG RAM page cursor and flips 3.5" head select through
     // them.
+    // The composed index is masked (not just the page cursor) so migRam_
+    // can never be indexed past its end however migPage_ was set.
     if (migOffset >= 0x200 && migOffset < 0x220) {
-        return migRam_[migPage_ + (migOffset & 0x1F)];
+        return migRam_[(migPage_ + (migOffset & 0x1F)) & 0x7FF];
     }
     if (migOffset >= 0x220 && migOffset < 0x240) {
-        const uint8_t rv = migRam_[migPage_ + (migOffset & 0x1F)];
+        const uint8_t rv = migRam_[(migPage_ + (migOffset & 0x1F)) & 0x7FF];
         migPage_ = static_cast<uint16_t>((migPage_ + 0x20) & 0x7FF);
         return rv;
     }
@@ -221,11 +223,11 @@ void IIcClassProfile::migWrite(uint16_t migOffset, uint8_t value)
         return;
     }
     if (migOffset >= 0x200 && migOffset < 0x220) {
-        migRam_[migPage_ + (migOffset & 0x1F)] = value;
+        migRam_[(migPage_ + (migOffset & 0x1F)) & 0x7FF] = value;
         return;
     }
     if (migOffset >= 0x220 && migOffset < 0x240) {
-        migRam_[migPage_ + (migOffset & 0x1F)] = value;
+        migRam_[(migPage_ + (migOffset & 0x1F)) & 0x7FF] = value;
         migPage_ = static_cast<uint16_t>((migPage_ + 0x20) & 0x7FF);
         return;
     }
@@ -276,12 +278,16 @@ size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
     if (data == nullptr || n < kMigBlobBytes) return 0;
     if (std::memcmp(data, kMigBlobMagic, 4) != 0) return 0;
     // migRead/migWrite index `migRam_[migPage_ + (offset & 0x1F)]`, so a
-    // corrupt page pointer would read past the array. The live code keeps
-    // it in range with `& 0x7FF`; mask on the way in too rather than trust
-    // the blob.
+    // corrupt page pointer would read past the array. `& 0x7FF` alone is
+    // not enough: the index only stays inside a 0x800 array because the
+    // live cursor is *32-byte aligned* (starts at 0, only ever advances by
+    // 0x20), so the highest legal page is 0x7E0. Re-impose the alignment
+    // on the way in rather than trust the blob — a restored 0x7FF would
+    // otherwise index up to 0x81E, past migRam_ and over migPage_ /
+    // migIntDrive_ / migHdSel_ / iwm_ / hub_.
     migPage_ = static_cast<uint16_t>(
         (static_cast<uint16_t>(data[4]) |
-         static_cast<uint16_t>(data[5]) << 8) & 0x7FF);
+         static_cast<uint16_t>(data[5]) << 8) & 0x7E0);
     std::memcpy(migRam_.data(), data + 6, migRam_.size());
     if (n >= kMigBlobBytes + kMigBlobTail) {
         romBank_     = data[kMigBlobBytes]     != 0;

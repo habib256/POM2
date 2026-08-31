@@ -34,6 +34,7 @@
 #include "AppleKeyLatch.h"
 #include "MouseGrab.h"      // pom2::mousegrab::Context (mouseGrabContext)
 #include "Pom2Theme.h"      // pom2::UiAccent member (View ▸ Interface)
+#include "PostScriptRender.h" // pom2::PostScriptSpooler member (LaserWriter)
 #include "PrinterScreenDump.h" // pom2::ScreenDumpOptions member
 #include "PanelRegistry.h"  // pom2::PanelRegistry member (the panel table)
 
@@ -373,6 +374,16 @@ private:
     /// drains exactly one by physical priority and hands an owned byte
     /// batch out after unlocking. Owns no card pointer.
     std::unique_ptr<pom2::PrinterCoordinator> printerCoordinator_;
+    /// PostScript jobs for the LaserWriter head, rendered off the UI thread
+    /// by an external interpreter (PostScriptRender.h). Owned here because
+    /// the pump that feeds it lives here; it never touches `stateMutex`.
+    pom2::PostScriptSpooler postScriptSpooler_;
+    /// Wall-clock seconds since the last PostScript byte, so a driver that
+    /// ends its job by simply stopping still gets a page. There is no
+    /// end-of-file on a serial line — somebody has to decide, and a short
+    /// idle is the least surprising rule.
+    double postScriptIdle_ = 0.0;
+    static constexpr double kPostScriptIdleFlush = 1.5;
 
     /// Audio bus policy: owns the authoritative registration inventory used
     /// for teardown, and resolves every Mockingboard / Phasor / Echo variant
@@ -1258,6 +1269,8 @@ private:
     /// Stream new bytes from the plugged printer interface card into the
     /// host-side ImageWriter. Called once per frame from the render loop.
     void pumpImageWriter();
+    /// The LaserWriter's PostScript path: spool, render off-thread, adopt.
+    void pumpPostScript(const std::vector<uint8_t>& fresh);
     /// The SSC feeding the ImageWriter, if any: lowest-slot plugged SSC
     /// with its printer tap on (//c printer port = slot 1 by default).
     /// Parallel cards outrank it in pumpImageWriter().

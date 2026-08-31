@@ -410,6 +410,62 @@ SuperSerialCard* MainWindow::printerTapSsc() const
     return nullptr;
 }
 
+void MainWindow::pumpPostScript(const std::vector<uint8_t>& fresh)
+{
+    // Ask the interpreter for exactly the sheet the tray holds, so the page
+    // that comes back blits 1:1 with no scaling.
+    // Alongside the printouts, not in the system temp dir: the files are
+    // the user's own job, they are removed as soon as the render is done,
+    // and a scratch path inside POM2's own data dir is one the user can
+    // find if an interpreter ever leaves something behind.
+    postScriptSpooler_.setScratchDir(
+        (pom2::userDataDir() / "printouts" / "spool").string());
+    postScriptSpooler_.setPageGeometry(imageWriter->currentPage().dpi,
+                                       imageWriter->paperWidthIn(),
+                                       imageWriter->paperLengthIn());
+
+    if (!fresh.empty()) {
+        postScriptSpooler_.feed(fresh.data(), fresh.size());
+        postScriptIdle_ = 0.0;
+    } else if (postScriptSpooler_.pendingBytes() > 0 &&
+               !postScriptSpooler_.busy()) {
+        // A driver that ends its job by simply stopping. A serial line has no
+        // end-of-file to notice, so the idle IS the signal.
+        postScriptIdle_ += static_cast<double>(ImGui::GetIO().DeltaTime);
+        if (postScriptIdle_ >= kPostScriptIdleFlush) {
+            postScriptIdle_ = 0.0;
+            postScriptSpooler_.flushNow();
+        }
+    }
+
+    pom2::PsRenderResult page;
+    if (postScriptSpooler_.takeResult(page)) {
+        if (page.ok) {
+            imageWriter->adoptRenderedPage(page.gray.data(), page.w, page.h);
+            // `showpage` is what finished this sheet, so eject it — that is
+            // what puts it on the completed stack, into the PDF export and
+            // into the print history, exactly like a form feed does for the
+            // matrix heads.
+            imageWriter->formFeed();
+            if (page.extraPages > 0) {
+                tapeStatusMessage =
+                    "LaserWriter: printed page 1 of " +
+                    std::to_string(page.extraPages + 1) +
+                    " (multi-page jobs render their first page only)";
+                tapeStatusUntil = lastFrameTime + 6.0;
+            }
+        } else {
+            tapeStatusMessage = "LaserWriter: " + page.error;
+            tapeStatusUntil   = lastFrameTime + 8.0;
+            pom2::log().warn("LaserWriter", page.error);
+        }
+    }
+
+    // The mechanism still ticks: an ejected page has to reach the stack, and
+    // the panel's own animations answer to it.
+    imageWriter->tick(static_cast<double>(ImGui::GetIO().DeltaTime));
+}
+
 void MainWindow::pumpImageWriter()
 {
     // The printer is downstream of the interface card: every byte the card
@@ -440,6 +496,14 @@ void MainWindow::pumpImageWriter()
         // buffer must still reach paper even with nothing feeding it —
         // unplugging the card does not un-print the page.
         imageWriter->tick(static_cast<double>(ImGui::GetIO().DeltaTime));
+        return;
+    }
+
+    // The LaserWriter's PostScript mode forks the stream here rather than in
+    // the printer: there is no parser to route to, the job goes to an
+    // external interpreter, and the finished page comes back as a raster.
+    if (imageWriter->modelProfile().lineage == pom2::IwLineage::PostScript) {
+        pumpPostScript(fresh);
         return;
     }
 
@@ -837,10 +901,17 @@ void MainWindow::dumpScreenToPrinter()
     // and bit 7 as the top dot, the C. Itoh family ESC G with four ASCII
     // digits and bit 0.
     std::vector<uint8_t> stream;
-    if (imageWriter->model() == pom2::IwModel::EpsonFX80)
+    const pom2::IwModelProfile& head = imageWriter->modelProfile();
+    if (head.lineage == pom2::IwLineage::EscP) {
+        // ...and within the Epson lineage, `ESC *` is FX-generation. An
+        // MX-80 has only `ESC K`, and would print an `ESC *` dump's data
+        // bytes as text.
+        const auto cmd = (head.escPFeatures & pom2::kEscPGraphicsStar)
+                             ? pom2::EpsonDumpCmd::Star72
+                             : pom2::EpsonDumpCmd::K60;
         pom2::buildScreenDumpEpson(px.data(), w, h, w,
-                                   printerDumpOptions_, stream);
-    else
+                                   printerDumpOptions_, stream, cmd);
+    } else
         pom2::buildScreenDumpImageWriter(px.data(), w, h, w,
                                          printerDumpOptions_, stream);
     if (stream.empty()) return;

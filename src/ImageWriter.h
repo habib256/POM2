@@ -107,8 +107,87 @@ enum class IwModel : uint8_t {
     /// on the other), so it gets its own dispatch rather than a capability
     /// mask. See `execEpsonEscape`.
     EpsonFX80,
+    /// C. Itoh Prowriter 8510A — the Apple DMP without Apple's badge or its
+    /// firmware restrictions, so it answers the ESC codes the DMP's ROM has
+    /// no hardware for. Same core, same faces.
+    Prowriter8510A,
+    /// NEC PC-8023A — the same C. Itoh 8510 mechanism NEC rebadged. The
+    /// Grappler+ groups it with the 8510 on one DIP position for exactly
+    /// that reason (`GrapplerCard::PrinterType::CItoh8510`).
+    NecPc8023A,
+    /// Epson MX-80 — the ORIGINAL, pre-Graftrax. ESC/P's ancestor: single
+    /// density graphics only, no italics, no master select, no scripts.
+    EpsonMX80,
+    /// Epson MX-80 with the Graftrax-Plus ROM upgrade — adds the other
+    /// graphics densities, italics and the scripts, but still no `ESC *`.
+    EpsonMX80Graftrax,
+    /// Epson RX-80 — an FX-80 minus proportional spacing and user-defined
+    /// characters, at a slower carriage.
+    EpsonRX80,
+    /// Apple LaserWriter in its DIABLO 630 emulation mode — the daisywheel
+    /// command set its back-panel switch offered so unmodified software
+    /// could print text without speaking PostScript. A THIRD lineage: it is
+    /// neither C. Itoh nor ESC/P, it has no graphics at all, and its motion
+    /// commands are indices (HMI/VMI in 1/120 and 1/48 in) rather than
+    /// pitches. See `execDiabloEscape`.
+    ///
+    /// This is the honest in-scope LaserWriter. PostScript is not a command
+    /// set POM2 can parse — it is a Turing-complete stack language with a
+    /// full graphics model — so it is delegated to an external interpreter
+    /// instead; see docs/printer_plan_2.md.
+    LaserWriterDiablo,
+    /// Apple LaserWriter speaking PostScript — the other position of the same
+    /// back-panel switch. There is no parser here and there cannot be one:
+    /// see PostScriptRender.h. The bytes are intercepted UPSTREAM of this
+    /// class, rendered by an external interpreter, and the finished page
+    /// arrives through `adoptRenderedPage`.
+    ///
+    /// Anything that does reach the parser prints as text, which is exactly
+    /// what a PostScript job sent to a printer that cannot render it does —
+    /// so a failed interception is diagnosable rather than silent.
+    LaserWriterPostScript,
     Count
 };
+
+/// Which command grammar a head speaks. Three lineages now share this one
+/// mechanism (page, dot plotter, margins, paper, pacing, PDF, history) and
+/// disagree only above it — the same finding that kept the C. Itoh models a
+/// table instead of a hierarchy, applied one level up.
+enum class IwLineage : uint8_t {
+    CItoh = 0,   ///< ImageWriter I/II, Apple DMP, Prowriter, NEC
+    EscP,        ///< Epson MX / RX / FX
+    Diablo,      ///< Diablo 630 daisywheel (LaserWriter emulation mode)
+    /// Not a grammar at all — the job goes to an external interpreter. Named
+    /// here so the head can be SELECTED and so nothing silently treats it as
+    /// one of the three that are parsed.
+    PostScript,
+};
+
+/// ESC/P heads only: what this one actually has hardware for. The ESC/P
+/// lineage grew feature by feature across the MX → RX → FX generations, and
+/// every one of those differences is capability DATA — the same finding that
+/// made the C. Itoh side a table instead of a class hierarchy.
+///
+/// A command the head does NOT have is treated exactly like an unknown ESC:
+/// dropped along with its ESC, and whatever follows prints as text. That is
+/// what the real firmware did, and reproducing it is deliberate — POM2
+/// already prints the wrong-DIP garbage a real Grappler desk would show
+/// (`GrapplerCard::PrinterType`), because a driver aimed at the wrong head
+/// looking wrong is the diagnosis.
+enum IwEscPFeature : uint32_t {
+    kEscPGraphicsLYZ  = 1u << 0,  ///< ESC L / Y / Z (120/120/240 dpi)
+    kEscPGraphicsStar = 1u << 1,  ///< ESC * m — the generic density selector
+    kEscPItalics      = 1u << 2,  ///< ESC 4 / ESC 5
+    kEscPMasterSelect = 1u << 3,  ///< ESC ! n
+    kEscPScripts      = 1u << 4,  ///< ESC S n / ESC T
+    kEscPProportional = 1u << 5,  ///< ESC p n
+    kEscPSkipPerf     = 1u << 6,  ///< ESC N n / ESC O
+};
+/// Everything the FX-80 has. `ESC K` is not a flag: every ESC/P head back to
+/// the 1980 MX-80 has single-density graphics.
+constexpr uint32_t kEscPFX80 =
+    kEscPGraphicsLYZ | kEscPGraphicsStar | kEscPItalics | kEscPMasterSelect |
+    kEscPScripts | kEscPProportional | kEscPSkipPerf;
 
 /// One character-ROM bank: the glyph table, its locale substitutions, and the
 /// cell geometry that goes with it. Draft and correspondence are 9 wires at
@@ -152,9 +231,12 @@ struct IwModelProfile {
     /// unless `qualityTiers`.
     double  draftCps;
     double  nlqCps;
-    /// True when this head speaks ESC/P instead of the C. Itoh set, i.e. it
-    /// needs the other parser entirely.
-    bool escP;
+    /// Which command grammar this head speaks. Anything but `CItoh` needs a
+    /// different parser entirely — the grammars collide outright (`ESC G` is
+    /// graphics on the C. Itoh family and double-strike on the Epson).
+    IwLineage lineage;
+    /// ESC/P capability mask (`IwEscPFeature`). Ignored unless ESC/P.
+    uint32_t escPFeatures;
     /// ESC codes this head has no hardware for. They are still CONSUMED with
     /// their parameter bytes — the manual's rule is that an unrecognised code
     /// is dropped along with the ESC, and letting the parameter fall through
@@ -282,6 +364,24 @@ public:
                             double* committedLength = nullptr);
     double paperWidthIn()  const { return defaultPageWidth_; }
     double paperLengthIn() const { return defaultPageHeight_; }
+
+    /// Put an EXTERNALLY rendered page onto the platen — the LaserWriter's
+    /// PostScript path, where the page comes back from an interpreter rather
+    /// than from a head striking paper (see PostScriptRender.h).
+    ///
+    /// `gray` is one byte per pixel, 0 = full ink and 255 = bare paper,
+    /// `w` bytes per row (Ghostscript's `pgmraw` convention). It is blitted
+    /// 1:1 and clipped, NOT scaled — ask the interpreter for the page's own
+    /// pixel geometry (`pageRasterWidth/Height`) and the two agree exactly.
+    ///
+    /// Does NOT eject. The caller decides, because "the interpreter produced
+    /// a page" and "the sheet is finished" are different events on a printer
+    /// whose job may carry several `showpage`s.
+    bool adoptRenderedPage(const uint8_t* gray, int w, int h);
+
+    /// The current sheet's raster geometry, i.e. what to ask a renderer for.
+    int pageRasterWidth()  const { return current_.w; }
+    int pageRasterHeight() const { return current_.h; }
 
     /// Mechanical sound sink (head buzz, carriage sweep, platen motor).
     /// Optional; null = a silent printer, which is what every headless build
@@ -668,6 +768,13 @@ private:
         /// 8-pixel stripes, which still looks like a picture — so it is
         /// pinned by a round trip rather than by eye.
         bool     msbTop = false;
+        /// Consume the body and plot nothing. Set when the FITTED head has no
+        /// hardware for the graphics command that opened this run (an `ESC *`
+        /// aimed at an MX-80, say): the count has already been parsed, so the
+        /// data bytes must be eaten or they print as a screenful of text.
+        /// A density of 0 cannot express this — `dotW = 1/horizDens` would go
+        /// infinite and fillDots would clamp it to a filled row.
+        bool     swallow = false;
     } bitGraph_;
 
     // ESC/P parameter collection. Separate from `params_` because the two
@@ -702,6 +809,25 @@ private:
     const IwRomBank&      currentBank() const;
     /// True when this head has no hardware for `cmd` — swallow it.
     bool                  modelIgnoresEsc(uint8_t cmd) const;
+    /// True when the fitted ESC/P head has `feature` (`IwEscPFeature`).
+    bool                  modelHasEscP(uint32_t feature) const;
+
+    // ── Diablo 630 (LaserWriter emulation mode) ──────────────────────────
+    // A third parser over the SAME mechanism, on the FX-80's precedent.
+    // Motion is by INDEX here — an HMI in 1/120 in and a VMI in 1/48 in
+    // replace pitch and line spacing — and there are no graphics commands at
+    // all, so nothing below the command layer changes.
+    bool processDiabloChar(uint8_t ch);
+    void execDiabloEscape();
+    /// The motion indices land straight in the mechanism's existing `hmi_`
+    /// and `lineSpacing_` — `hmi_` is already "the guest saying move exactly
+    /// this far, which outranks the font" (see printCharInternal), which is
+    /// precisely what a Diablo HMI is. No parallel state.
+    uint8_t diabloCmd_ = 0;
+    uint8_t diabloNeed_ = 0;
+    /// Column tab stops, inches from the left edge. The 630 sets them at the
+    /// CURRENT position (ESC 1) rather than by number.
+    std::vector<double> diabloTabs_;
 
     // ── Epson ESC/P (printer plan phase C3) ──────────────────────────────
     // A second parser over the SAME mechanism. Everything below the command

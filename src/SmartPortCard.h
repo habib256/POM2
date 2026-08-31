@@ -177,6 +177,9 @@ public:
     bool adoptBay(int bay, Block512Backing::PreparedImage&& prepared,
                   std::string& errOut) override;
     bool ejectBay(int bay) override;
+    bool prepareEjectBay(int bay, Block512Backing::PendingWriteBack& out,
+                         std::string& errOut) override;
+    void clearBayDirty(int bay) override;
     void setBayWriteBack(int bay, bool on) override;
     std::vector<std::pair<std::string, std::string>>
          bayTypeOptions(int bay) const override;

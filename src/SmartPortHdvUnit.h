@@ -70,6 +70,15 @@ public:
     /// Two-phase mount, phase 2 — forwards to the backing store.
     bool     adoptImage(Block512Backing::PreparedImage&& p) override
     { return backing_.adoptImage(std::move(p)); }
+    bool     detachImage(Block512Backing::PendingWriteBack& out) override
+    {
+        if (!(backing_.isLoaded() && backing_.hasUnsavedChanges() &&
+              backing_.isWriteBackEnabled() && !backing_.isWriteProtected()))
+            return true;                 // nothing to write: out stays invalid
+        out = backing_.takeWriteBack();
+        return true;
+    }
+    void     clearDirtyBlocks() override { backing_.clearDirty(); }
     bool     eject() override;
     const std::string& path()      const override { return backing_.path(); }
     const std::string& lastError() const override { return backing_.lastError(); }

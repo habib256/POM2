@@ -4723,6 +4723,34 @@ add_test(NAME iwm_mig_snapshot COMMAND test_iwm_mig_snapshot)
 set_tests_properties(iwm_mig_snapshot PROPERTIES TIMEOUT 10)
 
 
+# ─── PostScript delegation (LaserWriter palier 2) ─────────────────────────
+# The LaserWriter's PostScript mode runs an external interpreter rather than
+# parsing (PostScriptRender.h says why). Most of that path is testable with
+# no interpreter installed — the PGM interchange, the job sniffer, the
+# spooler's threading contract and the adopt seam — and this pins those; the
+# interpreter branch runs for real only where one is present.
+add_executable(test_postscript_render
+    postscript_render_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/PostScriptRender.cpp
+    ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
+    ${CMAKE_SOURCE_DIR}/src/ImageWriter.cpp
+    ${CMAKE_SOURCE_DIR}/src/hgrpaint/HgrFont.cpp
+)
+target_include_directories(test_postscript_render PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_postscript_render PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_postscript_render PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_postscript_render PRIVATE winmm)
+endif()
+add_test(NAME postscript_render COMMAND test_postscript_render)
+set_tests_properties(postscript_render PROPERTIES TIMEOUT 60)
+
 # ─── Uthernet I / CS8900A smoke test ──────────────────────────────────────
 # Pins the CS8900A chip model against MAME `machine/cs8900a.cpp` and the
 # card against `bus/a2bus/uthernet.cpp`: power-on register defaults

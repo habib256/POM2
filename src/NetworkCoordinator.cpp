@@ -115,6 +115,8 @@ void NetworkCoordinator::applyFujiNetPanel(
     // lock and then wrote through that reference in six separate critical
     // sections — a slot rebuild between any two of them left the rest writing
     // to a freed link — and applied the timeout change with no lock at all.
+    // The one exception is the helper process, whose teardown is slow; see
+    // below.
     const bool touchesCard =
         r.transportChanged || r.portChanged || r.serialChanged ||
         r.timeoutChanged || r.requestStart || r.requestStop ||
@@ -124,6 +126,23 @@ void NetworkCoordinator::applyFujiNetPanel(
         std::string startError;
         bool startFailed = false;
         std::string helperMessage;
+
+        // Stopping the helper is the one SLOW thing in this function:
+        // ChildProcess::stop() signals the helper's process group and then
+        // polls for the whole 2 s grace — deliberately, so a FujiNet flushing
+        // an SD-card image gets to finish. Under the machine lock that is two
+        // seconds with the CPU worker blocked on its next chunk and the UI
+        // thread blocked trying to paint: exactly the freeze CLAUDE.md forbids,
+        // cancel button included. So the stop happens BETWEEN the two critical
+        // sections below, and only the sub-millisecond spawn stays under the
+        // lock.
+        //
+        // Carrying the helper across that gap is safe where carrying the link
+        // would not be. The ChildProcess is host state — the CPU thread never
+        // touches it, while it is inside the link on every SmartPort call —
+        // and SlotBus topology is UI-thread-confined, so the only thread that
+        // can unplug the card is the one standing right here.
+        ChildProcess* helper = nullptr;
 
         {
             auto state = controller.lockState();
@@ -163,21 +182,33 @@ void NetworkCoordinator::applyFujiNetPanel(
                     link.start(err);
                 }
 
-                // The helper is a child PROCESS, and spawning one under the
-                // machine lock is normally exactly what CLAUDE.md forbids.
-                // It is the right trade here: a spawn is sub-millisecond and
-                // happens only on an explicit button press, whereas doing it
-                // outside means carrying the card pointer out of the lock —
-                // which is the use-after-free this class exists to remove.
-                if (r.requestHelperStop || r.requestHelperRestart)
-                    card->helper().stop();
-                if (r.requestHelperStart || r.requestHelperRestart) {
-                    std::string err;
-                    if (!card->startHelper(helperPath_, err))
-                        helperMessage = err;
-                    else if (r.requestHelperRestart)
-                        helperMessage = "FujiNet program restarted.";
-                }
+                // Every helper request stops whatever is running first —
+                // `ChildProcess::start()` does it internally anyway, with the
+                // same 2 s grace — so pick the process up here and stop it
+                // once the lock is gone.
+                if ((r.requestHelperStart || r.requestHelperStop ||
+                     r.requestHelperRestart) && card->helper().isRunning())
+                    helper = &card->helper();
+            }
+        }
+
+        // Off the lock: the grace poll, and on POSIX the SIGKILL sweep and
+        // the reap that follow it.
+        if (helper) helper->stop();
+
+        if (r.requestHelperStart || r.requestHelperRestart) {
+            // Re-resolved rather than reusing the pointer above: the spawn is
+            // sub-millisecond, so it belongs back under the lock, where the
+            // card is proven live and nothing has to escape a critical
+            // section at all.
+            auto state = controller.lockState();
+            auto* card = findFujiNet(state.memory().slotBus());
+            if (card) {
+                std::string err;
+                if (!card->startHelper(helperPath_, err))
+                    helperMessage = err;
+                else if (r.requestHelperRestart)
+                    helperMessage = "FujiNet program restarted.";
             }
         }
 

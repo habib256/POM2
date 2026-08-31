@@ -8,6 +8,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - `docs/test_corpus.md` — edge-case integration corpus; **[DIX](https://github.com/Fr3nchT0uch/DIX/)** (French Touch anthology) is the priority gold-standard benchmark.
 - `docs/lle_vs_hle.md` — abstraction level per subsystem (silicon vs contract), the HLE seams, and the rule POM2 follows when picking a level.
 - `docs/printer_plan.md` — dot-matrix printer gap analysis vs `web-a2e` + phased plan (character ROMs, screen dump, more heads).
+- `docs/printer_plan_2.md` — round two: the Epson generations, the C. Itoh cousins, and the LaserWriter (Diablo 630, then PostScript by delegation). Also states what the Apple II Workstation Card is blocked on.
 - `tools/coverage.sh` — line coverage over the code the tests link, with a
   floor that may rise and may not fall (`tools/coverage_floor.txt`). Run it
   before claiming something is untested: the 2026-08-28 plan named three such
@@ -117,6 +118,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Grappler+ printer (ROM-gated) | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
 | ImageWriter II printer + paper tray (host-side, fed by any printer card, the SSC tap or a FujiNet printer unit) + PDF export | `ImageWriter.*`, `ImageWriterRom.h` (generated), `ImageWriterPdf.*`, `ImageWriter_ImGui.*`, `PrinterFeedCursor.h` | [§ ImageWriter](DEV.md#imagewriter-ii-printer-host-side) |
 | Screen dump → printer (synthesised `ESC G` stream) | `PrinterScreenDump.h/.cpp` | [§ Screen dump](DEV.md#screen-dump-printerscreendump) |
+| PostScript → page, by DELEGATION to a host Ghostscript (LaserWriter) | `PostScriptRender.h/.cpp` | [plan 2 § 4](docs/printer_plan_2.md#4-the-laserwriter-palier-2--postscript-by-delegation-) |
 | Print history (durable printouts, `printouts/history/`) | `PrinterHistory.h/.cpp` | [§ Print history](DEV.md#print-history-printerhistory) |
 | ProDOS clock card | `ClockCard.h/.cpp` | [§ Clock](DEV.md#prodos-clock-card-slot-4) |
 | No-Slot Clock (DS1216E, sits under a ROM — no slot used) | `NoSlotClock.h/.cpp` | [§ No-Slot Clock](DEV.md#no-slot-clock-noslotclock--ds1216e-smartwatch) |

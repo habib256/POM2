@@ -130,7 +130,18 @@ public:
 
     /// Persist + clear media. Auto-saves dirty blocks when write-back
     /// is enabled. Idempotent on empty drives.
+    ///
+    /// Does the save INLINE, so prefer the two-phase pair below when a lock
+    /// is held (an HDV unit rewrites the whole file).
     virtual bool eject() = 0;
+
+    /// Phase 1 / phase 3 of a two-phase eject, mirroring `adoptImage`'s
+    /// opt-in shape: the default says "no block backing here" and the caller
+    /// falls back to the inline `eject()`. Phase 1 must NOT drop the medium —
+    /// the commit can fail and the pre-split behaviour kept it mounted.
+    virtual bool detachImage(Block512Backing::PendingWriteBack& /*out*/)
+    { return false; }
+    virtual void clearDirtyBlocks() {}
 
     /// Current image path; empty when nothing mounted.
     virtual const std::string& path() const = 0;

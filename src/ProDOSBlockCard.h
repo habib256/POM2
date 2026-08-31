@@ -61,6 +61,13 @@ public:
     virtual bool ejectImage() = 0;
     virtual bool saveDirty() = 0;
 
+    /// Two-phase eject, phases 1 and 3 (see MountableMediaCard). Default is
+    /// "not supported" rather than pure virtual so an implementor that has no
+    /// Block512Backing under it keeps compiling and falls back to ejectImage.
+    virtual bool detachImage(Block512Backing::PendingWriteBack& /*out*/)
+    { return false; }
+    virtual void clearDirtyBlocks() {}
+
     virtual bool isImageLoaded() const = 0;
     virtual const std::string& getImagePath() const = 0;
     virtual const std::string& getLastError() const = 0;
@@ -121,6 +128,15 @@ public:
     }
 
     bool ejectBay(int bay) override { return bay == 0 && ejectImage(); }
+
+    bool prepareEjectBay(int bay, pom2::Block512Backing::PendingWriteBack& out,
+                         std::string& errOut) override
+    {
+        errOut.clear();
+        if (bay != 0) return false;      // empty errOut → caller falls back
+        return detachImage(out);
+    }
+    void clearBayDirty(int bay) override { if (bay == 0) clearDirtyBlocks(); }
     void setBayWriteBack(int bay, bool on) override
     {
         if (bay == 0) setWriteBackEnabled(on);

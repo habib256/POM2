@@ -82,12 +82,22 @@ void buildScreenDumpImageWriter(const uint32_t* pixels, int w, int h,
                                 int stride, const ScreenDumpOptions& opt,
                                 std::vector<uint8_t>& out);
 
-/// Build the byte stream for the Epson FX-80 (`ESC *` with a binary count and
-/// bit 7 as the topmost dot of the band — both the opposite of the C. Itoh
-/// family, which is exactly why this is a second builder and not a flag).
+/// Which graphics command an ESC/P head can actually be driven with. The
+/// generic density selector `ESC *` is FX-generation; an MX-80 has only the
+/// single-density `ESC K`, so a dump built with `ESC *` prints its own bytes
+/// as text there instead of a picture.
+enum class EpsonDumpCmd {
+    Star72,   ///< `ESC * 5` — 72 dpi, one screen pixel per dot (FX-80, RX-80)
+    K60,      ///< `ESC K`   — 60 dpi single density (every ESC/P head, incl. MX)
+};
+
+/// Build the byte stream for an Epson ESC/P head (a binary count and bit 7 as
+/// the topmost dot of the band — both the opposite of the C. Itoh family,
+/// which is exactly why this is a second builder and not a flag).
 void buildScreenDumpEpson(const uint32_t* pixels, int w, int h, int stride,
                           const ScreenDumpOptions& opt,
-                          std::vector<uint8_t>& out);
+                          std::vector<uint8_t>& out,
+                          EpsonDumpCmd cmd = EpsonDumpCmd::Star72);
 
 /// Whether `buildScreenDumpImageWriter` would invert, given these options and
 /// this image. Exposed so the UI can say which way it is about to go.

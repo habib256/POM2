@@ -134,6 +134,10 @@ public:
     bool eject35(int idx);
 
     // ─── Cassette transport (forwarded to CassetteDevice under stateMtx) ──
+    /// Load / save a tape file. Both do their file work with `stateMtx`
+    /// RELEASED (a compressed tape is decoded in full — see the TapeOffBus
+    /// note in the .cpp), unhooking the deck from the bus for the duration
+    /// instead of freezing the machine behind the lock.
     bool loadTape (const std::string& path);
     bool saveTape (const std::string& path);
     void playTape();

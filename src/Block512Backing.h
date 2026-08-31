@@ -114,7 +114,45 @@ public:
     /// Persist dirty blocks to the source (.hdv/.2mg in-place rewrite that
     /// preserves header + trailer; OR synth-folder decode). No-op (returns
     /// true) when write-back is off, the medium is WP, or nothing is dirty.
+    ///
+    /// Does its file work INLINE, so a caller holding `stateMutex` freezes the
+    /// machine for the whole read-modify-write + rename. That is the eject
+    /// path's problem, and `takeWriteBack` + `commitWriteBack` below are the
+    /// split that solves it; this stays for single-threaded callers and for
+    /// the deliberate flush-before-destroy in `adoptImage`.
     bool saveDirty();
+
+    /// ── Two-phase eject ─────────────────────────────────────────────────
+    /// The mirror of `PreparedImage`: what phase 1 lifts OUT of the backing so
+    /// phase 2 can write it with `stateMutex` released. Carries the decoded
+    /// facts (offset, dirty block numbers and their bytes) so phase 2 needs
+    /// nothing from the object — by then the medium may already be gone.
+    struct PendingWriteBack {
+        bool                  valid      = false;  ///< false → phase 2 no-ops
+        bool                  synth      = false;
+        std::string           path;               ///< file case
+        std::string           hostFolder;         ///< synth case
+        size_t                dataOffset = 0;
+        size_t                dataLength = 0;
+        std::vector<uint32_t> dirtyIndices;       ///< file case
+        std::vector<uint8_t>  dirtyBytes;         ///< 512 × dirtyIndices
+        std::vector<uint8_t>  synthImage;         ///< synth case: whole volume
+    };
+
+    /// Phase 1, to be called WITH `stateMutex` held: copy out exactly what
+    /// `saveDirty()` would write. Memcpy only — no syscalls — so it is cheap
+    /// under the lock. Does NOT clear the dirty flags: an eject drops the
+    /// medium anyway, and a caller that means to keep it calls `clearDirty()`
+    /// only once phase 2 has actually succeeded.
+    PendingWriteBack takeWriteBack() const;
+
+    /// Phase 2, to be called WITHOUT the lock: perform the deferred write.
+    /// Static because the backing it came from may no longer exist.
+    static bool commitWriteBack(PendingWriteBack&& pending,
+                                std::string& error);
+
+    /// Drop the dirty set after a successful `commitWriteBack`.
+    void clearDirty();
 
     bool   isLoaded()   const { return loaded_; }
     size_t blockCount() const { return image_.size() / kBlockBytes; }
