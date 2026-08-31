@@ -550,9 +550,10 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     synth, and an architecture with nothing in common with the AYs. Plays
     straight to the project's strength.
   - **E-Z Color Graphics Interface** (`ezcgi`) — a **TMS9918 in an Apple II
-    slot**: hardware sprites on a machine that has none. The strangest card
-    on the list and the one that would show off the display layer best. The
-    VDP is well-understood and MAME has it.
+    slot**: hardware sprites on a machine that has none. Re-ranked after
+    looking at POM1: the expensive part is already written there, and better
+    than MAME's, with 31 k lines of original software behind it. Scoped,
+    estimated and parked → [§ E-Z Color](#ez-color).
   - **Applied Engineering TransWarp** (`transwarp`) — cheap, because the
     acceleration plumbing already exists (`cyclesPerFrame`, the //c+'s 4×).
     A slot TransWarp is mostly a speed latch plus cache semantics. Visible
@@ -560,9 +561,13 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
   **Quick wins, a few hours each.**
 
-  - **4play** (`4play`) and **SNES MAX** (`snesmax`) — plain shift registers,
-    MAME oracle, and directly useful to the `pom2adventure` repo. Four
-    players on an Apple II.
+  - ~~**4play** (`4play`)~~ **done** — `FourPlayCard`, pinned by
+    `fourplay_card`. It was not a shift register: `read_c0nx` returns one
+    byte per player and `device_start()` is empty. **SNES MAX** (`snesmax`)
+    is still open and is the larger of the two — its controller is serial, so
+    the card clocks a latch/shift protocol rather than exposing four ports.
+    Both are modern homebrew, so their value is the current Apple II scene
+    (and `pom2adventure`), not a period catalogue.
   - **TimeMaster H.O.** (`timemasterho`) — the other common clock beside the
     ThunderClock+ POM2 already has.
   - **Apple Parallel Interface Card** (`a2pic`) — the third printer lineage
@@ -1115,6 +1120,81 @@ unit `ctest`s. Curated list + POM2 status + cross-refs to the dashboard's
     the existing slot-3 warnings in `MainWindow_Slots.cpp`.
 - 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — spiral
   tracking + weak bits to validate on real WOZ images. → `Gap #9/#10`.
+
+## Parked — wanted, not scheduled
+
+Things we intend to do and are not queueing. Distinct from *Out of scope*
+below: these have a clear shape and a reason, they just have no slot.
+
+### E-Z Color Graphics Interface — a TMS9918 in an Apple II slot
+
+<a id="ez-color"></a>**Estimate: ~3.5-4 days** for a working card
+(TMS9918A only). *Card only* — `tmspaint` and `tmssprite` stay in POM1.
+
+MAME has it (`src/devices/bus/a2bus/ezcgi.cpp`, Steve Ciarcia, *BYTE* August
+1982 — a construction article, not a product), so the usual "MAME is the
+oracle" rule half-applies. Only half, and this is the unusual part: **POM1
+already has a better TMS9918 than MAME's.** `pom1/src/TMS9918.{h,cpp}` is
+2 586 lines with a `ChipType` dispatch across TMS9918A / 9929A / 9118 / 9128 /
+9129 / T7937A / T6950, modelling the Toshiba clones' suppression of sprite
+cloning ("Bug N°8"); MAME models plain `tms9918a`. So the oracle here is
+POM1 + the datasheet + POM1's own silicon tests, and **that must be written
+down at the porting sites** the way SDLC framing is marked
+`SDLC (datasheet, not MAME)` in `Scc8530Device` — otherwise a future reader
+goes looking in MAME and finds something *less* accurate, which is the worst
+kind of trap.
+
+**Why it is worth doing at all**: the Apple II has no sprites, no VRAM of its
+own, and colour only as an NTSC artefact. This card brings 16 KB of dedicated
+VRAM, 32 hardware sprites and 15 commanded colours. And the software problem
+that sinks most curiosity cards does not apply — POM1 carries **31 067 lines
+of original 6502 assembly** for this chip (Rogue 6 777, a logo/scroller 5 426,
+Galaga 5 127, Maze3D 4 315, plus Sokoban, Snake, Chess, Mandelbrot, Life,
+Plasma, Nyan Cat). Porting those to the Apple II is a separate, later job and
+is **not** in the estimate below.
+
+**What makes the port cheap, checked rather than assumed:**
+
+- The VDP port addresses are canonical in one place —
+  `pom1/dev/lib/tms9918/tms9918.inc`, `VDP_DATA = $CC00` / `VDP_CTRL = $CC01`
+  — so POM1's 6 079-line asm library is address-agnostic above two symbols.
+- `BeamClock.h` is 63 lines, a pure header depending only on `<cstdint>`, and
+  its own comment already names POM2 as an intended consumer.
+- Both projects clock at 1 022 727 Hz exactly. No retiming.
+- `pom1::Peripheral`'s pure-virtual surface is `name()` alone; everything else
+  has a default. Stripping it costs almost nothing.
+
+**What is not free:**
+
+- `SnapshotIO.h` differs between the projects (273 vs 183 lines), so
+  `serialize`/`deserialize` must be rewritten against POM2's
+  `appendSnapshotState` / `loadSnapshotState` pair. The *content* is already
+  enumerated in `TMS9918::Snapshot`, so it is mechanical.
+- The beam/CPU sync (`renderBeamCatchUp`, `syncSpriteScanToBeam`) is tied to
+  how the host feeds cycles, and is the part to read carefully rather than
+  transplant.
+
+**Breakdown:**
+
+| | |
+|---|---|
+| Import + decouple the VDP core (2 586 lines + diagnostics + BeamClock), snapshot rewrite, build wiring | ~1 d |
+| `EzCgiCard : SlotPeripheral` — offset 0 ↔ VRAM, offset 1 ↔ register/status, `$FF` elsewhere, `advanceCycles` feeding the beam. Slot-agnostic by construction | ~3 h |
+| Display path — a second source composited into POM2's framebuffer. **The risk item**: not the rasterising, but the interaction with `NtscPostProcessor` / `CrtEffectStack` / the display-mode menu. The VDP's output is RGB and must NOT go through the composite shaders | ~1-1.5 d |
+| Tests — a subset of POM1's ten (sprite status, per-scanline, silicon-strict) plus a card smoke at `$C0nX` | ~0.5 d |
+| Catalog, plug site, docs (CLAUDE map, DEV section, README, CHANGELOG) | ~0.5 d |
+
+**Deliberately out of v1**: the `ezcgi_9938` / `ezcgi_9958` variants (V9938 /
+V9958 with an IRQ line back to the Apple II). MAME itself annotates their
+clocks "typical … not verified".
+
+**The standing objection, which grows with every shared file.** `hgrpaint/` is
+already duplicated between POM1 and POM2 with no shared build. Adding the VDP
+puts ~2 700 more lines in both trees, and a silicon-behaviour fix will then
+have to be applied twice with nothing to flag the omission. That is
+survivable — `hgrpaint` proves it — but at this volume the question "shared
+module or verbatim copy?" deserves deciding on its own, not during a port.
+→ [`a2bus` survey](#a2bus-backlog)
 
 ## Deliberate skips (documented inline)
 
