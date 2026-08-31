@@ -65,6 +65,34 @@ original bytes, and re-checks that table slot 15 still points at an
 re-reads a built image. DIX is GPLv3 and its sources carry the code this
 patch reasons about; the modification is described byte-for-byte above.
 
+## 2026-08-31 — 4play: four joysticks, and one bit that reads back set
+
+`FourPlayCard`, catalog key `4play`, a port of MAME's
+`src/devices/bus/a2bus/4play.cpp`. Four **digital** joysticks on an Apple II,
+one byte each at `$C0nX`, pinned by `fourplay_card`.
+
+The reason it is worth anything: the Apple II's game port is *analogue* and
+carries two paddles, so two players is the ceiling and reading them means
+timing an RC discharge. This card is four reads with no timing at all.
+
+**The one trap, and it is a good one.** MAME's `4play.cpp:41-48` has every bit
+active HIGH except **bit 5**, which is `IP_ACTIVE_LOW IPT_UNKNOWN` — nothing
+drives it, so it reads back **set**. An untouched stick is `$20`, not `$00`.
+A test that assumed zero would pass against a card that never updated at all,
+which is why the layout is asserted bit by bit rather than as a round trip.
+
+**Said plainly, because it cuts against the usual argument for porting a
+card**: 4play is modern homebrew (Lukazi, 2016), not period hardware. "MAME
+has it" and "there is software for it" are different claims and only the first
+comes for free. Its software is the current Apple II scene — which is the
+honest reason to want it, not a 1980s catalogue.
+
+Threading follows `PaddleInputs`: the four bytes are atomics, the UI thread
+writes them, the CPU worker reads them, neither takes `stateMutex`. Host pads
+1-4 become players 1-4 with a 0.5 gate turning analogue sticks into
+directions. Deliberately absent from the snapshot, like the game-port paddles:
+a rewind must not put somebody's thumb back where it was.
+
 ## 2026-08-31 — The file-size gate goes green, and what that cost
 
 `tools/check_file_sizes.sh` had been failing on `main` since **2026-08-29** —

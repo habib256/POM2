@@ -268,6 +268,7 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `uthernet` | Uthernet I (CS8900A NIC) | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
 | `uthernet2` | Uthernet II (W5100 TCP/IP) | `softcard` | Microsoft SoftCard Z80 (CP/M) |
 | `fujinet` | FujiNet relay (SP over SLIP) | `workstation` | Apple II Workstation Card (LocalTalk) |
+| `4play` | 4play — 4 digital joysticks (Lukazi) | | |
 
 **Apple II Workstation Card.** The board that put a IIe on LocalTalk, and the
 only card here that is a **computer of its own**: a 65C02, 28 KB of RAM, a

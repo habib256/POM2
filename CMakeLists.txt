@@ -288,6 +288,7 @@ set(SOURCES
     src/hgrsprite/HgrSpriteBlit.cpp
     src/hgrsprite/HgrSpriteEditor.cpp
     src/SlotBus.cpp
+    src/FourPlayCard.cpp
     src/Scc8530Device.cpp
     src/WorkstationCard.cpp
     src/Cs8900aDevice.cpp
@@ -380,6 +381,7 @@ set(POM2_DEVICES_SOURCES
     src/PhasorCard.cpp
     src/PrinterCard.cpp
     src/ProDOSHardDiskCard.cpp
+    src/FourPlayCard.cpp
     src/Scc8530Device.cpp
     src/SmartPort35Unit.cpp
     src/SmartPortCard.cpp
@@ -720,6 +722,7 @@ set(HEADERS
     src/NetworkBackend.h
     src/SlirpNetworkBackend.h
     src/Cs8900aDevice.h
+    src/FourPlayCard.h
     src/Scc8530Device.h
     src/WorkstationCard.h
     src/UthernetCard.h
@@ -1168,6 +1171,7 @@ set(POM2_CORE_SOURCES
     src/FloppyEmuDevice.cpp
     src/Settings.cpp
     src/SlotBus.cpp
+    src/FourPlayCard.cpp
     src/Scc8530Device.cpp
     src/WorkstationCard.cpp
     src/Cs8900aDevice.cpp
