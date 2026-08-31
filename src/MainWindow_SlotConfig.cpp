@@ -54,6 +54,7 @@
 #include "EmulationController.h"
 #include "FujiNetCard.h"
 #include "FujiNetCardFactory.h"
+#include "FourPlayCard.h"
 #include "GrapplerCard.h"
 #include "LeChatMauveCard.h"
 #include "Logger.h"
@@ -439,6 +440,12 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         st.memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugFourPlay = [&](int s) {
+        // 4play — four digital joysticks. No ROM, no state; the host pads
+        // are pushed in from pollJoystickAndPushToMemory().
+        st.memory().slotBus().plug(s, std::make_unique<pom2::FourPlayCard>(s));
+    };
+
     auto plugWorkstation = [&](int s) {
         // Apple II Workstation Card. Hard ROM gate in the factory: no
         // firmware, no card. It runs a second 65C02 at the Apple II's own
@@ -603,6 +610,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         else if (kind == "echoplus_tms") plugEchoPlusTms(s);
         else if (kind == "grappler")    plugGrappler(s);
         else if (kind == "workstation") plugWorkstation(s);
+        else if (kind == "4play")       plugFourPlay(s);
         else if (kind == "uthernet")    plugUthernet(s);
         else if (kind == "uthernet2")   plugUthernetII(s);
         else if (kind == "smartport35") plugSmartPort35(s);

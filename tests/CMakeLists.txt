@@ -341,6 +341,25 @@ add_test(NAME scc8530_smoke COMMAND test_scc8530)
 set_tests_properties(scc8530_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── 4play joystick card ──────────────────────────────────────────────────
+# Four bytes, so the test is the bit layout (MAME 4play.cpp:41-48 — active
+# HIGH except bit 5) and what an unmapped offset answers, then the same
+# through a real slot bus.
+
+add_executable(test_fourplay
+    fourplay_card_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/FourPlayCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_fourplay PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_fourplay PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME fourplay_card COMMAND test_fourplay)
+set_tests_properties(fourplay_card PROPERTIES TIMEOUT 10)
+
+
 # ─── Z8530 against the Workstation Card's own firmware ────────────────────
 # Runs Apple's 341-0358-A ROM until it finishes its power-on self-test and
 # programs the chip for LocalTalk. The POST includes a 255-byte loopback

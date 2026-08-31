@@ -117,6 +117,10 @@ inline constexpr CardType kCardTypes[] = {
     // 341-0358-A dump; the host handshake at $C0nX is not yet established,
     // so the guest's AppleTalk stack will not complete a transaction.
     { "workstation",  "Apple II Workstation Card (LocalTalk) — boots, host link WIP" },
+    // 4play (Lukazi, 2016) — four DIGITAL joysticks, one byte each at
+    // $C0nX. The Apple game port is analogue and carries two paddles; this
+    // is how an Apple II gets four players.
+    { "4play",        "4play — 4 digital joysticks (Lukazi)" },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).

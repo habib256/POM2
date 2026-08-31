@@ -42,6 +42,7 @@
 #include "Memory.h"
 #include "MouseCoordinator.h"
 #include "MouseGrab.h"
+#include "FourPlayCard.h"
 #include "PaddleInputs.h"
 #include "Pom2Theme.h"
 #include "ResourcePaths.h"
@@ -643,6 +644,39 @@ void MainWindow::pollJoystickAndPushToMemory()
             // Raw pad (unknown layout): legacy buttons 0/1/2 → PB0/1/2.
             for (int i = 0; i < 3; ++i) mem.setPaddleButton(i, joystick->buttonDown(i));
         }
+    }
+
+    // 4play: four DIGITAL joysticks, one host pad each. Separate from the
+    // block above on purpose — the Apple game port carries paddles 0-3 as
+    // analogue values and the card carries four whole sticks, so they are
+    // different devices reading different hardware, not two views of one.
+    // Host pads 1-4 (GLFW slots 0-3) map to players 1-4 in order; the pad
+    // bound to the analogue game port keeps that job as well, which is what
+    // a real desk with one stick and one card would do.
+    //
+    // The card's four bytes are atomics (see FourPlayCard.h), so this needs
+    // no lock — only the slot-bus topology read, which is UI-thread-confined
+    // and allowed unlocked (CLAUDE.md § Reach the emulated state).
+    for (int s2 = 1; s2 <= 7; ++s2) {
+        auto* fp = dynamic_cast<pom2::FourPlayCard*>(
+            controller->memory().slotBus().peripheral(s2));
+        if (!fp) continue;
+        for (int pl = 0; pl < pom2::FourPlayCard::kPlayers; ++pl) {
+            pom2::FourPlayCard::Player st4;
+            const auto& dev = joystick->deviceState(pl);
+            if (dev.present && !suppressGame) {
+                constexpr float kGate = 0.5f;   // digital card, analogue stick
+                st4.left    = dev.axis[0] < -kGate;
+                st4.right   = dev.axis[0] >  kGate;
+                st4.up      = dev.axis[1] < -kGate;
+                st4.down    = dev.axis[1] >  kGate;
+                st4.button1 = dev.buttons[0];
+                st4.button2 = dev.buttons[1];
+                st4.button3 = dev.buttons[2];
+            }
+            fp->setPlayer(pl, st4);
+        }
+        break;   // one card is the whole point; a second would fight it
     }
 
     // Keyboard routing for the digital controls — outside stateMutex, since

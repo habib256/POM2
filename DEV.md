@@ -18,7 +18,7 @@ from. When MAME upstream renames a path (e.g. `wozfdc.cpp` `bus/a2bus
 - [Storage](#storage) · [ProDOSHardDiskCard](#prodosharddiskcard-hdv--synthetic-block-model) · [CffaCard](#cffacard-cffa-20--mame-faithful-ide) · [SmartPortCard](#smartportcard-e-liron-class)
 - [IWM (//c+ on-board)](#iwm-c-on-board)
 - [SmartPort 3.5" stack](#smartport-35-stack)
-- [Peripherals](#peripherals) · [SSC](#super-serial-card-slot-2--telnet-bridge) · [Workstation Card](#apple-ii-workstation-card-workstationcard) · [Z8530 SCC](#zilog-z8530-scc-scc8530device) · [Network backends](#network-backends) · [Uthernet I](#uthernet-i-cs8900a) · [Uthernet II](#uthernet-ii-w5100) · [ClockCard](#prodos-clock-card-slot-4) · [MouseCard](#mouse-card) · [Joystick / paddles](#joystick--paddles)
+- [Peripherals](#peripherals) · [SSC](#super-serial-card-slot-2--telnet-bridge) · [4play](#4play-fourplaycard) · [Workstation Card](#apple-ii-workstation-card-workstationcard) · [Z8530 SCC](#zilog-z8530-scc-scc8530device) · [Network backends](#network-backends) · [Uthernet I](#uthernet-i-cs8900a) · [Uthernet II](#uthernet-ii-w5100) · [ClockCard](#prodos-clock-card-slot-4) · [MouseCard](#mouse-card) · [Joystick / paddles](#joystick--paddles)
 - [UI (ImGui)](#ui-imgui)
 - [Host control center](#host-control-center-slot-configuration--floppy-emu)
 - [Profile switching internals](#profile-switching-internals)
@@ -3039,6 +3039,49 @@ so the harness pins the *termios* half of trap 1 (HUPCL clear, CLOCAL set) and
 the binary round trip, and only asserts the DTR/RTS levels when the device
 actually has them. The line-state half is on the manual checklist in
 [docs/fujinet_plan.md](docs/fujinet_plan.md).
+
+### 4play (`FourPlayCard`)
+
+Port of MAME `src/devices/bus/a2bus/4play.cpp`. Four **digital** joysticks on
+an Apple II, one byte each at `$C0nX`.
+
+Why it exists at all: the Apple II's own game port is *analogue* and carries
+two paddles, so two players with sticks is the ceiling and reading them means
+timing an RC discharge ($C064-$C067). This card is four reads with no timing
+and no calibration — which is how an Apple II gets four players.
+
+**It is modern homebrew, not period hardware** (Lukazi, 2016; MAME's header
+links the blog). So the software that uses it is the current Apple II scene —
+worth stating plainly, because "MAME has it" and "there is software for it"
+are different claims and only the first is automatic.
+
+The whole device is `read_c0nx`: offsets 0-3 are players 1-4, everything else
+is `$FF`. No write side, no ROM, no state — MAME's `device_start()` is empty.
+The one trap is the bit layout (`4play.cpp:41-48`): everything is active HIGH
+**except bit 5**, which is `IP_ACTIVE_LOW IPT_UNKNOWN` and therefore reads
+back **set**. An untouched stick is `$20`, not `$00`; a test that assumed zero
+would pass against a card that never updates.
+
+| bit | 7 | 6 | 5 | 4 | 3 | 2 | 1 | 0 |
+|---|---|---|---|---|---|---|---|---|
+| | B1 | B2 | *always 1* | B3 | right | left | down | up |
+
+**Threading follows `PaddleInputs`**: the four bytes are `std::atomic`, the UI
+thread writes them from `pollJoystickAndPushToMemory`, the CPU worker reads
+them in `deviceSelectRead`, and neither takes `stateMutex`. Host pads 1-4 map
+to players 1-4 in order, with a 0.5 gate turning each analogue stick into
+directions. The pad bound to the analogue game port keeps that job too — a
+real desk with one stick and one card behaves the same way.
+
+**Deliberately not in the snapshot.** Joystick position is host input, not
+emulated state, exactly like the game-port paddles: a rewind must not put
+somebody's thumb back where it was. `onReset()` is an explicit no-op for the
+same reason, so the absence reads as a decision rather than an oversight.
+
+Pinned by `fourplay_card`: the bit layout including the active-low bit, four
+independent players, out-of-range players ignored rather than smearing into a
+neighbour, offsets 4-15 reading `$FF`, and the whole thing again through a
+real `SlotBus` at `$C0C0-$C0CF`.
 
 ### Apple II Workstation Card (`WorkstationCard`)
 

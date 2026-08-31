@@ -127,6 +127,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | No-Slot Clock (DS1216E, sits under a ROM — no slot used) | `NoSlotClock.h/.cpp` | [§ No-Slot Clock](DEV.md#no-slot-clock-noslotclock--ds1216e-smartwatch) |
 | Mouse Card (MAME + AppleWin HLE) + host pointer capture | `MouseCard.*`, `MouseCardAppleWin.*`, `MouseGrab.h` | [§ Mouse](DEV.md#mouse-card), [§ Pointer capture](DEV.md#pointer-capture-mouse-grab--mousegrabh) |
 | Joystick / paddles | `JoystickInput.h/.cpp` | [§ Joystick](DEV.md#joystick--paddles) |
+| 4play — four digital joysticks — catalog `4play` | `FourPlayCard.h/.cpp` | [§ 4play](DEV.md#4play-fourplaycard) |
 | AI control server (HTTP on loopback, opt-in) | `AiControlServer.h/.cpp` | [§ AI control server](DEV.md#ai-control-server-aicontrolserver) |
 | UI (ImGui) — `MainWindow.cpp` is the composition root only; each concern is a `MainWindow_<Area>.cpp` sibling, hard-capped at 2000 lines | `MainWindow.*`, `MainWindow_*.cpp`, `*_ImGui.*` | [§ UI](DEV.md#ui-imgui), [§ MainWindow family](DEV.md#the-mainwindow-family) |
 | UI theme + DPI/zoom scaling | `Pom2Theme.h/.cpp` | [§ Theme](DEV.md#theme--ui-scaling-pom2theme) |
