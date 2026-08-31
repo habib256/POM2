@@ -15,6 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Memory.h"
+
+#include "CharRomDump.h"
 #include "MemoryProfile_IIcClass.h"
 #include "CassetteDevice.h"
 #include "IWMDevice.h"
@@ -347,79 +349,16 @@ int Memory::loadCharRom(const char* filename, int bank)
         return 0;
     }
 
-    // Normalize to AppleWin's "csbits" convention so the renderer can
-    // treat all ROM dumps uniformly:
-    //   * Each byte represents one row of 7 visible pixels.
-    //   * Bit 0 = leftmost pixel; 1 = lit pixel.
-    //   * For codes $00-$3F (inverse range), the stored pattern is
-    //     pre-flipped so it already matches inverse video (white BG,
-    //     dark glyph). For codes $40-$7F, the stored pattern is the
-    //     non-flashing (= normal-looking) glyph; the renderer XORs
-    //     with 0x7F when the flash phase is on.
-    //
-    // 2K II/II+ ROM (e.g. AppleWin's `Apple2_Video.rom`):
-    //   - For codes $00-$7F (offsets 0x000-0x3FF): if bit 7 of byte is
-    //     0, XOR low 7 bits with 0x7F. (Inverse range bytes have bit
-    //     7 = 0; XOR gives the inverse-display pattern. Flashing range
-    //     bytes have bit 7 = 1 and stay as the normal-display pattern.)
-    //   - All bytes: reverse the low 7 bits (Apple II video shift
-    //     register reads MSB-first, so the ROM stores bit 6 = leftmost;
-    //     after reverse we end up with bit 0 = leftmost).
-    //
-    // 4K IIe Enhanced ROM (e.g. AppleWin's `Apple2e_Enhanced_Video.rom`):
-    //   - The ROM stores pixels with inverted polarity (1 = OFF) and
-    //     bit 0 = leftmost natively. XOR every byte with 0xFF flips to
-    //     1 = ON; no reverse needed.
-    if (size == 2048) {
-        // Two 2 KB conventions exist, and they differ only in bit 7.
-        //
-        // AppleWin's `Apple2_Video.rom` uses bit 7 of each byte as the
-        // range marker described above. The Videx LOWER CASE CHIP dump does
-        // not: it stores the plain glyph everywhere and never sets bit 7,
-        // so the marker test would XOR the whole inverse AND flashing range
-        // and draw both wrong. Detect the plain kind by the absence of the
-        // marker across the first 1 KB, and fall back to the offset for the
-        // range split — $00-$3F is inverse, $40-$7F is flashing.
-        bool markerPresent = false;
-        for (size_t i = 0; i < 1024; ++i) {
-            if (characterRom[i] & 0x80) { markerPresent = true; break; }
-        }
-        for (size_t i = 0; i < 2048; ++i) {
-            uint8_t n = characterRom[i];
-            const bool invert = markerPresent ? (i < 1024 && !(n & 0x80))
-                                              : (i < 512);
-            if (invert) n ^= 0x7F;
-            uint8_t d = 0;
-            for (int j = 0; j < 7; ++j) {
-                d = static_cast<uint8_t>((d << 1) | (n & 1));
-                n >>= 1;
-            }
-            characterRom[i] = d;
-        }
-        if (!markerPresent) {
-            pom2::log().info("ROM",
-                std::string("Char ROM: 2 KB dump with no bit-7 range marker "
-                            "(Videx-style), split by offset instead"));
-        }
-    } else if (size == 4096) {
-        for (size_t i = 0; i < 4096; ++i) {
-            characterRom[i] ^= 0xFF;
-        }
-    }
-    // Does this ROM actually carry lowercase glyphs? The Videx LOWER CASE
-    // CHIP manual states the invariant that answers it (§ Discussion of
-    // character display): on a stock Apple II generator "Characters 80 - BF
-    // are identical to characters C0 - FF", so the lowercase slots hold
-    // repeats. A chip that adds lowercase breaks that equality. The
-    // comparison is made AFTER normalisation, which consumes the bit-7
-    // marker the two 2 KB conventions disagree about.
-    //
-    // 4 KB IIe-class ROMs always have lowercase.
-    charRomLowercase_ = true;
-    if (size == 2048) {
-        charRomLowercase_ =
-            std::memcmp(characterRom.data() + 1024,
-                        characterRom.data() + 1536, 512) != 0;
+    // Convention normalisation + the lowercase question both live in
+    // CharRomDump: they are facts about the DUMP, not about the memory
+    // map, and two dumps of the same size can need opposite treatment.
+    const pom2::CharRomFacts facts =
+        pom2::normaliseCharRom(characterRom.data(), size);
+    charRomLowercase_ = facts.hasLowercase;
+    if (size == 2048 && !facts.bit7Marker) {
+        pom2::log().info("ROM",
+            "Char ROM: 2 KB dump with no bit-7 range marker (Videx-style), "
+            "split by offset instead");
     }
 
     pom2::log().info("ROM",
@@ -1605,6 +1544,16 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // both fire on the same access — they share the bus, neither
     // shadows the other.
     if (low >= 0x70 && low <= 0x7F) {
+        // An accelerator (TransWarp) lives entirely in this window: $C070
+        // is its joystick-slowdown trigger, $C072 releases its ROM shadow
+        // and $C074 is its speed register. $C074 is the one address it
+        // takes OFF the bus — MAME `transwarp.cpp dma_w` returns there —
+        // so a consumed access skips the paddle rearm and everything below
+        // it. Null on any machine without one.
+        if (SlotPeripheral* snoop = slots.busSnooper()) {
+            if (snoop->busSnoop(addr, isWrite, isWrite ? writeVal : 0))
+                return isWrite ? 0 : floatingBus();
+        }
         paddles_.rearm(cycleCounter);
         // //c-class: ANY $C070-$C07F access acknowledges the VBL
         // interrupt — MAME `apple2e.cpp` c000_iic_r/w case 0x70-0x7F:

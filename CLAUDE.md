@@ -94,6 +94,8 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | Grappler+ (Orange Micro, ROM-gated) — catalog `grappler` | `GrapplerCard.h/.cpp` | [§ Grappler+](DEV.md#grappler-orange-micro) |
 | Floppy mechanical sounds (MAME WAV samples) | `FloppySoundDevice.h/.cpp` | [§ Floppy sounds](DEV.md#floppy-mechanical-sounds) |
 | Printer mechanical sounds (**synthesised** — no sample set exists) | `PrinterSoundDevice.*`, `PrinterSoundSink.h` | [§ Printer sound](DEV.md#printer-sound-printersounddevice) |
+| TransWarp accelerator (Applied Engineering) — catalog `transwarp` | `TranswarpCard.h/.cpp` | [§ TransWarp](DEV.md#transwarp-applied-engineering) |
+| Character-generator dump conventions (incl. Videx LOWER CASE CHIP) | `CharRomDump.h/.cpp` | [§ Character generators](DEV.md#character-generators-and-the-videx-lower-case-chip) |
 | Slot bus + wire-OR IRQ | `SlotBus.h`, `SlotPeripheral.h` | [§ Slot bus](DEV.md#slot-bus--irq-aggregation) |
 | Hand-written slot ROMs — labels, bounded regions, resolved branches | `SlotRomAsm.h` | [§ Hand-written slot ROMs](DEV.md#hand-written-slot-roms-slotromasmh) |
 | DiskImage / DiskIICard / Snapshot | `DiskImage.*`, `DiskIICard.*`, `SnapshotIO.*` | [§ Storage](DEV.md#storage) |

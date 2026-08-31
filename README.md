@@ -268,7 +268,18 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `uthernet` | Uthernet I (CS8900A NIC) | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
 | `uthernet2` | Uthernet II (W5100 TCP/IP) | `softcard` | Microsoft SoftCard Z80 (CP/M) |
 | `fujinet` | FujiNet relay (SP over SLIP) | `workstation` | Apple II Workstation Card (LocalTalk) |
-| `4play` | 4play — 4 digital joysticks (Lukazi) | | |
+| `4play` | 4play — 4 digital joysticks (Lukazi) | `transwarp` | TransWarp accelerator (Applied Engineering) |
+
+**TransWarp (Applied Engineering, 1986).** A 3.58 MHz 65C02 on a card, which
+is simply the machine's processor moved onto a faster clock — same program,
+same memory. Plug it in any slot and the Apple runs at **3.5×** (or 1.75× on
+the half-speed DIP switch). There is no register to read and nothing to
+configure to make it work: it watches the bus, and software that needs real
+1 MHz timing asks for it by writing `$C074`. The shipped DIP defaults leave
+**slot 6 at stock speed** — that is the Disk II, the one slot AE did not
+trust at full speed. Optional ROM: `roms/ae_transwarp_1.4.bin` (AE's
+speed-corrected Monitor, overlaid on `$F000-$FFFF`); the card accelerates
+without it.
 
 **Apple II Workstation Card.** The board that put a IIe on LocalTalk, and the
 only card here that is a **computer of its own**: a 65C02, 28 KB of RAM, a

@@ -116,6 +116,13 @@ inline const std::vector<RomCatalogEntry>& romCatalog()
           "The card plugs with a synthetic stub ROM: PR#n still prints, but "
           "software that looks for the real firmware (AppleWorks' "
           "\"Printer = Grappler+\") will not find it." },
+        { "Other cards", "TransWarp accelerator ROM v1.4 (Applied Engineering)",
+          { "roms/ae_transwarp_1.4.bin",
+            "roms/ae transwarp rom v1.4.bin" }, 4096, 0xAFE37F55u, "MAME warprom",
+          "The card still accelerates without it — the ROM only supplies AE's "
+          "speed-corrected Monitor, which it overlays on $F000-$FFFF until "
+          "software writes $C072. Without it the stock F8 ROM's 1 MHz delay "
+          "loops (WAIT, the beep) come out 3.5x short." },
         { "Other cards", "Mouse card slot EPROM (Apple 341-0270-C)",
           { "roms/mouse_341-0270-c.bin" }, 2048, 0, "",
           "Neither mouse card can be plugged (both variants need it)." },

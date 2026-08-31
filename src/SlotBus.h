@@ -114,6 +114,25 @@ public:
         return nullptr;
     }
 
+    /// The CPU clock multiplier imposed by a plugged ACCELERATOR, or 1.0
+    /// when nothing is accelerating. Lowest slot wins, same rule as the DMA
+    /// daisy chain. Read once per frame by EmulationController.
+    double cpuSpeedMultiplier() const {
+        for (const auto& c : slots) {
+            if (!c) continue;
+            const double m = c->cpuSpeedMultiplier();
+            if (m > 0.0 && m != 1.0) return m;
+        }
+        return 1.0;
+    }
+
+    /// The plugged accelerator that wants to SNOOP the bus, or nullptr.
+    /// Cached at plug time rather than scanned, because the snoop sites
+    /// (`Memory::softSwitchAccess` and the slot windows below) are on the
+    /// path every $C0xx access takes — a null pointer test there is free,
+    /// an eight-slot virtual scan would not be.
+    SlotPeripheral* busSnooper() const { return busSnooper_; }
+
     /// System soft-switch broadcast — fan-out to every plugged card's
     /// onVideoSoftSwitch(). Used by Memory::softSwitchAccess() for the
     /// switches that aren't in the per-slot device-select range but that
@@ -172,6 +191,10 @@ private:
     /// lock the CPU worker holds around `runCpuSlice` → `advanceCycles`.
     std::array<SlotPeripheral*, kSlotCount> activeCards_{};
     int activeCount_ = 0;
+    // Set by rebuildActiveCache() — the lowest-slot card whose snoopsBus()
+    // is true. Null on every ordinary machine, which is what keeps the
+    // snoop sites free.
+    SlotPeripheral* busSnooper_ = nullptr;
     void rebuildActiveCache();
 
     /// -1 = no slot driving expansion ROM. Set by slotRomRead, cleared

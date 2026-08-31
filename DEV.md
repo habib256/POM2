@@ -559,6 +559,12 @@ Text glyphs come from a dumped character ROM (`Memory::loadCharRom`,
 selectable per locale from `CharRomCatalog`). Two properties of a dump are
 NOT knowable from its size, and POM2 used to guess both from it:
 
+Both now live in `CharRomDump.h/.cpp` — a fact about FILES, not about the
+memory map, and worth its own translation unit because two dumps of the same
+size can need opposite treatment. `Memory::loadCharRom` opens, sizes and (for
+an 8 KB international part) picks the bank; `pom2::normaliseCharRom` decides
+the rest.
+
 **The inverse/flash range.** In the 4 KB //e dumps and AppleWin's
 `Apple2_Video.rom`, bit 7 of each byte marks the range that renders inverse.
 The Videx dump never sets bit 7 at all, so that marker is absent and the
@@ -1482,6 +1488,63 @@ wall-clock. Device defers audible transition by `kMotorOffHoldMs`
 Owned by `EmulationController` (audio shutdown drains thread).
 Persisted: `floppy_sound_volume`, `floppy_sound_muted`. Pinned:
 `floppy_sound_smoke_test`.
+
+## TransWarp (Applied Engineering)
+
+Catalog `transwarp`. Port of MAME `bus/a2bus/transwarp.cpp` (R. Belmont), a
+3.58 MHz accelerator for the II / II+ / //e. Full notes in
+`src/TranswarpCard.h`; the parts worth having in the map:
+
+**The one structural divergence.** MAME puts a SECOND `W65C02` on the card
+and has it DMA the Apple's bus for every access, because a MAME a2bus card
+cannot retime the host CPU — substituting a faster processor is the only
+lever it has. POM2 has the lever: the worker's per-frame budget IS the CPU
+clock, so the card publishes a multiplier (`SlotPeripheral::
+cpuSpeedMultiplier`, aggregated by `SlotBus`, applied in
+`EmulationController::scaledFrameBudget`) and the machine keeps its own
+`M6502`. That is closer to the board — same program, same memory, faster
+clock — and costs nothing on the hot path.
+
+**The multipliers are exact rationals.** The card is clocked from the 7M
+line: full = 7.159/2 = 3.579545 MHz, half = 7.159/4. Against the Apple's
+14.31818/14 that is **3.5×** and **1.75×** exactly, not fitted decimals.
+
+**No detection register.** The card has no slot ROM and no `$C0nX` window;
+MAME's header says outright there is no way to detect it besides timing
+vblanks. Everything is `$C072` / `$C074`, snooped off the bus — hence
+`SlotPeripheral::snoopsBus()` / `busSnoop()`, cached by SlotBus as one
+pointer so the snoop sites (`Memory::softSwitchAccess` for `$C07x`, the four
+`SlotBus` window dispatchers) cost a null test on any ordinary machine.
+`$C074` is the one address the card takes OFF the bus (MAME's `dma_w`
+returns there, so it never reaches the paddle latch); `$C072` is watched and
+passed through. That asymmetry is in the MAME source and is kept.
+
+**Sampling.** The multiplier is read once per frame; the slowdown windows
+(`$C090-$C0FF` and `$C100-$C7FF` → 20 µs, `$C070` → a whole PREAD) are ~20
+cycles inside a ~17000-cycle frame. That is not an approximation in
+aggregate — sampling a duty cycle at a rate uncorrelated with it is an
+unbiased estimator of it, so the average speed converges. What it does not
+reproduce is WHERE inside a frame the slow cycles fall.
+
+**POM2 does not need the slowdowns to keep peripherals correct**, and this is
+worth being explicit about: its whole time base is CPU cycles, so a Disk II
+at 3.5× spins 3.5× faster in wall-clock and the nibble pacing per CPU cycle
+is unchanged — the same reason the //c Plus profile runs at 4× with a working
+drive. They are modelled because they are what the board does.
+
+**ROM shadow**, ROM-gated on `roms/ae_transwarp_1.4.bin` (4096 B, CRC32
+`afe37f55`, MAME `ROM_START(warprom)`; POM2 does not ship it). AE's
+speed-corrected Monitor overlays `$F000-$FFFF` until software writes `$C072`
+— the stock F8 delay loops are calibrated for 1 MHz and come out 3.5× short
+otherwise. Implemented as a straight 4 KB swap in the ROM mirror
+(`Memory::loadRomBytes`), free at run time, with the displaced Apple bytes
+kept for the swap back. Without the dump the card accelerates and simply
+never shadows.
+
+DIP switches persist as `transwarp_dsw1` / `transwarp_dsw2`. Note DSW2 bit 5
+defaults to 0: **slot 6 ships at stock speed** — that is the Disk II, the one
+slot AE did not trust at 3.5×. Pinned by `transwarp_card`, which drives the
+card through a real `Memory` + `SlotBus` because the snoop hooks live there.
 
 ## Slot bus & IRQ aggregation
 
