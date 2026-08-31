@@ -67,6 +67,16 @@ public:
     bool loadImageFromBytes(std::vector<uint8_t> bytes, const std::string& label,
                             const std::string& hostFolder = std::string{}) override;
     bool ejectImage() override;
+    bool detachImage(pom2::Block512Backing::PendingWriteBack& out) override
+    {
+        pom2::Block512Backing& b = ata_.backing();
+        if (!(b.isLoaded() && b.hasUnsavedChanges() &&
+              b.isWriteBackEnabled() && !b.isWriteProtected()))
+            return true;
+        out = b.takeWriteBack();
+        return true;
+    }
+    void clearDirtyBlocks() override { ata_.backing().clearDirty(); }
     bool saveDirty() override;
 
     bool isImageLoaded()      const override { return ata_.backing().isLoaded(); }

@@ -82,6 +82,18 @@ public:
                             const std::string& label,
                             const std::string& hostFolder = std::string{}) override;
     bool ejectImage() override;
+    /// Two-phase eject (MountableMediaCard). Takes the payload the
+    /// save-on-eject policy in ejectImage() would write, leaving the medium
+    /// alone; clearDirtyBlocks() retires it once the caller has committed.
+    bool detachImage(pom2::Block512Backing::PendingWriteBack& out) override
+    {
+        if (!(backing_.isLoaded() && backing_.hasUnsavedChanges() &&
+              backing_.isWriteBackEnabled() && !backing_.isWriteProtected()))
+            return true;                 // nothing to write: out stays invalid
+        out = backing_.takeWriteBack();
+        return true;
+    }
+    void clearDirtyBlocks() override { backing_.clearDirty(); }
 
     bool isImageLoaded() const override { return backing_.isLoaded(); }
     const std::string& getImagePath() const override { return backing_.path(); }

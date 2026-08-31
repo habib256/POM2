@@ -31,9 +31,13 @@
 //   3. Backward compatibility: a blob truncated before the new trailer
 //      still loads, leaving the live device values alone (the exact
 //      pre-fix behaviour, so old saves do not regress).
-//   4. A corrupt MIG page pointer is masked to 0x7FF on the way in —
-//      migRead indexes migRam_[migPage_ + (offset & 0x1F)], so an
-//      unmasked value read past the 2 KB array.
+//   4. A corrupt MIG page pointer is sanitised to 0x7E0 on the way in.
+//      migRead indexes migRam_[migPage_ + (offset & 0x1F)], so the index
+//      only stays inside the 2 KB array because the live cursor is 32-byte
+//      ALIGNED (starts at 0, only ever advances by 0x20) — the highest
+//      legal page is 0x7E0, not 0x7FF. A `& 0x7FF` mask therefore let a
+//      crafted blob restore 0x7FF and index up to 0x81E, 31 bytes past the
+//      array and over migPage_ / migIntDrive_ / migHdSel_ / iwm_ / hub_.
 
 #include "IWMDevice.h"
 #include "Memory.h"
@@ -165,6 +169,42 @@ void testMigPageMasked()
     assert(mem.loadSnapshotState(blob.data(), blob.size()));
 
     std::printf("  ok: MIG section length-skipped when no //c profile\n");
+
+    // ── The bound itself, on a real //c-class profile ──────────────────
+    // The check above never reaches the sanitiser (no profile to consume
+    // the section), so it pinned nothing. Drive the profile directly and
+    // read the restored cursor back out through appendSnapshotState — the
+    // only public window onto migPage_.
+    std::vector<uint8_t> rom(0x4000, 0x00);
+    rom[0x3bbf] = 0x05;                       // //c+ signature (MAME probe)
+    IIcClassProfile profile(rom.data(), rom.size(), nullptr,
+                                  nullptr, nullptr, false);
+
+    // Every page value a hostile blob could carry, not just one: the
+    // invariant is "aligned AND inside", so sweep and assert both.
+    for (uint32_t raw = 0; raw <= 0xFFFF; ++raw) {
+        std::vector<uint8_t> hostile;
+        hostile.insert(hostile.end(), { 'M', 'I', 'G', '1' });
+        hostile.push_back(static_cast<uint8_t>(raw));
+        hostile.push_back(static_cast<uint8_t>(raw >> 8));
+        hostile.resize(hostile.size() + 0x800, 0xA5);
+        const size_t used = profile.loadSnapshotState(hostile.data(),
+                                                      hostile.size());
+        assert(used >= 4 + 2 + 0x800);
+
+        std::vector<uint8_t> back;
+        profile.appendSnapshotState(back);
+        const uint16_t page = static_cast<uint16_t>(
+            back[4] | (static_cast<uint16_t>(back[5]) << 8));
+        // Aligned to 32 bytes...
+        assert((page & 0x1F) == 0);
+        // ...and low enough that the widest access (page + 0x1F) still
+        // lands on the last byte of the 0x800 array rather than past it.
+        assert(page + 0x1F <= 0x7FF);
+        assert(page == (raw & 0x7E0));
+    }
+    std::printf("  ok: MIG page cursor sanitised to 0x7E0 for all 65536 "
+                "blob values\n");
 }
 
 void testRomBankRoundTrip()

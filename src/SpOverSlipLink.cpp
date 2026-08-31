@@ -144,6 +144,7 @@ bool SpOverSlipLink::start(std::string& errOut)
 void SpOverSlipLink::stop()
 {
     if (!running_.load() && !worker_.joinable()) {
+        std::lock_guard<std::mutex> callLk(callMtx_);
         transport_.reset();
         rx_.reset();
         return;
@@ -154,6 +155,21 @@ void SpOverSlipLink::stop()
     if (transport_) transport_->shutdown();
     if (worker_.joinable()) worker_.join();
     running_.store(false);
+
+    // The join settles the WORKER; it says nothing about the CPU thread. A
+    // guest SmartPort call can be inside transact() at this instant, holding
+    // a raw `SpTransport*` — so destroying the transport from here without
+    // `callMtx_` is a use-after-free. It was survivable only by accident:
+    // the panel's stop ran under the emulator's stateMutex, which the CPU
+    // thread also holds for the whole SmartPort call, so the two could never
+    // overlap. Moving that stop off stateMutex (NetworkCoordinator, so a 2 s
+    // helper teardown stops freezing the machine) removed the accident, and
+    // this mutex is what replaces it.
+    //
+    // AFTER the join, never before: the worker reaches transact() through
+    // enumerateDevices(), so holding callMtx_ across the join would park the
+    // two threads on each other.
+    std::lock_guard<std::mutex> callLk(callMtx_);
 
     // Only now is it safe to tear the transport down: nothing else can be
     // inside it.
@@ -458,13 +474,13 @@ SpOverSlipLink::transact(uint8_t command, uint8_t paramCount, uint8_t unit,
 {
     Response out;
 
+    // Read the transport UNDER callMtx_, never before it. stop() destroys it
+    // with this same mutex held, so a pointer sampled outside the lock can be
+    // dangling by the time the lock is granted — the window the emulator's
+    // stateMutex used to hide.
+    std::lock_guard<std::mutex> lk(callMtx_);
     SpTransport* t = transport_.get();
     if (!t || !t->isOpen()) return out;      // replied = false → no device
-
-    std::lock_guard<std::mutex> lk(callMtx_);
-    // Re-check under the lock: the peer can go away between the test above
-    // and here.
-    if (!t->isOpen()) return out;
 
     const uint8_t seq = nextSequence();
 

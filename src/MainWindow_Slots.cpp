@@ -698,20 +698,16 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(!info.loaded);
                     if (ImGui::Button("Eject")) {
-                        bool ok = false;
-                        std::string err;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = media->ejectBay(b);
-                            if (ok) persistMediaBay(s, b, p);
-                            else err = media->bayInfo(b).lastError;
-                        }
-                        if (ok) {
-                            settings->save();
-                            mPrimed[s][b] = false;
-                        }
+                        // Same reason the Mount button above moved: ejectBay()
+                        // under stateMutex ran the save-on-eject rewrite with
+                        // the machine and the window both frozen behind it.
+                        // The coordinator splits that write out of the lock
+                        // and owns the bay-key persistence.
+                        const auto r = storageCoordinator_->ejectMediaBay(
+                            *controller, *settings, s, b);
+                        if (r.ok) mPrimed[s][b] = false;
                         tapeStatusMessage = "Slot " + std::to_string(s) +
-                            (ok ? ": ejected" : ": eject failed: " + err);
+                            (r.ok ? ": ejected" : ": eject failed: " + r.error);
                         tapeStatusUntil = lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();

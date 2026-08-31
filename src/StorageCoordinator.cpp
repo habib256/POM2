@@ -657,6 +657,19 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::ejectMediaBay(
 {
     MediaCommandResult result;
     std::vector<SettingUpdate> updates;
+
+    // Three critical sections, because save-on-eject is a whole-file
+    // read-modify-write + rename and doing it under `stateMutex` froze the
+    // CPU worker and the paint thread together (CLAUDE.md's standing rule).
+    //   1. locked   — lift the payload out, medium left MOUNTED
+    //   2. unlocked — commit it
+    //   3. locked   — retire the dirty set, then drop the medium
+    // The medium survives phase 1 on purpose: a commit can fail (disk full,
+    // read-only parent) and the one-phase code kept it mounted so the user
+    // could retry. Phase 3 leaves nothing dirty, so `ejectBay`'s own
+    // save-on-eject is a guarded no-op there and the file is written once.
+    Block512Backing::PendingWriteBack pending;
+    bool twoPhase = false;
     {
         auto state = controller.lockState();
         auto& bus = state.memory().slotBus();
@@ -668,6 +681,33 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::ejectMediaBay(
         if (bay < 0 || bay >= media->bayCount())
             return commandError("invalid media bay " +
                                 std::to_string(bay + 1));
+        std::string prepareError;
+        twoPhase = media->prepareEjectBay(bay, pending, prepareError);
+        if (!twoPhase && !prepareError.empty())
+            return commandError(prepareError);
+    }
+
+    if (twoPhase && pending.valid) {
+        std::string error;
+        if (!Block512Backing::commitWriteBack(std::move(pending), error)) {
+            return commandError(error.empty()
+                ? "the image could not be saved" : error);
+        }
+    }
+
+    {
+        auto state = controller.lockState();
+        auto& bus = state.memory().slotBus();
+        auto* peripheral = bus.peripheral(slot);
+        auto* media = dynamic_cast<MountableMediaCard*>(peripheral);
+        // Re-resolved: the bus can be rebuilt while the commit runs unlocked.
+        if (!media)
+            return commandError("slot " + std::to_string(slot) +
+                                " has no mountable media");
+        if (bay < 0 || bay >= media->bayCount())
+            return commandError("invalid media bay " +
+                                std::to_string(bay + 1));
+        if (twoPhase) media->clearBayDirty(bay);
         if (!media->ejectBay(bay)) {
             const auto info = media->bayInfo(bay);
             return commandError(info.lastError.empty()

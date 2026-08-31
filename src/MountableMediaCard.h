@@ -111,7 +111,34 @@ public:
     }
 
     /// Eject `bay` (saves dirty blocks first when write-back is on).
+    ///
+    /// ONE-PHASE, like `mountBay`: the save-on-eject rewrite happens inline,
+    /// so a caller holding `stateMutex` freezes the machine for a whole
+    /// read-modify-write + rename. Prefer the three-step form below from a
+    /// locked context.
     virtual bool ejectBay(int bay) = 0;
+
+    /// Phase 1 of a two-phase EJECT, with `stateMutex` held: lift out what
+    /// the save-on-eject would write, WITHOUT touching the medium. Leaving it
+    /// mounted is the point — phase 2 can fail (disk full, read-only parent),
+    /// and the pre-split behaviour kept the medium so the user could retry.
+    ///
+    /// Same opt-in convention as `adoptBay`: false with an EMPTY `errOut`
+    /// means "this bay has no block backing", and the caller falls back to
+    /// `ejectBay`. A real failure fills `errOut`.
+    virtual bool prepareEjectBay(int /*bay*/,
+                                 Block512Backing::PendingWriteBack& /*out*/,
+                                 std::string& errOut)
+    {
+        errOut.clear();
+        return false;
+    }
+
+    /// Phase 3, with `stateMutex` held: drop the dirty set now that phase 2
+    /// has committed it. The caller then calls `ejectBay`, whose internal
+    /// save-on-eject is a guarded no-op with nothing dirty left — so the
+    /// medium is dropped without a second write.
+    virtual void clearBayDirty(int /*bay*/) {}
 
     /// Toggle per-bay write-back (save-on-eject).
     virtual void setBayWriteBack(int bay, bool on) = 0;

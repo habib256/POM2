@@ -1041,6 +1041,24 @@ bool SmartPortCard::ejectBay(int bay)
     return false;
 }
 
+bool SmartPortCard::prepareEjectBay(int bay,
+                                    Block512Backing::PendingWriteBack& out,
+                                    std::string& errOut)
+{
+    errOut.clear();
+    SmartPortUnit* u = unit(static_cast<size_t>(bay));
+    // No unit, or a unit kind with no block backing (the 3.5" one): empty
+    // errOut tells the caller to fall back to the inline eject().
+    if (!u) return false;
+    return u->detachImage(out);
+}
+
+void SmartPortCard::clearBayDirty(int bay)
+{
+    if (SmartPortUnit* u = unit(static_cast<size_t>(bay)))
+        u->clearDirtyBlocks();
+}
+
 void SmartPortCard::setBayWriteBack(int bay, bool on)
 {
     if (SmartPortUnit* u = unit(static_cast<size_t>(bay)))

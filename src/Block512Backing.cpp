@@ -302,80 +302,142 @@ void Block512Backing::eject()
 
 bool Block512Backing::saveDirty()
 {
+    // Composed from the two-phase pair so there is ONE copy of the write
+    // logic. The phases are simply not separated in time here: this entry
+    // point is for single-threaded callers (CLI, tests, the flush inside
+    // adoptImage), where there is no lock to get out from under.
+    PendingWriteBack pending = takeWriteBack();
+    if (!pending.valid) return true;
+
+    std::string error;
+    if (!commitWriteBack(std::move(pending), error)) {
+        lastError_ = error;
+        return false;
+    }
+    // Only on success, matching the pre-split behaviour: a failed save leaves
+    // the blocks dirty so the next attempt still has them.
+    clearDirty();
+    return true;
+}
+
+Block512Backing::PendingWriteBack Block512Backing::takeWriteBack() const
+{
+    PendingWriteBack out;
     if (!loaded_ || !anyDirty_ || !writeBack_
         || wpHeader_ || !supportsWriteBack_) {
-        return true;
+        return out;                      // valid = false → nothing to commit
     }
 
+    out.valid      = true;
+    out.synth      = synth_;
+    out.path       = path_;
+    out.hostFolder = hostFolder_;
+    out.dataOffset = dataOffset_;
+    out.dataLength = dataLength_;
+
     if (synth_) {
-        pom2::ProDOSDecodeResult r = pom2::decodeVolumeToFolder(image_, hostFolder_);
+        // The folder decode needs the whole volume, so it is copied. That is
+        // a memcpy of at most the image size — microseconds against the
+        // directory walk and the file writes phase 2 does.
+        out.synthImage = image_;
+        return out;
+    }
+
+    // The file case only needs the blocks that actually changed, which is
+    // normally a handful even on a 32 MiB image.
+    for (size_t b = 0; b < dirtyBlocks_.size(); ++b) {
+        if (!dirtyBlocks_[b]) continue;
+        out.dirtyIndices.push_back(static_cast<uint32_t>(b));
+    }
+    out.dirtyBytes.resize(out.dirtyIndices.size() * kBlockBytes);
+    for (size_t i = 0; i < out.dirtyIndices.size(); ++i) {
+        std::memcpy(out.dirtyBytes.data() + i * kBlockBytes,
+                    image_.data() + out.dirtyIndices[i] * kBlockBytes,
+                    kBlockBytes);
+    }
+    return out;
+}
+
+void Block512Backing::clearDirty()
+{
+    std::fill(dirtyBlocks_.begin(), dirtyBlocks_.end(), false);
+    anyDirty_ = false;
+}
+
+bool Block512Backing::commitWriteBack(PendingWriteBack&& pending,
+                                      std::string& error)
+{
+    if (!pending.valid) return true;
+
+    if (pending.synth) {
+        pom2::ProDOSDecodeResult r =
+            pom2::decodeVolumeToFolder(pending.synthImage, pending.hostFolder);
         if (!r.ok) {
-            lastError_ = r.error;
-            pom2::log().warn("HDV", "Synth folder write-back failed: " + lastError_);
+            error = r.error;
+            pom2::log().warn("HDV", "Synth folder write-back failed: " + error);
             return false;
         }
-        std::fill(dirtyBlocks_.begin(), dirtyBlocks_.end(), false);
-        anyDirty_ = false;
         pom2::log().info("HDV", "Synth folder write-back: " +
                                 std::to_string(r.filesWritten) + " file(s) → " +
-                                hostFolder_);
+                                pending.hostFolder);
         return true;
     }
 
     // Rewrite a complete sibling copy, preserving the 2IMG envelope and any
     // trailer.  An in-place series of 512-byte writes could leave the user's
     // only image half-updated when a later write/flush failed.
-    std::ifstream source(path_, std::ios::binary | std::ios::ate);
+    std::ifstream source(pending.path, std::ios::binary | std::ios::ate);
     if (!source) {
-        lastError_ = "Cannot open " + path_ + " for read";
-        pom2::log().warn("HDV", lastError_);
+        error = "Cannot open " + pending.path + " for read";
+        pom2::log().warn("HDV", error);
         return false;
     }
     const std::streampos end = source.tellg();
-    if (end < 0 || static_cast<size_t>(end) < dataOffset_ + dataLength_ ||
+    if (end < 0 ||
+        static_cast<size_t>(end) < pending.dataOffset + pending.dataLength ||
         static_cast<std::uintmax_t>(end) > kMaxBackingFileBytes) {
-        lastError_ = "Source image changed size before save: " + path_;
-        pom2::log().warn("HDV", lastError_);
+        error = "Source image changed size before save: " + pending.path;
+        pom2::log().warn("HDV", error);
         return false;
     }
     source.seekg(0, std::ios::beg);
     std::vector<uint8_t> output(static_cast<size_t>(end));
     if (!source.read(reinterpret_cast<char*>(output.data()),
                      static_cast<std::streamsize>(output.size()))) {
-        lastError_ = "Short read on " + path_;
-        pom2::log().warn("HDV", lastError_);
+        error = "Short read on " + pending.path;
+        pom2::log().warn("HDV", error);
         return false;
     }
-    size_t written = 0;
-    for (size_t b = 0; b < dirtyBlocks_.size(); ++b) {
-        if (!dirtyBlocks_[b]) continue;
-        std::memcpy(output.data() + dataOffset_ + b * kBlockBytes,
-                    image_.data() + b * kBlockBytes, kBlockBytes);
-        ++written;
+    for (size_t i = 0; i < pending.dirtyIndices.size(); ++i) {
+        std::memcpy(output.data() + pending.dataOffset +
+                        static_cast<size_t>(pending.dirtyIndices[i]) * kBlockBytes,
+                    pending.dirtyBytes.data() + i * kBlockBytes,
+                    kBlockBytes);
     }
+    const size_t written = pending.dirtyIndices.size();
 
-    const std::filesystem::path tmp = path_ + ".pom2tmp";
+    const std::filesystem::path tmp = pending.path + ".pom2tmp";
     std::error_code permEc;
-    const auto perms = std::filesystem::status(path_, permEc).permissions();
+    const auto perms = std::filesystem::status(pending.path, permEc).permissions();
     const bool havePerms = !permEc;
     std::ofstream sink(tmp, std::ios::binary | std::ios::trunc);
     if (!sink ||
         !sink.write(reinterpret_cast<const char*>(output.data()),
                     static_cast<std::streamsize>(output.size()))) {
-        lastError_ = "Write failed on " + tmp.string();
+        error = "Write failed on " + tmp.string();
         sink.close();
         std::error_code ignored;
         std::filesystem::remove(tmp, ignored);
-        pom2::log().warn("HDV", lastError_);
+        pom2::log().warn("HDV", error);
         return false;
     }
     sink.flush();
     sink.close();
     if (!sink) {
-        lastError_ = "Flush failed on " + tmp.string();
+        error = "Flush failed on " + tmp.string();
         std::error_code ignored;
         std::filesystem::remove(tmp, ignored);
-        pom2::log().warn("HDV", lastError_);
+        pom2::log().warn("HDV", error);
         return false;
     }
     std::error_code ec;
@@ -383,17 +445,15 @@ bool Block512Backing::saveDirty()
         std::filesystem::permissions(tmp, perms, ec);
         ec.clear();
     }
-    if (!replaceFileAtomic(tmp, path_, ec)) {
-        lastError_ = "Cannot replace " + path_ + ": " + ec.message();
+    if (!replaceFileAtomic(tmp, pending.path, ec)) {
+        error = "Cannot replace " + pending.path + ": " + ec.message();
         std::error_code ignored;
         std::filesystem::remove(tmp, ignored);
-        pom2::log().warn("HDV", lastError_);
+        pom2::log().warn("HDV", error);
         return false;
     }
-    std::fill(dirtyBlocks_.begin(), dirtyBlocks_.end(), false);
-    anyDirty_ = false;
     pom2::log().info("HDV", "Saved " + std::to_string(written) +
-                            " modified block(s) to " + path_);
+                            " modified block(s) to " + pending.path);
     return true;
 }
 
