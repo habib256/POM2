@@ -192,15 +192,15 @@ ROM carrying the card's half of the AppleTalk stack.
 
 **What it needs, in order:**
 
-1. **The card's ROM dump.** Not in `roms/`, and not something POM2 can
-   synthesise. This is the hard blocker, and it is different in kind from the
-   SmartPort case: POM2 can synthesise a SmartPort card because the firmware
-   entry contract is *published* in the Apple II Reference Manual, so real
-   ProDOS drivers call a documented dispatch. AppleTalk has no equivalent
-   published slot-firmware calling convention — guest software reaches the card
-   through the 8530's registers and through Apple's own ROM entry points. A
-   synthesised interface would be one no actual Apple II software knows how to
-   call, i.e. a card that exists and cannot be used.
+1. **The card's ROM dump.** ~~Not in `roms/`~~ — **a dump has since been
+   identified** (see [§ 5.1](#51-the-341-0358-a-dump)), which lifts this one.
+   It mattered because POM2 could not synthesise around it the way it does for
+   SmartPort: there the firmware entry contract is *published* in the Apple II
+   Reference Manual, so real ProDOS drivers call a documented dispatch.
+   AppleTalk has no equivalent published slot-firmware calling convention —
+   guest software reaches the card through the 8530's registers and through
+   Apple's own ROM entry points, so a synthesised interface would be one no
+   actual Apple II software knows how to call.
 2. **An 8530 SCC device.** A MAME port, per the project's convention of citing
    the MAME file and line range and pinning with a smoke test. Substantial but
    bounded, and independently useful — the Mac and IIgs serial ports are the
@@ -220,6 +220,35 @@ would make it work the way most sites actually wired it.
 (1), and let the guest's own AppleTalk software drive it — matching what
 `docs/lle_vs_hle.md` says about picking a level. An HLE at the protocol layer
 is the tempting shortcut and is the wrong one here, for the reason in (1).
+
+### 5.1 The 341-0358-A dump
+
+A 64 KiB dump (sha1 `59c8e8c8…`, crc32 `0x63819dcb`) has been identified as
+this card's firmware. The identification is from the CONTENTS, not from a
+part-number database — which is the stronger evidence, and worth writing down
+so a future reader can re-check it rather than trust it:
+
+| Evidence | Offset | What it establishes |
+|---|---|---|
+| `STA $C080,X` / `STA $C08F,X` | several | Slot-card firmware. `$C080,X` with X = slot×16 is *the* Apple II device-select idiom; the sixteen registers behind it are where the 8530 sits. |
+| `THOMAS EAGER WROTE THE LAP DRIVERS` | `0x0DB7F` | **LAP = LocalTalk Link Access Protocol.** This ROM carries the link layer. |
+| `Apple //e Boot` | `0x0D5A8` | The netboot path — a //e booting from an AppleShare server, which is what this card was for. |
+| `%%IncludeProcSet IWEm 1 1` | `0x04A1D` | A LaserWriter print path. `IWEm` is the **ImageWriter Emulator** procset: the card sends PostScript that asks the LaserWriter to render an ImageWriter-shaped page. |
+| 8 × 8 KiB banks, all distinct | — | 64 KiB of real content, banked — no mirroring, so the whole dump is live. |
+| No Pascal 1.1 signature, no ProDOS block trio, at any 256-byte alignment | — | The `$Cn00` page is not a plain slice of this image; the banking scheme has still to be worked out. |
+
+That last row is the honest one: identifying the dump is not the same as
+knowing how the card maps it, and the mapping is the first thing an
+implementation has to establish.
+
+**What remains after the ROM.** Item (2), the 8530 SCC, is untouched and is the
+substantial piece. POM2's convention is that a hardware port cites its MAME
+file and line range and is pinned by a smoke test; that convention wants the
+MAME source at hand rather than a datasheet reconstruction from memory, and
+getting it is the next concrete step. Item (3) then largely takes care of
+itself for the LocalTalk case — the LAP driver is in this ROM, and the layers
+above it are software the guest loads, so the emulation seam really is the
+chip.
 
 ## 6. Still proposed: the HP LaserJet
 
