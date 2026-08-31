@@ -136,6 +136,16 @@ enum class IwModel : uint8_t {
     /// full graphics model — so it is delegated to an external interpreter
     /// instead; see docs/printer_plan_2.md.
     LaserWriterDiablo,
+    /// Apple LaserWriter speaking PostScript — the other position of the same
+    /// back-panel switch. There is no parser here and there cannot be one:
+    /// see PostScriptRender.h. The bytes are intercepted UPSTREAM of this
+    /// class, rendered by an external interpreter, and the finished page
+    /// arrives through `adoptRenderedPage`.
+    ///
+    /// Anything that does reach the parser prints as text, which is exactly
+    /// what a PostScript job sent to a printer that cannot render it does —
+    /// so a failed interception is diagnosable rather than silent.
+    LaserWriterPostScript,
     Count
 };
 
@@ -147,6 +157,10 @@ enum class IwLineage : uint8_t {
     CItoh = 0,   ///< ImageWriter I/II, Apple DMP, Prowriter, NEC
     EscP,        ///< Epson MX / RX / FX
     Diablo,      ///< Diablo 630 daisywheel (LaserWriter emulation mode)
+    /// Not a grammar at all — the job goes to an external interpreter. Named
+    /// here so the head can be SELECTED and so nothing silently treats it as
+    /// one of the three that are parsed.
+    PostScript,
 };
 
 /// ESC/P heads only: what this one actually has hardware for. The ESC/P
@@ -350,6 +364,24 @@ public:
                             double* committedLength = nullptr);
     double paperWidthIn()  const { return defaultPageWidth_; }
     double paperLengthIn() const { return defaultPageHeight_; }
+
+    /// Put an EXTERNALLY rendered page onto the platen — the LaserWriter's
+    /// PostScript path, where the page comes back from an interpreter rather
+    /// than from a head striking paper (see PostScriptRender.h).
+    ///
+    /// `gray` is one byte per pixel, 0 = full ink and 255 = bare paper,
+    /// `w` bytes per row (Ghostscript's `pgmraw` convention). It is blitted
+    /// 1:1 and clipped, NOT scaled — ask the interpreter for the page's own
+    /// pixel geometry (`pageRasterWidth/Height`) and the two agree exactly.
+    ///
+    /// Does NOT eject. The caller decides, because "the interpreter produced
+    /// a page" and "the sheet is finished" are different events on a printer
+    /// whose job may carry several `showpage`s.
+    bool adoptRenderedPage(const uint8_t* gray, int w, int h);
+
+    /// The current sheet's raster geometry, i.e. what to ask a renderer for.
+    int pageRasterWidth()  const { return current_.w; }
+    int pageRasterHeight() const { return current_.h; }
 
     /// Mechanical sound sink (head buzz, carriage sweep, platen motor).
     /// Optional; null = a silent printer, which is what every headless build

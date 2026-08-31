@@ -214,6 +214,13 @@ const IwModelProfile kModels[static_cast<size_t>(IwModel::Count)] = {
     { "LaserWriter (Diablo 630)", false, false,
       &kBankStdFixed, &kBankStdProp, nullptr, nullptr, nullptr,
       10.0, 1, 80, 960.0, 960.0, IwLineage::Diablo, 0, nullptr, 0 },
+    // Apple LaserWriter, PostScript mode. The pacing figure is the serial
+    // line again, and the pitch only matters for the fallback described in
+    // IwModel::LaserWriterPostScript — a page that renders never touches
+    // either, because the interpreter decides where every mark goes.
+    { "LaserWriter (PostScript)", false, false,
+      &kBankStdFixed, &kBankStdProp, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 960.0, 960.0, IwLineage::PostScript, 0, nullptr, 0 },
 };
 
 /// POM2's soft-switch A charset index → the ROM's locale enum. The order of
@@ -1381,6 +1388,10 @@ bool ImageWriter::processCommandChar(uint8_t ch)
     switch (modelProfile().lineage) {
     case IwLineage::EscP:   return processEpsonChar(ch);
     case IwLineage::Diablo: return processDiabloChar(ch);
+    // PostScript is intercepted upstream; anything arriving here is a job
+    // that missed the interception, and printing it as text is the
+    // diagnosable outcome (see IwModel::LaserWriterPostScript).
+    case IwLineage::PostScript: return false;
     case IwLineage::CItoh:  break;
     }
 
@@ -2384,6 +2395,32 @@ void ImageWriter::execDiabloEscape()
         break;
     }
     diabloCmd_ = 0;
+}
+
+bool ImageWriter::adoptRenderedPage(const uint8_t* gray, int w, int h)
+{
+    if (!gray || w <= 0 || h <= 0 || current_.pix.empty()) return false;
+
+    // Band 7 is all three inks, i.e. neutral black, and the intensity ramp is
+    // 0..31 (see indexToRgb). So a grey maps straight onto the page's own
+    // encoding and anti-aliased PostScript text keeps its edges — the page
+    // model was never one-bit, it just had no source of greys before.
+    const int cw = std::min(w, current_.w);
+    const int chh = std::min(h, current_.h);
+    for (int y = 0; y < chh; ++y) {
+        const uint8_t* src = gray + static_cast<size_t>(y) * w;
+        uint8_t* dst = current_.pix.data() + static_cast<size_t>(y) * current_.w;
+        for (int x = 0; x < cw; ++x) {
+            const unsigned ink = (255u - src[x]) * 31u / 255u;
+            dst[x] = static_cast<uint8_t>((7u << 5) | ink);
+        }
+    }
+    // The head has no meaningful position on a page it did not print, and
+    // leaving it mid-sheet would make the next text job start there.
+    curX_ = leftMargin_;
+    curY_ = topMargin_;
+    ++revision_;
+    return true;
 }
 
 void ImageWriter::indexToRgb(uint8_t v, uint8_t& r, uint8_t& g, uint8_t& b)
