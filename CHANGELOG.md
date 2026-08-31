@@ -5,6 +5,136 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-31 — Nine bugs, five more printers, and the LaserWriter
+
+### The bug hunt, and the three it could not finish
+
+A parallel agent sweep found 27 candidates; adversarial verification killed
+18 and confirmed 9, all fixed. The single memory-safety bug is the one worth
+remembering: the //c+ MIG page cursor restored from a snapshot was masked with
+`& 0x7FF`, which *looks* right for a `0x800` array and is not. The index only
+stays inside because the live cursor is **32-byte aligned** — it starts at 0
+and only ever advances by `0x20` — so the highest legal page is `0x7E0`, and a
+crafted blob restoring `0x7FF` indexed up to `0x81E`, over `migPage_`,
+`migIntDrive_`, `migHdSel_` and the raw `iwm_` / `hub_` pointers. A range mask
+is not an alignment invariant.
+
+The rest were the same shape as each other: **file I/O under `stateMutex`** —
+the CLI's snapshot save/load, `loadTape`/`saveTape` decoding whole audio files,
+the media panel's Mount button, `mountHdv` discarding its unlocked phase-1 read
+and re-reading 32 MiB under the lock, the FujiNet helper's 2 s stop. Plus two
+that were simply never right: the Super Serial listener could not be started
+from the UI at all (the transport was injected only when the saved state was
+already listening, so the button reported "bind failed" for a socket that was
+never created), and `swapSlotCardVariant` wrote `slot_N_card` without the
+`slotKeyIsUserChoice` guard, so clicking it on a //c clobbered the user's //e
+slot map.
+
+Three follow-ups the agents deliberately left out of scope, because the fix
+crossed a file they were not allowed to touch, and each turned out to matter:
+
+* **`SpOverSlipLink::stop()` destroyed the transport with no `callMtx_` held**
+  while `transact()` cached a raw `SpTransport*` sampled *before* taking that
+  mutex. Only `stateMutex` kept the two threads apart — and moving the FujiNet
+  panel's stop off `stateMutex`, which is exactly what the fix above did,
+  removed that accident. Fixing one bug armed another. The teardown takes
+  `callMtx_` now, **after** the join and never before: the worker reaches
+  `transact()` through `enumerateDevices()`, so holding it across the join
+  parks the two threads on each other.
+* **The Eject button could not be fixed by routing it at the coordinator**,
+  which is what the agent proposed: `ejectMediaBay` ran save-on-eject — a whole
+  file read-modify-write plus rename — inside its own `lockState()`. So
+  `Block512Backing` grew `takeWriteBack`/`commitWriteBack` (`saveDirty` is
+  composed from them, so there is one copy of the write logic) and the eject
+  became three critical sections. **Phase 1 leaves the medium mounted on
+  purpose**: a commit can fail on a full disk, and the one-phase code kept it
+  so the user could retry.
+* **`iwm_mig_snapshot` pinned nothing.** `testMigPageMasked` built a hostile
+  blob and fed it to a plain `Memory` with no //c profile to consume it, so the
+  sanitiser was never reached. It now drives `IIcClassProfile` directly and
+  sweeps all 65536 page values. Confirmed failing against the pre-fix mask
+  before being kept — the P0 lesson, again: write the test that makes it FAIL.
+
+### Five more printers, from one table column
+
+The Grappler+ models a seven-position printer-type DIP; POM2 had heads for two
+of those positions. Added: the **C. Itoh Prowriter 8510A** and **NEC PC-8023A**
+(the mechanism Apple rebadged as the DMP, and its NEC badge — which is why the
+Grappler groups them on one position), and the **Epson MX-80**, **MX-80
+Graftrax+** and **RX-80**.
+
+ESC/P grew feature by feature across MX → RX → FX, so that is a capability
+mask, not new code paths: `IwModelProfile` gained `escPFeatures`. A command the
+fitted head lacks is treated exactly like an unknown ESC — dropped with its
+ESC, following bytes printing as text — because that is what the firmware did,
+and POM2 already reproduces wrong-DIP garbage on purpose.
+
+**A capability mask is not free once a gated command has a BODY.** Dropping
+`ESC *` while its data bytes still streamed would print a screenful of them, so
+`BitGraph` gained a `swallow` flag — a density of 0 could not express it,
+because `dotW = 1/horizDens` goes infinite and `fillDots` clamps that to a
+filled row. And the screen dump had to learn which graphics command the fitted
+head can answer, since it emitted `ESC *` for any Epson and an MX-80 prints
+that as text.
+
+### The LaserWriter, both halves
+
+**Diablo 630 first**, because that is how an Apple II actually got text out of
+one without PostScript: the back-panel switch offered daisywheel emulation, and
+most word processors had a 630 driver. Planned as its own `LaserWriter.h/.cpp`
+with a 300 dpi canvas and **revised on contact with the code** — a 630 is
+fixed-pitch text with no graphics, `ImageWriter`'s mechanism was already right,
+and `hmi_` was *already* documented as "the guest saying move exactly this far,
+which outranks the font", which is precisely a Diablo HMI. So it is a third
+parser over the same mechanism, and `escP` became an `IwLineage` enum: two
+lineages fit in a bool, three do not.
+
+Deliberately conservative on the grammar. Guessing a parameter COUNT wrong does
+not lose one command, it desynchronises the whole job — and the LaserWriter's
+emulation was a subset of the real 630 anyway, so a conservative subset is
+*closer* to the machine than an eager one.
+
+**PostScript second, by delegation.** It is not a command set: it is a
+Turing-complete stack language with Bezier flattening, winding-rule fills,
+clipping, halftones and encrypted hinted Type 1 fonts. An interpreter would be
+bigger than the rest of the printer subsystem and the failure mode of an
+almost-right one is a page that is *subtly* wrong — worse than no page. So
+`ChildProcess` supervises Ghostscript, exactly as it supervises the FujiNet
+helper.
+
+Four things worth keeping:
+
+* **Ghostscript is AGPL and POM2 is GPLv3, and a separate PROCESS is not
+  linking.** Optional runtime dependency, nothing shipped, detected at runtime.
+  `PostScriptRender.h` says not to make it a library binding without revisiting
+  that.
+* **`-dSAFER` is not optional** — the job comes from emulated software, and
+  PostScript can open and delete host files.
+* **PGM, not PNG.** A five-token header and raw bytes is thirty lines; PNG
+  would mean carrying a *decoder* to read back what POM2 only ever writes.
+* **The page model was always an intensity ramp** and merely had no source of
+  greys, so anti-aliased PostScript text keeps its edges through
+  `adoptRenderedPage` rather than being thresholded to one bit.
+
+### The Workstation Card: identified, not built
+
+A 64 KiB dump was identified as the Apple II Workstation Card firmware — from
+its CONTENTS rather than a part number, which is the stronger evidence: the
+`STA $C080,X` device-select idiom, a `THOMAS EAGER WROTE THE LAP DRIVERS`
+credit (LocalTalk Link Access Protocol), an `Apple //e Boot` netboot string,
+and a `%%IncludeProcSet IWEm 1 1` fragment — a LaserWriter print path asking
+for the ImageWriter Emulator procset, which ties this card straight to the
+printer work either side of it.
+
+It is **not implemented**, and the reason is not scope. The dump lifts one of
+two blockers; the Zilog 8530 SCC is untouched, and POM2's convention wants a
+MAME port citing file and line rather than a datasheet reconstruction. Also
+recorded, because it is the first thing the implementation must solve: there is
+**no Pascal 1.1 signature and no ProDOS block dispatch trio at any 256-byte
+alignment**, so the `$Cn00` page is not a plain slice of the image and the
+banking scheme is still unknown. Identifying a dump is not knowing how the card
+maps it. → `TODO.md`
+
 ## 2026-08-28 — TnfsClient gets a caller, and ProDOS gets its marker back
 
 Two things, and the second is a bug the first went looking for.

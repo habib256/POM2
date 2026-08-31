@@ -527,6 +527,66 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Cards] slot cards & peripherals
 
+- 🟠 **Apple II Workstation Card — the ROM is identified, the 8530 is not
+  written.** *(~4-6 d; the SCC is most of it)*
+  <a id="apple-ii-workstation-card"></a>The card that put a IIe on LocalTalk,
+  so it could netboot from an AppleShare server and reach the LaserWriters on
+  the same net. Full analysis in
+  [`docs/printer_plan_2.md` § 5](docs/printer_plan_2.md#5-the-apple-ii-workstation-card--not-implemented);
+  this is the working checklist.
+
+  **State: one of two blockers lifted.**
+
+  1. ✅ **The firmware dump exists and is identified.** 64 KiB, sha1
+     `59c8e8c88bac5c31ada1306b412edfcf5912a720`, crc32 `0x63819dcb`, md5
+     `5e3aa2e0e5d70d762f1d92f11a4347ac`, supplied as `3410358A.bin` (Apple part
+     341-0358-A). **It is NOT in the tree** — copying it in was refused by the
+     sandbox on the machine that analysed it, so it still has to be dropped
+     into `roms/341-0358-a.bin` by hand. Verify with the sha1 above before
+     trusting it.
+  2. ❌ **The Zilog 8530 SCC is not written.** This is the substantial piece
+     and the whole remaining blocker. POM2's convention wants a MAME port
+     citing file + line range (`machine/z80scc.cpp`) and pinned by a smoke
+     test, so **step one is getting the MAME source to hand** — a datasheet
+     reconstruction from memory would be a documented deviation from the
+     convention, not a shortcut. The same chip is the Mac and IIgs serial
+     port, so the work is reusable well beyond this card.
+
+  **What the dump proves, so nobody re-derives it.** Identified from CONTENTS,
+  not from a part-number lookup:
+  - `STA $C080,X` / `STA $C08F,X` — slot-card firmware. `$C080,X` with
+    X = slot×16 is *the* Apple II device-select idiom, and those sixteen
+    registers are where the 8530 sits.
+  - `THOMAS EAGER WROTE THE LAP DRIVERS` at `0x0DB7F` — LAP = LocalTalk Link
+    Access Protocol. **The link layer is in this ROM**, which is why the
+    emulation seam is the chip and not the protocol: the layers above LAP are
+    software the guest loads from disk.
+  - `Apple //e Boot` at `0x0D5A8` — the netboot path.
+  - `%%IncludeProcSet IWEm 1 1` at `0x04A1D` — a LaserWriter print path.
+    `IWEm` is the ImageWriter Emulator procset: the card sends PostScript
+    asking the LaserWriter to render an ImageWriter-shaped page. This is the
+    direct tie to the printer work.
+  - 8 × 8 KiB banks, all distinct — 64 KiB live, no mirroring.
+
+  **What the dump does NOT settle, and it matters.** There is **no Pascal 1.1
+  signature and no ProDOS block dispatch trio at any 256-byte alignment**, so
+  the `$Cn00` page is not a plain slice of the image. **The banking scheme has
+  to be worked out before anything else** — identifying a dump is not knowing
+  how the card maps it. Start there: find which of the sixteen `$C08x,X`
+  writes select a bank, and what window they page into.
+
+  **Order of work.** (a) place the ROM and add a `RomCatalog` entry; (b) map
+  the banking from the dump; (c) 8530 SCC as its own `Scc8530Device.h/.cpp`
+  with a MAME citation and a smoke test; (d) `WorkstationCard` wiring ROM +
+  SCC onto the slot; (e) a host-side LocalTalk endpoint. The LAP driver in the
+  ROM then drives itself.
+
+  **Worth knowing before starting:** given the LaserWriter's PostScript path
+  already ships (plan 2 § 4), this card buys an *alternative transport* for
+  PostScript that the Super Serial Card already carries — not a new capability.
+  It is worth doing for netboot and AppleShare, and for being the way most
+  sites actually wired a LaserWriter; it is not the only way to print to one.
+
 - 🟢 **ProDOS `STATUS` — the hand-written ROM family** *(closed 2026-08-28)* —
   <a id="prodos-status-the-hand-assembled-rom-family"></a>kept as a record, not
   as work. All six pages are written with `SlotRomAsm.h`: an address is a
