@@ -617,6 +617,159 @@ void testDumpWiderThanPaperIsCropped()
                 "%d x %d)\n", lit, b5.w, rows);
 }
 
+
+// ── 13. ESC/P capability masking across the MX → RX → FX generations ─────
+//
+// The ESC/P lineage grew feature by feature, so a "second parser" is not the
+// whole story: what a head ANSWERS differs per model. These pin the two
+// consequences that actually reach paper.
+void testEscPCapabilityMasking()
+{
+    using pom2::IwModel;
+
+    // `ESC *` is FX-generation. On an MX-80 it is an unknown command, and the
+    // point of the swallow path is that its DATA bytes must not print as a
+    // screenful of text either.
+    auto starDots = [](IwModel m) {
+        // ESC * mode 5, 4 columns, all 8 wires lit.
+        const uint8_t seq[] = { 0x1B, '*', 5, 0x04, 0x00,
+                                0xFF, 0xFF, 0xFF, 0xFF };
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(m);
+        iw.printBytes(seq, sizeof(seq));
+        long ink = 0;
+        for (uint8_t v : iw.currentPage().pix) if (v & 0x1F) ++ink;
+        return ink;
+    };
+    const long fx = starDots(IwModel::EpsonFX80);
+    const long mx = starDots(IwModel::EpsonMX80);
+    assert(fx > 0);                 // the FX-80 draws the four columns
+    assert(mx == 0);                // the MX-80 has no ESC * and eats the body
+    std::printf("  ok: ESC * draws on FX-80 (%ld dots), swallowed whole on "
+                "MX-80 (%ld)\n", fx, mx);
+
+    // Graftrax-Plus is exactly the ESC L / italics / scripts upgrade, so the
+    // same ESC L stream must print on one MX and vanish on the other. This is
+    // the difference the ROM upgrade sold, expressed as one table bit.
+    auto escLDots = [](IwModel m) {
+        const uint8_t seq[] = { 0x1B, 'L', 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(m);
+        iw.printBytes(seq, sizeof(seq));
+        long ink = 0;
+        for (uint8_t v : iw.currentPage().pix) if (v & 0x1F) ++ink;
+        return ink;
+    };
+    const long plain    = escLDots(IwModel::EpsonMX80);
+    const long graftrax = escLDots(IwModel::EpsonMX80Graftrax);
+    assert(plain == 0);
+    assert(graftrax > 0);
+    std::printf("  ok: ESC L is the Graftrax upgrade (%ld → %ld dots)\n",
+                plain, graftrax);
+
+    // ESC K is the one graphics command EVERY ESC/P head has had since 1980,
+    // so it must draw on the bare MX-80 too — otherwise "swallowed" would be
+    // indistinguishable from "this head prints nothing".
+    const uint8_t kSeq[] = { 0x1B, 'K', 0x04, 0x00, 0xFF, 0xFF, 0xFF, 0xFF };
+    ImageWriter mxK;
+    mxK.setSpeed(ImageWriter::Speed::Instant);
+    mxK.setModel(IwModel::EpsonMX80);
+    mxK.printBytes(kSeq, sizeof(kSeq));
+    long kInk = 0;
+    for (uint8_t v : mxK.currentPage().pix) if (v & 0x1F) ++kInk;
+    assert(kInk > 0);
+    std::printf("  ok: ESC K still draws on a bare MX-80 (%ld dots)\n", kInk);
+}
+
+// ── 14. A screen dump must be built for the head that is actually fitted ──
+void testEpsonDumpCmdMatchesHead()
+{
+    using pom2::IwModel;
+    // The 72-dpi ESC * dump on an MX-80 is the failure this guards: the head
+    // drops the command and its data bytes land as text. Building the same
+    // picture with ESC K instead has to put ink on the page.
+    std::vector<uint32_t> px(64 * 16, 0xFF000000u);
+    for (int y = 0; y < 16; ++y)
+        for (int x = 0; x < 64; ++x)
+            if (((x / 4) + (y / 4)) & 1) px[y * 64 + x] = 0xFFFFFFFFu;
+
+    pom2::ScreenDumpOptions opt;
+    opt.autoInvert = false;
+    opt.invert     = false;
+    opt.formFeed   = false;
+
+    auto inkFor = [&](pom2::EpsonDumpCmd cmd) {
+        std::vector<uint8_t> stream;
+        pom2::buildScreenDumpEpson(px.data(), 64, 16, 64, opt, stream, cmd);
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(IwModel::EpsonMX80);
+        iw.printBytes(stream.data(), stream.size());
+        long ink = 0;
+        for (uint8_t v : iw.currentPage().pix) if (v & 0x1F) ++ink;
+        return ink;
+    };
+    const long viaStar = inkFor(pom2::EpsonDumpCmd::Star72);
+    const long viaK    = inkFor(pom2::EpsonDumpCmd::K60);
+    assert(viaStar == 0);
+    assert(viaK > 0);
+    std::printf("  ok: MX-80 dump needs ESC K (star=%ld dots, K=%ld)\n",
+                viaStar, viaK);
+}
+
+// ── 15. The C. Itoh cousins share the core and differ where documented ───
+void testCItohCousins()
+{
+    using pom2::IwModel;
+    // The Prowriter 8510A is the mechanism Apple rebadged, so `ESC G`
+    // graphics must behave identically to the DMP's — same parser, same
+    // faces. What differs is the DMP's firmware gaps, expressed as its
+    // ignored-ESC list.
+    const uint8_t g[] = { 0x1B, 'G', '0', '0', '0', '4',
+                          0xFF, 0xFF, 0xFF, 0xFF };
+    auto dots = [&](IwModel m) {
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(m);
+        iw.printBytes(g, sizeof(g));
+        long ink = 0;
+        for (uint8_t v : iw.currentPage().pix) if (v & 0x1F) ++ink;
+        return ink;
+    };
+    const long dmp  = dots(IwModel::AppleDMP);
+    const long pro  = dots(IwModel::Prowriter8510A);
+    const long nec  = dots(IwModel::NecPc8023A);
+    assert(dmp > 0 && pro == dmp && nec == dmp);
+    std::printf("  ok: DMP / Prowriter 8510A / NEC PC-8023A share the C. Itoh "
+                "graphics core (%ld dots each)\n", dmp);
+
+    // Every model in the table must have a name and a usable std bank, or the
+    // model combo in the panel shows a blank row and currentBank() derefs a
+    // null. Cheap sweep, catches a half-added row.
+    for (int i = 0; i < static_cast<int>(IwModel::Count); ++i) {
+        const auto& p = pom2::iwModelProfile(static_cast<IwModel>(i));
+        assert(p.name && p.name[0]);
+        assert(p.stdFixed && p.stdProp);
+        assert(p.draftCps > 0.0 && p.nlqCps > 0.0);
+        assert(p.defaultCpi > 0.0);
+        // Every ESC/P head POM2 carries has at least the skip-perforation
+        // pair; a zero mask would mean a row was added without one.
+        if (p.escP) assert(p.escPFeatures != 0);
+        // A C. Itoh head must not carry ESC/P feature bits, which would mean
+        // the two columns got transposed in the table.
+        if (!p.escP) assert(p.escPFeatures == 0);
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(static_cast<IwModel>(i));
+        const uint8_t hello[] = { 'H', 'i', 0x0D, 0x0A };
+        iw.printBytes(hello, sizeof(hello));   // must not crash on any head
+    }
+    std::printf("  ok: all %d heads have a complete profile and print\n",
+                static_cast<int>(IwModel::Count));
+}
+
 int main()
 {
     testStreamShape();
@@ -631,6 +784,9 @@ int main()
     testEpsonCrLfDoesNotDoubleFeed();
     testEpsonFormLengthGuards();
     testDumpWiderThanPaperIsCropped();
+    testEscPCapabilityMasking();
+    testEpsonDumpCmdMatchesHead();
+    testCItohCousins();
 
     std::puts("printer_screen_dump: OK");
     return 0;

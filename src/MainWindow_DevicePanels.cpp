@@ -837,10 +837,17 @@ void MainWindow::dumpScreenToPrinter()
     // and bit 7 as the top dot, the C. Itoh family ESC G with four ASCII
     // digits and bit 0.
     std::vector<uint8_t> stream;
-    if (imageWriter->model() == pom2::IwModel::EpsonFX80)
+    const pom2::IwModelProfile& head = imageWriter->modelProfile();
+    if (head.escP) {
+        // ...and within the Epson lineage, `ESC *` is FX-generation. An
+        // MX-80 has only `ESC K`, and would print an `ESC *` dump's data
+        // bytes as text.
+        const auto cmd = (head.escPFeatures & pom2::kEscPGraphicsStar)
+                             ? pom2::EpsonDumpCmd::Star72
+                             : pom2::EpsonDumpCmd::K60;
         pom2::buildScreenDumpEpson(px.data(), w, h, w,
-                                   printerDumpOptions_, stream);
-    else
+                                   printerDumpOptions_, stream, cmd);
+    } else
         pom2::buildScreenDumpImageWriter(px.data(), w, h, w,
                                          printerDumpOptions_, stream);
     if (stream.empty()) return;

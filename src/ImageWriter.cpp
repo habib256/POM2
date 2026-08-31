@@ -141,16 +141,16 @@ const IwModelProfile kModels[static_cast<size_t>(IwModel::Count)] = {
     // ImageWriter II — the superset.
     { "ImageWriter II", /*colour*/ true, /*tiers*/ true,
       &kBankStdFixed, &kBankStdProp, &kBankDraft, &kBankNlqFixed, &kBankNlqProp,
-      12.0, 2, 96, 180.0, 45.0, /*escP*/ false, nullptr, 0 },
+      12.0, 2, 96, 180.0, 45.0, /*escP*/ false, 0, nullptr, 0 },
     // ImageWriter I — mono, one face, powers up at Elite 12 cpi.
     { "ImageWriter I", false, false,
       &kBankIw1Fixed, &kBankIw1Prop, nullptr, nullptr, nullptr,
-      12.0, 2, 96, 120.0, 120.0, /*escP*/ false,
+      12.0, 2, 96, 120.0, 120.0, /*escP*/ false, 0,
       kIw1Ignored, sizeof(kIw1Ignored) / sizeof(kIw1Ignored[0]) },
     // Apple DMP — mono, one face, powers up at Pica 10 cpi.
     { "Apple DMP", false, false,
       &kBankDmpFixed, &kBankDmpProp, nullptr, nullptr, nullptr,
-      10.0, 1, 80, 120.0, 120.0, /*escP*/ false,
+      10.0, 1, 80, 120.0, 120.0, /*escP*/ false, 0,
       kDmpIgnored, sizeof(kDmpIgnored) / sizeof(kDmpIgnored[0]) },
     // Epson FX-80 — ESC/P. Pica 10 cpi at power-on, 160 cps draft
     // (FX-80 User's Manual App. A), mono. `escP` routes it to the other
@@ -158,7 +158,43 @@ const IwModelProfile kModels[static_cast<size_t>(IwModel::Count)] = {
     // own dispatch and its own idea of what is unknown.
     { "Epson FX-80", false, false,
       &kBankEpson, &kBankEpson, nullptr, nullptr, nullptr,
-      10.0, 1, 80, 160.0, 160.0, /*escP*/ true, nullptr, 0 },
+      10.0, 1, 80, 160.0, 160.0, /*escP*/ true, kEscPFX80, nullptr, 0 },
+    // C. Itoh Prowriter 8510A — the mechanism Apple rebadged as the DMP. The
+    // faces are the DMP's because they ARE the DMP's; what differs is the
+    // firmware, which has no Apple-imposed gaps, so the ignored list is
+    // empty where the DMP's is not. Pica 10 cpi, 120 cps.
+    { "C. Itoh Prowriter 8510A", false, false,
+      &kBankDmpFixed, &kBankDmpProp, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 120.0, 120.0, /*escP*/ false, 0, nullptr, 0 },
+    // NEC PC-8023A — the same 8510 mechanism under NEC's badge, quoted at
+    // 100 cps. Shares the Prowriter's command set and faces; carried as its
+    // own row so a future divergence lands here rather than silently
+    // inheriting, the same reasoning the IW-I/DMP banks are kept apart under.
+    { "NEC PC-8023A", false, false,
+      &kBankDmpFixed, &kBankDmpProp, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 100.0, 100.0, /*escP*/ false, 0, nullptr, 0 },
+    // Epson MX-80 (1980, pre-Graftrax) — ESC/P before it was ESC/P. Single
+    // density graphics (ESC K) and nothing else: no ESC L/Y/Z, no ESC *, no
+    // italics, no master select, no scripts, no proportional. 80 cps, Pica.
+    { "Epson MX-80", false, false,
+      &kBankEpson, &kBankEpson, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 80.0, 80.0, /*escP*/ true,
+      kEscPSkipPerf, nullptr, 0 },
+    // Epson MX-80 Graftrax-Plus (1981 ROM upgrade) — the other graphics
+    // densities, italics and the scripts arrive. `ESC *` and proportional
+    // still do not; those are FX-generation.
+    { "Epson MX-80 Graftrax+", false, false,
+      &kBankEpson, &kBankEpson, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 80.0, 80.0, /*escP*/ true,
+      kEscPGraphicsLYZ | kEscPItalics | kEscPScripts | kEscPSkipPerf,
+      nullptr, 0 },
+    // Epson RX-80 (1983) — the FX-80's cheaper sibling: same command set
+    // minus proportional spacing (and minus the user-defined characters POM2
+    // does not implement on either head), at 100 cps.
+    { "Epson RX-80", false, false,
+      &kBankEpson, &kBankEpson, nullptr, nullptr, nullptr,
+      10.0, 1, 80, 100.0, 100.0, /*escP*/ true,
+      kEscPFX80 & ~kEscPProportional, nullptr, 0 },
 };
 
 /// POM2's soft-switch A charset index → the ROM's locale enum. The order of
@@ -550,6 +586,11 @@ void ImageWriter::setModel(IwModel m)
     const IwModelProfile& p = modelProfile();
     if (!p.colourRibbon) ribbon_ = Ribbon::Black;
     resetPrinter();
+}
+
+bool ImageWriter::modelHasEscP(uint32_t feature) const
+{
+    return (modelProfile().escPFeatures & feature) != 0;
 }
 
 bool ImageWriter::modelIgnoresEsc(uint8_t cmd) const
@@ -1211,6 +1252,7 @@ void ImageWriter::setupBitImage(uint8_t dens, uint32_t numCols)
     if (dens > 15) return;              // reference logs and drops
 
     bitGraph_.horizDens   = kHoriz[dens];
+    bitGraph_.swallow     = false;
     bitGraph_.vertDens    = (dens < 8) ? 72 : 216;
     bitGraph_.adjacent    = true;
     bitGraph_.bytesColumn = (dens < 8) ? 1 : 3;
@@ -1267,6 +1309,11 @@ void ImageWriter::printBitGraph(uint8_t ch)
             while (v) { pins += (v & 1); v = static_cast<uint8_t>(v >> 1); }
         }
         if (pins) sound_->strike(pins);
+    }
+
+    if (bitGraph_.swallow) {                 // eaten, not printed
+        bitGraph_.readBytesColumn = 0;
+        return;
     }
 
     const double oldY  = curY_;
@@ -1823,6 +1870,7 @@ void ImageWriter::setupEpsonBitImage(int dotsPerInch, uint32_t columns)
     bitGraph_.remBytes        = columns;
     bitGraph_.readBytesColumn = 0;
     bitGraph_.msbTop          = true;        // ESC/P: bit 7 is the TOP dot
+    bitGraph_.swallow         = false;
 }
 
 bool ImageWriter::processEpsonChar(uint8_t ch)
@@ -1859,9 +1907,14 @@ bool ImageWriter::processEpsonChar(uint8_t ch)
         case 0x46: style_ &= ~kStyleBold;              return true;  // ESC F
         case 0x47: style_ |=  kStyleDoubleStrike;      return true;  // ESC G
         case 0x48: style_ &= ~kStyleDoubleStrike;      return true;  // ESC H
-        case 0x34: style_ |=  kStyleItalics;           return true;  // ESC 4
-        case 0x35: style_ &= ~kStyleItalics;           return true;  // ESC 5
-        case 0x54: style_ &= ~(kStyleSuperscript |                    // ESC T
+        // Italics and the scripts arrived with Graftrax; on a bare MX-80
+        // these fall through to `default`, i.e. dropped with their ESC.
+        case 0x34: if (!modelHasEscP(kEscPItalics)) break;             // ESC 4
+                   style_ |=  kStyleItalics;           return true;
+        case 0x35: if (!modelHasEscP(kEscPItalics)) break;             // ESC 5
+                   style_ &= ~kStyleItalics;           return true;
+        case 0x54: if (!modelHasEscP(kEscPScripts)) break;             // ESC T
+                   style_ &= ~(kStyleSuperscript |
                                kStyleSubscript);       return true;
         case 0x30: lineSpacing_ = 1.0 / 8.0;           return true;  // ESC 0
         case 0x31: lineSpacing_ = 7.0 / 72.0;          return true;  // ESC 1
@@ -1872,7 +1925,8 @@ bool ImageWriter::processEpsonChar(uint8_t ch)
                    style_ &= ~kStyleCondensed; updateMetrics(); return true;
         case 0x0F: style_ |=  kStyleCondensed; updateMetrics(); return true; // ESC SI
         case 0x0E: style_ |=  kStyleDoubleWidth; updateMetrics(); return true; // ESC SO
-        case 0x4F: topMargin_ = 0.0; bottomMargin_ = pageHeightIn_;   // ESC O
+        case 0x4F: if (!modelHasEscP(kEscPSkipPerf)) break;            // ESC O
+                   topMargin_ = 0.0; bottomMargin_ = pageHeightIn_;
                    return true;
 
         // One parameter.
@@ -1902,10 +1956,14 @@ bool ImageWriter::processEpsonChar(uint8_t ch)
             return true;
 
         default:
-            // Unknown ESC: dropped with its ESC, as the manual says. Any
-            // following bytes print as text, which is what real iron does.
-            return true;
+            break;
         }
+        // Unknown ESC — or one this head has no hardware for, which the
+        // firmware cannot tell apart from unknown. Dropped with its ESC, as
+        // the manual says; any following bytes print as text, which is what
+        // real iron does and what a driver aimed at the wrong head deserves
+        // to look like.
+        return true;
     }
 
     // ── Control characters ──────────────────────────────────────────────
@@ -1950,6 +2008,43 @@ bool ImageWriter::processEpsonChar(uint8_t ch)
 void ImageWriter::execEpsonEscape()
 {
     const uint8_t p0 = epsonParams_[0];
+
+    // A head that lacks the command still had to COLLECT its parameters —
+    // they were already consumed by the time we know — so the gate is here,
+    // after collection, rather than in the arming switch. The bytes vanish
+    // instead of printing, which is the one place this diverges from real
+    // iron and does so on purpose: an MX-80 fed `ESC ! 0x08` printed "!" and
+    // a backspace-ish control, and reproducing THAT is noise, not diagnosis.
+    static constexpr struct { uint8_t cmd; uint32_t feature; } kEscPGates[] = {
+        { 0x21, kEscPMasterSelect },   // ESC !
+        { 0x53, kEscPScripts     },    // ESC S
+        { 0x4E, kEscPSkipPerf    },    // ESC N
+        { 0x4C, kEscPGraphicsLYZ },    // ESC L
+        { 0x59, kEscPGraphicsLYZ },    // ESC Y
+        { 0x5A, kEscPGraphicsLYZ },    // ESC Z
+        { 0x2A, kEscPGraphicsStar },   // ESC *
+    };
+    for (const auto& g : kEscPGates) {
+        if (g.cmd != escCmd_) continue;
+        if (modelHasEscP(g.feature)) break;
+        // Graphics is the case that matters: dropping the command while its
+        // DATA bytes still stream would print a screenful of them. The count
+        // has already been parsed, so consume the body and print nothing.
+        if (escCmd_ == 0x4C || escCmd_ == 0x59 || escCmd_ == 0x5A) {
+            const uint32_t cols = static_cast<uint32_t>(epsonParams_[0]) |
+                                  (static_cast<uint32_t>(epsonParams_[1]) << 8);
+            setupEpsonBitImage(60, cols);
+            bitGraph_.swallow = true;
+        } else if (escCmd_ == 0x2A) {
+            const uint32_t cols = static_cast<uint32_t>(epsonParams_[1]) |
+                                  (static_cast<uint32_t>(epsonParams_[2]) << 8);
+            setupEpsonBitImage(60, cols);
+            bitGraph_.swallow = true;
+        }
+        epsonCount_ = 0;
+        escCmd_     = 0;
+        return;
+    }
 
     switch (escCmd_) {
     case 0x21: {                                   // ESC ! n  master select
