@@ -103,6 +103,7 @@ const char* shortLocaleLabel(CharRomLocale l) {
     switch (l) {
         case CharRomLocale::ProfileDefault:                   return "Default";
         case CharRomLocale::AppleIIClassic:                   return "Classic";
+        case CharRomLocale::VidexLowerCase:                   return "Videx LC";
         case CharRomLocale::AppleIIeUS_Enhanced:              return "US";
         case CharRomLocale::AppleIIeUS_Unenhanced:            return "US-U";
         case CharRomLocale::AppleIIeFrench:                   return "FR";

@@ -68,6 +68,7 @@ endif()
 set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -358,6 +359,50 @@ if(UNIX AND NOT APPLE)
 endif()
 add_test(NAME fourplay_card COMMAND test_fourplay)
 set_tests_properties(fourplay_card PROPERTIES TIMEOUT 10)
+
+
+# ─── Applied Engineering TransWarp accelerator ────────────────────────────
+# Drives the card through a real Memory + SlotBus, because the snoop hooks
+# live in those two files: the $C074 write the card takes OFF the bus, the
+# $C072 write it only watches, the per-slot 20 us windows on both $C0nX and
+# $CnXX, the $F000-$FFFF ROM swap, and the bus-level aggregation that
+# EmulationController reads once per frame.
+
+add_executable(test_transwarp
+    transwarp_card_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/TranswarpCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_transwarp PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_transwarp PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME transwarp_card COMMAND test_transwarp)
+set_tests_properties(transwarp_card PROPERTIES TIMEOUT 10)
+
+
+# ─── Videx LOWER CASE CHIP vs the stock generator ─────────────────────────
+# Two 2 KB character ROMs that must NOT be treated the same. Pins the dump
+# convention (the Videx dump never sets bit 7, so its inverse range is split
+# by offset, not by that marker) and the lowercase test taken from the Videx
+# manual: a stock generator repeats $80-$BF at $C0-$FF, a lowercase chip
+# does not. ROM-gated — SKIPs without both dumps.
+
+add_executable(test_videx_lowercase_char_rom
+    videx_lowercase_char_rom_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_videx_lowercase_char_rom
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_videx_lowercase_char_rom PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME videx_lowercase_char_rom
+         COMMAND test_videx_lowercase_char_rom
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(videx_lowercase_char_rom PROPERTIES TIMEOUT 10)
 
 
 # ─── Z8530 against the Workstation Card's own firmware ────────────────────
@@ -1546,6 +1591,7 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -3915,6 +3961,7 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -3960,6 +4007,7 @@ add_executable(test_mockingboard_audio_quality
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -4009,6 +4057,7 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -4056,6 +4105,7 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -4104,6 +4154,7 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -4152,6 +4203,7 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
@@ -5348,6 +5400,7 @@ add_executable(test_mockingboard_timeline
     ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
     ${CMAKE_SOURCE_DIR}/src/M6502.cpp
     ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
     ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
     ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp

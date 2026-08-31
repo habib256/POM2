@@ -26,6 +26,11 @@
 #       ImageWriter head, the paper tray, PDF export and the PostScript /
 #       screen-dump seams all landed in one TU. It has clean internal seams
 #       and wants splitting, not a bigger number.
+#   src/Apple2Display.cpp 2711 -> 2713 (+2) — the irreducible cost of the
+#     Videx LOWER CASE CHIP: two glyph helpers each take one more parameter
+#     (whether the character ROM has lowercase). The 24 lines that came with
+#     it went into src/CharRomDump.cpp instead, which is also what let
+#     Memory.cpp go DOWN 2442 -> 2429 in the same change.
 #   src/Memory.cpp       2402 -> 2442  (+40) — smaller and not one change:
 #       +1 of it is the foreign-bus dispatch that lets a coprocessor card run
 #       the 6502 over its own map (PERFORMANCE § 9); the rest predates it.
@@ -35,9 +40,9 @@
 #
 # Regenerate with: tools/check_file_sizes.sh --update
 
-src/Apple2Display.cpp                    2711
+src/Apple2Display.cpp                    2713
 src/DiskImage.cpp                        2835
 src/ImageWriter.cpp                      2501
 src/M6502.cpp                            2159
-src/Memory.cpp                           2442
+src/Memory.cpp                           2429
 src/hgrpaint/HgrPaintEditor.cpp          2525

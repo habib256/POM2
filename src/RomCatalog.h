@@ -116,6 +116,13 @@ inline const std::vector<RomCatalogEntry>& romCatalog()
           "The card plugs with a synthetic stub ROM: PR#n still prints, but "
           "software that looks for the real firmware (AppleWorks' "
           "\"Printer = Grappler+\") will not find it." },
+        { "Other cards", "TransWarp accelerator ROM v1.4 (Applied Engineering)",
+          { "roms/ae_transwarp_1.4.bin",
+            "roms/ae transwarp rom v1.4.bin" }, 4096, 0xAFE37F55u, "MAME warprom",
+          "The card still accelerates without it — the ROM only supplies AE's "
+          "speed-corrected Monitor, which it overlays on $F000-$FFFF until "
+          "software writes $C072. Without it the stock F8 ROM's 1 MHz delay "
+          "loops (WAIT, the beep) come out 3.5x short." },
         { "Other cards", "Mouse card slot EPROM (Apple 341-0270-C)",
           { "roms/mouse_341-0270-c.bin" }, 2048, 0, "",
           "Neither mouse card can be plugged (both variants need it)." },
@@ -132,6 +139,13 @@ inline const std::vector<RomCatalogEntry>& romCatalog()
           "side of the firmware is at file offsets 0xC400 ($Cn00 page) and "
           "0xC800-0xCFFF (expansion ROM), and the card's own 65C02 image is "
           "the upper 32 KB." },
+
+        { "Other cards", "Videx LOWER CASE CHIP character generator (1980)",
+          { "roms/Videx Lower Case Chip ROM.bin" }, 2048, 0x00F68076u,
+          "sha1 447874fe0850c8add3fd5b13fa98f6648fe6f999",
+          "The Videx entry disappears from the character-set picker; the "
+          "II/II+ keeps its stock uppercase-only generator, which is what "
+          "the machine shipped with." },
 
         { "Other cards", "ThunderClock+ slot ROM (Thunderware)",
           { "roms/thunderclock_u9_v1.3.bin", "roms/thunderclock_u9.bin",

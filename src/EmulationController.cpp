@@ -449,7 +449,7 @@ void EmulationController::tickFrame()
     // own frame interval, so the emulated clock tracks real time on any
     // display. The threaded path doesn't need this — workerLoop sleeps to
     // an absolute deadline.
-    int64_t budget = cyclesPerFrame.load();        // int64: see workerLoop note
+    int64_t budget = scaledFrameBudget();          // int64: see workerLoop note
     // WASM ONLY. The browser is the only caller that drives this off a
     // display refresh; every other caller is a HEADLESS TEST, where "one
     // call = one full frame budget" is the contract. Scaling there would
@@ -809,6 +809,21 @@ void EmulationController::rewindEndPaused()
 // NOT inside the __EMSCRIPTEN__ guard: tickFrame — the browser-RAF CPU
 // driver on WASM — routes its chunks through here too. (2026-07-12 bug
 // hunt: defining this below, worker-only, broke the wasm link.)
+int64_t EmulationController::scaledFrameBudget() const
+{
+    const int64_t base = cyclesPerFrame.load();
+    const double  mul  = mem.slotBus().cpuSpeedMultiplier();
+    if (mul == 1.0) return base;
+    // Guard the arithmetic, not the caller: the multiplier comes from a
+    // card and the base from --speed / the AI /speed endpoint, and their
+    // product is the only place in the loop where either could overflow.
+    const double scaled = static_cast<double>(base) * mul;
+    constexpr double kCeil = 1.0e9;
+    if (scaled <= 1.0)   return 1;
+    if (scaled >= kCeil) return static_cast<int64_t>(kCeil);
+    return static_cast<int64_t>(scaled);
+}
+
 int EmulationController::runCpuSlice(int chunk)
 {
     // DMA daisy chain (SoftCard Z80): while a card claims the bus the
@@ -1119,7 +1134,14 @@ void EmulationController::workerLoop()
         // CLI, and processor.run() may overshoot `chunk`, so an `int done`
         // could overflow (signed UB) near the ceiling. int64 makes the loop
         // bound safe without restricting the accepted --speed range.
-        const int64_t budget = cyclesPerFrame.load();
+        // An accelerator card (TransWarp) multiplies the frame's cycle
+        // budget: on this machine "running the 6502 faster" IS giving it
+        // more cycles per video frame, which is why POM2 keeps the Apple's
+        // own CPU where MAME has to substitute a second one. Read once per
+        // frame — see TranswarpCard.h on why sampling a sub-frame duty
+        // cycle at this rate is exact in aggregate. Returns 1.0 (and
+        // touches nothing) on any machine without such a card.
+        const int64_t budget = scaledFrameBudget();
         bool interrupted = false;
         for (int64_t done = 0; done < budget; ) {
             // Re-check the mode between chunks so a stop()/park request

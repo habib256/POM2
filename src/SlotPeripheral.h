@@ -136,6 +136,32 @@ public:
     /// M6502::stop() from the access that claims the bus (SoftCardZ80
     /// does; see its slotRomWrite) — a card that only flips dmaActive()
     /// gets chunk-granular arbitration, up to 4096 cycles late.
+    /// CPU clock multiplier this card imposes on the host 6502 — for
+    /// ACCELERATORS (Applied Engineering TransWarp, Zip Chip, …), which
+    /// speed up the machine's own processor rather than adding one of
+    /// their own. EmulationController multiplies its per-frame cycle
+    /// budget by this once per frame, so a card may vary it freely; see
+    /// TranswarpCard.h for why frame-rate sampling of a sub-frame duty
+    /// cycle is exact in aggregate. 1.0 = stock speed, and any value
+    /// <= 0 is ignored. SlotBus takes the lowest slot that is not 1.0.
+    virtual double cpuSpeedMultiplier() const { return 1.0; }
+
+    /// Bus snooping — for cards that watch addresses OUTSIDE their own slot
+    /// windows. On real hardware every card sees every cycle; POM2 only
+    /// forwards to cards that ask, because the snoop sites sit on the path
+    /// of every $C0xx and slot-ROM access. `snoopsBus()` is read at plug
+    /// time and cached by SlotBus, so it must not change over a card's life.
+    ///
+    /// Return true from `busSnoop` to CONSUME the access — the machine then
+    /// skips its own handling of it. Only a card that genuinely takes the
+    /// address off the bus should do that (the TransWarp does, for its
+    /// $C074 speed register, which never reaches the Apple).
+    virtual bool snoopsBus() const { return false; }
+    virtual bool busSnoop(uint16_t /*addr*/, bool /*isWrite*/, uint8_t /*value*/)
+    {
+        return false;
+    }
+
     virtual bool dmaActive() const { return false; }
     virtual int  dmaRun(int /*cycles6502*/) { return 0; }
 

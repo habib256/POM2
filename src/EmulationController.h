@@ -262,6 +262,13 @@ public:
     void setCyclesPerFrame(int n) { cyclesPerFrame.store(n); }
     int  getCyclesPerFrame() const { return cyclesPerFrame.load(); }
 
+    /// `cyclesPerFrame` after any plugged accelerator's multiplier — the
+    /// budget the frame loop actually burns. Public so the status bar and
+    /// the tests can report the machine's real speed rather than the
+    /// setting. Must be called with the SlotBus stable (CPU thread, or
+    /// under stateMutex).
+    int64_t scaledFrameBudget() const;
+
     // Machine video standard (NTSC 60 Hz / PAL 50 Hz). Sets the worker's
     // frame-pacing interval and propagates the 262/312-line geometry to
     // Memory (for beam-racing). The CPU budget per frame (cyclesPerFrame) is

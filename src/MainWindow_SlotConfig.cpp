@@ -55,6 +55,7 @@
 #include "FujiNetCard.h"
 #include "FujiNetCardFactory.h"
 #include "FourPlayCard.h"
+#include "TranswarpCard.h"
 #include "GrapplerCard.h"
 #include "LeChatMauveCard.h"
 #include "Logger.h"
@@ -440,6 +441,22 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         st.memory().slotBus().plug(s, std::move(card));
     };
 
+    auto plugTranswarp = [&](int s) {
+        // TransWarp accelerator. Its ROM shadow needs Memory (a 4 KB swap
+        // in the $F000 mirror) and is ROM-gated; the acceleration itself
+        // works without the dump, so a missing ROM is a warning, not a
+        // refusal to plug.
+        auto card = std::make_unique<pom2::TranswarpCard>(s);
+        card->setMemory(&st.memory());
+        card->setDsw1(static_cast<uint8_t>(settings->getInt(
+            "transwarp_dsw1", pom2::TranswarpCard::kDsw1Default)));
+        card->setDsw2(static_cast<uint8_t>(settings->getInt(
+            "transwarp_dsw2", pom2::TranswarpCard::kDsw2Default)));
+        const std::string why = card->loadRomFromDisk();
+        if (!why.empty()) pom2::log().warn("TransWarp", why);
+        st.memory().slotBus().plug(s, std::move(card));
+    };
+
     auto plugFourPlay = [&](int s) {
         // 4play — four digital joysticks. No ROM, no state; the host pads
         // are pushed in from pollJoystickAndPushToMemory().
@@ -611,6 +628,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         else if (kind == "grappler")    plugGrappler(s);
         else if (kind == "workstation") plugWorkstation(s);
         else if (kind == "4play")       plugFourPlay(s);
+        else if (kind == "transwarp")   plugTranswarp(s);
         else if (kind == "uthernet")    plugUthernet(s);
         else if (kind == "uthernet2")   plugUthernetII(s);
         else if (kind == "smartport35") plugSmartPort35(s);

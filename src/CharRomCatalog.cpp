@@ -41,6 +41,8 @@ const std::vector<CharRomEntry>& catalogStorage()
         // ── II / II+ (2 KB, uppercase only) ───────────────────────────
         { CharRomLocale::AppleIIClassic,
           "Apple ][/][+ — Classic (US, 2 KB)",     "roms/apple2_char.rom",              false },
+        { CharRomLocale::VidexLowerCase,
+          "Apple ][/][+ — Videx LOWER CASE CHIP",  "roms/Videx Lower Case Chip ROM.bin", false },
 
         // ── IIe-class (4 KB, with lowercase + mousetext when Enhanced)
         { CharRomLocale::AppleIIeUS_Enhanced,
@@ -119,6 +121,7 @@ const char* charRomLocaleKey(CharRomLocale l)
     switch (l) {
         case CharRomLocale::ProfileDefault:                      return "default";
         case CharRomLocale::AppleIIClassic:                      return "ii_classic";
+        case CharRomLocale::VidexLowerCase:                      return "videx_lc";
         case CharRomLocale::AppleIIeUS_Enhanced:                 return "iie_us";
         case CharRomLocale::AppleIIeUS_Unenhanced:               return "iie_us_unenh";
         case CharRomLocale::AppleIIeFrench:                      return "iie_fr";
@@ -161,6 +164,7 @@ std::string resolveCharRomPath(CharRomLocale l)
 CharRomLocale charRomLocaleFromKey(const std::string& key)
 {
     if (key == "ii_classic")        return CharRomLocale::AppleIIClassic;
+    if (key == "videx_lc")          return CharRomLocale::VidexLowerCase;
     if (key == "iie_us")            return CharRomLocale::AppleIIeUS_Enhanced;
     if (key == "iie_us_unenh")      return CharRomLocale::AppleIIeUS_Unenhanced;
     if (key == "iie_fr")            return CharRomLocale::AppleIIeFrench;

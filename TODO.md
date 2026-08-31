@@ -259,6 +259,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 23  | UthernetCard + Cs8900aDevice (key `uthernet`) | Verbatim | MAME `machine/cs8900a.cpp` (VICE lineage) + `bus/a2bus/uthernet.cpp`, line-cited | 🟢 pull-mode RX (POM2 has no `device_network_interface` push bus); inbound frame queue out of snapshot deliberate |
 | 23bis | UthernetIICard + W5100Device (key `uthernet2`) | AppleWin-faithful | AppleWin `source/Uthernet2.cpp` + `W5100.h` (MAME has no W5100 device) + WIZnet datasheet v1.2.8 | 🟡 `LISTEN` unimplemented (no inbound path); 🟢 virtual DNS is async, not blocking like AppleWin's |
 | 23ter | NetworkBackend (Null / Loopback / libslirp) | POM2-original | AppleWin `Tfe/NetworkBackend.h` shape; libslirp user-mode NAT | 🟢 outbound-only by design (no root); no TAP/pcap path; 🟡 libslirp is Linux/macOS only, so Uthernet I has no transport on Windows |
+| 23quater | TranswarpCard (key `transwarp`) | Partial-verbatim | MAME `bus/a2bus/transwarp.cpp` (R. Belmont, 363 lines; line-cited) | 🟢 **deliberate divergence**: MAME runs a SECOND W65C02 DMA-ing the Apple's bus because a MAME card cannot retime the host CPU; POM2 scales `cyclesPerFrame` and keeps the machine's own 6502 — closer to the board and free on the hot path. Register semantics, DIP defaults and the slowdown windows are verbatim. 🟡 multiplier sampled per frame (unbiased in aggregate, wrong for where in a frame slow cycles land); 🟡 ROM shadow gated on an undumped `roms/ae_transwarp_1.4.bin`. Pinned `transwarp_card` |
 | 24 | FujiNetCard (key `fujinet`)    | POM2-original (relay) | No MAME device — published SmartPort/SP-over-SLIP spec + the FujiNet AppleWin fork | 🟢 not an emulation: the device is real and off-box, every SmartPort call is forwarded verbatim; no peer → bounded 250 ms stall then SmartPort `$27`; 🟡 **rewind cannot rewind it**; 🟡 not on //c-class (forced INTCXROM masks slot ROM); pinned `fujinet_card` |
 
 ## Backlog
@@ -554,10 +555,14 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     looking at POM1: the expensive part is already written there, and better
     than MAME's, with 31 k lines of original software behind it. Scoped,
     estimated and parked → [§ E-Z Color](#ez-color).
-  - **Applied Engineering TransWarp** (`transwarp`) — cheap, because the
-    acceleration plumbing already exists (`cyclesPerFrame`, the //c+'s 4×).
-    A slot TransWarp is mostly a speed latch plus cache semantics. Visible
-    effect, small effort.
+  - ~~**Applied Engineering TransWarp** (`transwarp`)~~ **done** —
+    `TranswarpCard`, pinned by `transwarp_card`. The estimate held (the
+    `cyclesPerFrame` plumbing did the work) but the shape was wrong twice:
+    there are no "cache semantics" to model — the board has no cache, it has
+    a bus watcher that drops to 1 MHz around slot and paddle accesses — and
+    it is not a speed latch in a slot, because it decodes nothing
+    slot-relative at all. `$C072`/`$C074` are global, so it needed a bus
+    snoop hook rather than a device-select handler.
 
   **Quick wins, a few hours each.**
 

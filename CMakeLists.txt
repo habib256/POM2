@@ -206,6 +206,7 @@ set(SOURCES
     src/Sony35Gcr.cpp
     src/Sony35Drive.cpp
     src/CharRomCatalog.cpp
+    src/CharRomDump.cpp
     src/JoystickInput.cpp
     src/JoystickPanel_ImGui.cpp
     src/LeChatMauveCard.cpp
@@ -289,6 +290,7 @@ set(SOURCES
     src/hgrsprite/HgrSpriteEditor.cpp
     src/SlotBus.cpp
     src/FourPlayCard.cpp
+    src/TranswarpCard.cpp
     src/Scc8530Device.cpp
     src/WorkstationCard.cpp
     src/Cs8900aDevice.cpp
@@ -382,6 +384,7 @@ set(POM2_DEVICES_SOURCES
     src/PrinterCard.cpp
     src/ProDOSHardDiskCard.cpp
     src/FourPlayCard.cpp
+    src/TranswarpCard.cpp
     src/Scc8530Device.cpp
     src/SmartPort35Unit.cpp
     src/SmartPortCard.cpp
@@ -408,6 +411,7 @@ set(POM2_DEVICES_SOURCES
 # FujiNetNetwork interfaces, and makeFujiNetCard (RUNTIME) is the only place
 # that names SpOverSlipLink or FujiNetNetDevice.
 set(POM2_FOUNDATION_SOURCES
+    src/CharRomDump.cpp
     src/ChildProcess.cpp
     src/SerialPort.cpp
 )
@@ -415,6 +419,7 @@ set(POM2_FOUNDATION_SOURCES
 set(POM2_FOUNDATION_HEADERS
     src/AudioSource.h
     src/ByteIO.h
+    src/CharRomDump.h
     src/ChildProcess.h
     src/FloppySoundSink.h
     src/Logger.h
@@ -723,6 +728,7 @@ set(HEADERS
     src/SlirpNetworkBackend.h
     src/Cs8900aDevice.h
     src/FourPlayCard.h
+    src/TranswarpCard.h
     src/Scc8530Device.h
     src/WorkstationCard.h
     src/UthernetCard.h
@@ -1139,6 +1145,7 @@ set(POM2_CORE_SOURCES
     src/Sony35Gcr.cpp
     src/Sony35Drive.cpp
     src/CharRomCatalog.cpp
+    src/CharRomDump.cpp
     src/LeChatMauveCard.cpp
     src/M68705P3.cpp
     src/AudioCoordinator.cpp
@@ -1172,6 +1179,7 @@ set(POM2_CORE_SOURCES
     src/Settings.cpp
     src/SlotBus.cpp
     src/FourPlayCard.cpp
+    src/TranswarpCard.cpp
     src/Scc8530Device.cpp
     src/WorkstationCard.cpp
     src/Cs8900aDevice.cpp
@@ -1320,6 +1328,7 @@ add_executable(pom2_headless
     src/Apple2Display.cpp
     src/AppleWinNtsc.cpp
     src/CharRomCatalog.cpp
+    src/CharRomDump.cpp
     src/AudioDevice.cpp
     src/CassetteDevice.cpp
     src/ClockCard.cpp
@@ -1408,6 +1417,7 @@ add_executable(pom2_bench
     src/LeChatMauveCard.cpp
     src/M6502.cpp
     src/Memory.cpp
+    src/CharRomDump.cpp
     src/MemoryWatch.cpp
     src/Keyboard.cpp
     src/MemoryProfile_IIcClass.cpp

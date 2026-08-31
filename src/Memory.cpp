@@ -15,6 +15,8 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Memory.h"
+
+#include "CharRomDump.h"
 #include "MemoryProfile_IIcClass.h"
 #include "CassetteDevice.h"
 #include "IWMDevice.h"
@@ -347,47 +349,22 @@ int Memory::loadCharRom(const char* filename, int bank)
         return 0;
     }
 
-    // Normalize to AppleWin's "csbits" convention so the renderer can
-    // treat all ROM dumps uniformly:
-    //   * Each byte represents one row of 7 visible pixels.
-    //   * Bit 0 = leftmost pixel; 1 = lit pixel.
-    //   * For codes $00-$3F (inverse range), the stored pattern is
-    //     pre-flipped so it already matches inverse video (white BG,
-    //     dark glyph). For codes $40-$7F, the stored pattern is the
-    //     non-flashing (= normal-looking) glyph; the renderer XORs
-    //     with 0x7F when the flash phase is on.
-    //
-    // 2K II/II+ ROM (e.g. AppleWin's `Apple2_Video.rom`):
-    //   - For codes $00-$7F (offsets 0x000-0x3FF): if bit 7 of byte is
-    //     0, XOR low 7 bits with 0x7F. (Inverse range bytes have bit
-    //     7 = 0; XOR gives the inverse-display pattern. Flashing range
-    //     bytes have bit 7 = 1 and stay as the normal-display pattern.)
-    //   - All bytes: reverse the low 7 bits (Apple II video shift
-    //     register reads MSB-first, so the ROM stores bit 6 = leftmost;
-    //     after reverse we end up with bit 0 = leftmost).
-    //
-    // 4K IIe Enhanced ROM (e.g. AppleWin's `Apple2e_Enhanced_Video.rom`):
-    //   - The ROM stores pixels with inverted polarity (1 = OFF) and
-    //     bit 0 = leftmost natively. XOR every byte with 0xFF flips to
-    //     1 = ON; no reverse needed.
-    if (size == 2048) {
-        for (size_t i = 0; i < 2048; ++i) {
-            uint8_t n = characterRom[i];
-            if (i < 1024 && !(n & 0x80)) n ^= 0x7F;
-            uint8_t d = 0;
-            for (int j = 0; j < 7; ++j) {
-                d = static_cast<uint8_t>((d << 1) | (n & 1));
-                n >>= 1;
-            }
-            characterRom[i] = d;
-        }
-    } else if (size == 4096) {
-        for (size_t i = 0; i < 4096; ++i) {
-            characterRom[i] ^= 0xFF;
-        }
+    // Convention normalisation + the lowercase question both live in
+    // CharRomDump: they are facts about the DUMP, not about the memory
+    // map, and two dumps of the same size can need opposite treatment.
+    const pom2::CharRomFacts facts =
+        pom2::normaliseCharRom(characterRom.data(), size);
+    charRomLowercase_ = facts.hasLowercase;
+    if (size == 2048 && !facts.bit7Marker) {
+        pom2::log().info("ROM",
+            "Char ROM: 2 KB dump with no bit-7 range marker (Videx-style), "
+            "split by offset instead");
     }
+
     pom2::log().info("ROM",
-        "Loaded char ROM (" + std::to_string(size) + " B): " + filename);
+        "Loaded char ROM (" + std::to_string(size) + " B" +
+        (charRomLowercase_ ? ", lowercase" : ", uppercase only") + "): " +
+        filename);
     return 1;
 }
 
@@ -1567,6 +1544,16 @@ uint8_t Memory::softSwitchAccess(uint16_t addr, bool isWrite, uint8_t writeVal)
     // both fire on the same access — they share the bus, neither
     // shadows the other.
     if (low >= 0x70 && low <= 0x7F) {
+        // An accelerator (TransWarp) lives entirely in this window: $C070
+        // is its joystick-slowdown trigger, $C072 releases its ROM shadow
+        // and $C074 is its speed register. $C074 is the one address it
+        // takes OFF the bus — MAME `transwarp.cpp dma_w` returns there —
+        // so a consumed access skips the paddle rearm and everything below
+        // it. Null on any machine without one.
+        if (SlotPeripheral* snoop = slots.busSnooper()) {
+            if (snoop->busSnoop(addr, isWrite, isWrite ? writeVal : 0))
+                return isWrite ? 0 : floatingBus();
+        }
         paddles_.rearm(cycleCounter);
         // //c-class: ANY $C070-$C07F access acknowledges the VBL
         // interrupt — MAME `apple2e.cpp` c000_iic_r/w case 0x70-0x7F:

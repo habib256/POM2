@@ -121,6 +121,12 @@ inline constexpr CardType kCardTypes[] = {
     // $C0nX. The Apple game port is analogue and carries two paddles; this
     // is how an Apple II gets four players.
     { "4play",        "4play — 4 digital joysticks (Lukazi)" },
+    // TransWarp (Applied Engineering, 1986) — 3.58 MHz accelerator. No slot
+    // ROM, no $C0nX window and no way to detect it by reading: it is
+    // controlled entirely through $C072/$C074, which it snoops off the bus.
+    // Speeds the machine's own 6502 to 3.5x (or 1.75x on the half-speed
+    // DIP). MAME `bus/a2bus/transwarp.cpp` port.
+    { "transwarp",    "TransWarp accelerator (Applied Engineering)" },
 };
 
 /// Human-readable label for a card key (falls back to the key itself).

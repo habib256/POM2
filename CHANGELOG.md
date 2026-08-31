@@ -5,6 +5,89 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — TransWarp: the accelerator POM2 could model as a clock, not a CPU
+
+Applied Engineering's **TransWarp** (catalog `transwarp`), ported from MAME
+`bus/a2bus/transwarp.cpp` — with one structural divergence that is worth
+writing down, because it is the kind of place where copying MAME faithfully
+would have produced a *worse* model.
+
+MAME puts a second `W65C02` on the card and has it DMA the Apple's bus for
+every access. It does that out of necessity: a MAME a2bus card cannot retime
+the host CPU, so substituting a faster processor is the only lever available.
+POM2 has the lever — the worker's per-frame cycle budget IS the CPU clock —
+so the card publishes a multiplier and the machine keeps its own `M6502`.
+That is closer to what the board does (same program, same memory, faster
+clock), and it costs nothing on the hot path where a second CPU would have
+roughly doubled the emulation work.
+
+The multipliers are exact rationals rather than fitted decimals: the card
+runs off the 7M line, so 7.159/2 and 7.159/4 against the Apple's 14.31818/14
+are **3.5×** and **1.75×** exactly.
+
+**What the frame-rate sampling does and does not buy.** The multiplier is
+read once per frame, while the card's slowdown windows (20 µs around a slot
+access, a whole PREAD around `$C070`) are ~20 cycles inside ~17000. That is
+not an approximation *in aggregate* — sampling a duty cycle at a rate
+uncorrelated with it is an unbiased estimator of it, so the average speed
+converges within a handful of frames. What it does not reproduce is where
+inside a frame the slow cycles fall, which would matter to a beam-raced
+effect and to nothing else.
+
+**And the slowdowns were never load-bearing here anyway.** POM2's whole time
+base is CPU cycles, so a Disk II at 3.5× spins 3.5× faster in wall-clock and
+its nibble pacing per CPU cycle is unchanged — the same reason the //c Plus
+profile runs at 4× with a working drive. They are modelled because they are
+what the board does, not because anything broke without them. Saying so is
+the point: a faithful port should be honest about which of its details are
+doing work.
+
+Two details kept from the MAME source because they are observable: `$C074` is
+taken OFF the bus (its `dma_w` returns there, so the write never reaches the
+paddle latch) while `$C072` is only watched and passed through; and DSW2 bit
+5 ships at 0, leaving **slot 6 at stock speed** — the Disk II, the one slot
+AE did not trust at 3.5×. Pinned by `transwarp_card`.
+
+Wiring this needed two new `SlotPeripheral` hooks — `cpuSpeedMultiplier()`
+and `snoopsBus()`/`busSnoop()` — both cached by `SlotBus` as a single pointer
+so the snoop sites cost one null test on a machine with no accelerator.
+
+ROM-gated shadow of `$F000-$FFFF` on `roms/ae_transwarp_1.4.bin` (4096 B,
+CRC32 `afe37f55`), which POM2 does not ship. AE's speed-corrected Monitor
+lives there because the stock F8 delay loops are calibrated for 1 MHz.
+Implemented as a 4 KB swap in the ROM mirror, so it is free at run time.
+
+## 2026-08-31 — Videx LOWER CASE CHIP, and two things a ROM's size never told us
+
+The 1980 Videx **LOWER CASE CHIP** — a drop-in replacement for the II/II+
+motherboard character generator — is now a `CharRomCatalog` entry
+(`videx_lc`, `roms/Videx Lower Case Chip ROM.bin`). Adding it broke two
+assumptions POM2 had been making from the dump's SIZE alone.
+
+**"2 KB means no lowercase."** `Apple2Display` folded a-z onto A-Z whenever
+`charRomSize < 4096`. Right for the stock generator; exactly wrong for this
+chip, which is also 2 KB and exists *for* those glyphs. The real test is in
+the Videx manual's own description of the part it replaces: *"Characters
+80 - BF are identical to characters C0 - FF"*. `loadCharRom` now compares
+those two 512-byte blocks and publishes `Memory::charRomHasLowercase()`; the
+renderer folds on that.
+
+**"Bit 7 marks the inverse range."** True of the //e dumps and AppleWin's
+`Apple2_Video.rom`. The Videx dump never sets bit 7 anywhere, so
+normalisation has to split the range by offset instead. `loadCharRom` probes
+for the marker once and picks the rule. This one was worth pinning because
+it is *invisible*: the glyph shapes are identical either way, so a wrong
+choice only shows up as the whole normal range rendering inverse — and in a
+screenshot of ordinary white-on-black text, nothing looks obviously off.
+
+Pinned by `videx_lowercase_char_rom`, which loads BOTH dumps: proving the
+detection is not a constant requires the ROM that answers the other way.
+
+Both rules moved into **`src/CharRomDump.cpp`** rather than growing
+`Memory.cpp`: they are facts about FILES, not about the memory map, and the
+file-size ratchet asking the question is exactly what it is for. Memory.cpp
+came out 13 lines SMALLER than before the feature.
+
 ## 2026-08-31 — DIX-fix: RETURN at the menu now plays the whole anthology
 
 `tools/make_dix_fix.py` builds **`disks_3.5/DIX-fix.po`** from the pristine

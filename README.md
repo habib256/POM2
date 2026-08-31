@@ -268,7 +268,18 @@ Assign cards, mount media, eject or boot from `Machine → Slot Configuration`. 
 | `uthernet` | Uthernet I (CS8900A NIC) | `echoplus_tms` | Echo+ TMS5220 + 2×AY scaffold |
 | `uthernet2` | Uthernet II (W5100 TCP/IP) | `softcard` | Microsoft SoftCard Z80 (CP/M) |
 | `fujinet` | FujiNet relay (SP over SLIP) | `workstation` | Apple II Workstation Card (LocalTalk) |
-| `4play` | 4play — 4 digital joysticks (Lukazi) | | |
+| `4play` | 4play — 4 digital joysticks (Lukazi) | `transwarp` | TransWarp accelerator (Applied Engineering) |
+
+**TransWarp (Applied Engineering, 1986).** A 3.58 MHz 65C02 on a card, which
+is simply the machine's processor moved onto a faster clock — same program,
+same memory. Plug it in any slot and the Apple runs at **3.5×** (or 1.75× on
+the half-speed DIP switch). There is no register to read and nothing to
+configure to make it work: it watches the bus, and software that needs real
+1 MHz timing asks for it by writing `$C074`. The shipped DIP defaults leave
+**slot 6 at stock speed** — that is the Disk II, the one slot AE did not
+trust at full speed. Optional ROM: `roms/ae_transwarp_1.4.bin` (AE's
+speed-corrected Monitor, overlaid on `$F000-$FFFF`); the card accelerates
+without it.
 
 **Apple II Workstation Card.** The board that put a IIe on LocalTalk, and the
 only card here that is a **computer of its own**: a 65C02, 28 KB of RAM, a
@@ -373,6 +384,7 @@ Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), an
 | `apple2cp.rom` | //c+ banks 0 + 1 |
 | `apple2_char.rom` | II/II+ character ROM (also the IIe-class fallback) |
 | `apple2e_char.rom` / `apple2e_char_2k.rom` | //e character ROMs — Enhanced 4 KB (mousetext) / Unenhanced 2 KB |
+| `Videx Lower Case Chip ROM.bin` | Videx LOWER CASE CHIP — the 1980 drop-in generator that gave a II/II+ lowercase |
 | `disk2.rom` / `disk2_13.rom` | Disk II boot PROMs (16- / 13-sector; embedded 341-0027-A default for 16-sector) |
 | `diskii_p6.rom` / `diskii_p6_13.rom` | Disk II P6 LSS sequencer PROMs (embedded default when absent) |
 | `liron.rom` | Liron / SmartPort controller firmware (real $Cn0D dispatch identity) |

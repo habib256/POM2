@@ -410,6 +410,13 @@ public:
     /// comment in the definition for why an 8 KB part exists at all.
     int loadCharRom(const char* filename, int bank = 0);
 
+    /// True when the loaded character generator actually carries lowercase
+    /// glyphs. A 4 KB IIe-class ROM always does; a 2 KB one usually does
+    /// NOT — except the Videx LOWER CASE CHIP, which is the whole reason
+    /// this is a fact about the dump rather than about its size. The
+    /// renderer folds a-z to A-Z only when this is false.
+    bool charRomHasLowercase() const { return charRomLowercase_; }
+
     const std::string& getLastError() const { return lastError; }
 
     // Direct access for the display / debugger / snapshot.
@@ -819,7 +826,8 @@ private:
     uint32_t ramWorksBanks_ = 1;   // 1 = stock 64 KB aux (no RamWorks)
     uint8_t  ramWorksBank_  = 0;   // current bank (MAME m_bank / 0x10000)
     void ramWorksSwapToBank(uint8_t newBank);  // memcpy in/out
-    std::vector<uint8_t> characterRom;        // 2048 bytes once loaded
+    std::vector<uint8_t> characterRom;
+    bool charRomLowercase_ = false;   // see charRomHasLowercase()
     std::string lastError;
 
     // Soft-switch state, guarded by stateMutex. Reads from the UI thread
