@@ -15,11 +15,29 @@
 # src/MainWindow*.cpp passes 2000 lines. The ratchet is the general rule; that
 # is the specific promise, because this is the family that broke it before.
 #
+# 2026-08-31: TWO CEILINGS RAISED, deliberately, and the split is still owed.
+# The gate had been red on main since 2026-08-29 — failing in 15 s, before the
+# Linux job compiled anything, so it was also hiding the build and the GLES
+# tier behind it. Raising the two numbers is what this file is FOR (see the
+# script header: editing it is the moment someone gets asked), but it is the
+# lesser half of the answer and the debt is recorded in TODO § [Arch]:
+#
+#   src/ImageWriter.cpp  2152 -> 2501  (+349) — the printer work: the
+#       ImageWriter head, the paper tray, PDF export and the PostScript /
+#       screen-dump seams all landed in one TU. It has clean internal seams
+#       and wants splitting, not a bigger number.
+#   src/Memory.cpp       2402 -> 2442  (+40) — smaller and not one change:
+#       +1 of it is the foreign-bus dispatch that lets a coprocessor card run
+#       the 6502 over its own map (PERFORMANCE § 9); the rest predates it.
+#
+# Both are recorded at their EXACT current size, so the ratchet still fails on
+# the next line either of them gains.
+#
 # Regenerate with: tools/check_file_sizes.sh --update
 
 src/Apple2Display.cpp                    2711
 src/DiskImage.cpp                        2835
-src/ImageWriter.cpp                      2152
+src/ImageWriter.cpp                      2501
 src/M6502.cpp                            2159
-src/Memory.cpp                           2402
+src/Memory.cpp                           2442
 src/hgrpaint/HgrPaintEditor.cpp          2525
