@@ -1,6 +1,9 @@
 # Printer emulation — gap analysis and implementation plan
 
-**Status: COMPLETE (2026-08-10).** All six phases shipped. POM2 now prints with the
+**Status: COMPLETE (2026-08-10).** Round two — the Epson generations, the
+C. Itoh cousins and the LaserWriter — is in
+[`printer_plan_2.md`](printer_plan_2.md).
+ All six phases shipped. POM2 now prints with the
 real ImageWriter faces, can dump the screen through the printer's own graphics
 parser, has a power switch and custom paper, and models three C. Itoh heads
 (ImageWriter II / I / Apple DMP) plus the Epson FX-80 with its own ESC/P
