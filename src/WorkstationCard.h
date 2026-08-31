@@ -79,31 +79,75 @@
 //   $C800-$CFFF  Expansion ROM, served from the dump at file $C800. The
 //                $Cn00 page enters it with `JMP $CC00` after the usual
 //                `STA $07F8` / `LDX $CFFF` dance.
-//   $C0n0-$C0nF  Strobes between the two CPUs. **Not established.** Reads
-//                answer $FF and writes are recorded by `hostStrobeLog()` for
-//                whoever finishes the job. What IS known, so it does not have
-//                to be re-derived:
-//                  * The $Cn00 page writes $71 to `$C080,X` and `$C081,X`,
-//                    the expansion ROM writes $50 to `$C080,X`, and a later
-//                    entry does `STA $C080,X` at `$CnB8` with X taken from
-//                    `$CnEB` and the byte from `$CnEA` — both host-written
-//                    slots in the shared page.
-//                  * The card firmware has **no IRQ path** for any of it: at
-//                    `$EE07` it counts anything that is neither SCC nor timer
-//                    as spurious.
-//                  * It does have an **NMI path**, and arms it. `$ED57` tests
-//                    bit 7 of `$3A` and dispatches through `($01FE)`; the
-//                    card sets that bit at `$DBD6` about 5 s into its life.
-//                    The vector still points at an RTS (`$ED5E`) at that
-//                    point, so /NMI is the leading hypothesis for the strobe
-//                    rather than a proven one — POM2 does not wire it,
-//                    because guessing would be worse than $FF.
-//                  * Writing `$02E7`/`$02EB` alone does NOT make the card
-//                    rebuild its page: tried, nothing moved. The card does
-//                    read `$02F1` (`CMP #$12` at `$C1BF`) and consumes
-//                    `$02EB` when it builds the OTHER page image, the one in
-//                    the low ROM half at `$81B8`.
-//                → TODO § Workstation Card
+//   $C0n0-$C0nF  Strobes between the two CPUs. Reads answer $FF and writes
+//                are recorded by `hostStrobeLog()` — and **a driver call
+//                completes anyway**, so whatever they do, this path does not
+//                need it. The host writes $71 to `$C080,X`/`$C081,X` from
+//                the page and hands a byte to `$C080,X` at `$CnB8` (X from
+//                `$CnEB`, the byte from `$CnEA`); the card firmware reads no
+//                register that could receive any of it and has no interrupt
+//                path for it (`$EE07` counts anything that is neither SCC
+//                nor timer as spurious). Left unmodelled deliberately: there
+//                is nothing left to explain with them, and inventing a
+//                behaviour would be worse than $FF.
+//
+// THE HANDSHAKE, as far as it is decoded. Read this before touching
+// `deviceSelectWrite`; it is the difference between finishing the card and
+// guessing at it.
+//
+//   * **Detection.** Guest software scans slots for `ATLK` at `$CnF9-$CnFC`
+//     and then reads `$CnFD` as a version byte — $01 or $02. `ATINIT` does
+//     exactly that at its `$31B4`. POM2's card passes.
+//   * **The driver entry is `$Cn14`**, called ProDOS-MLI style:
+//     `JSR $Cn14 / .BYTE command / .WORD parameter-block`. ATINIT's first
+//     call is command **$42**. (The entry table starts at `$Cn14` and each
+//     entry loads its own command into Y before branching to the common
+//     body at `$Cn36`.)
+//   * **The two CPUs rendezvous by rewriting code the other is executing.**
+//     This is the part that looks impossible until you see it: the host
+//     spins inside the shared page on `$Cn89: 18 90 EB` — `CLC` then a
+//     branch back — and the CARD releases it by writing `$38` (`SEC`) into
+//     `$0289`, so the branch stops being taken and the host falls through
+//     to `$Cn8C: JMP $CC00`. The mirror image runs at `$02A9`: the card
+//     writes `$38` there and then waits (`$D577-$D583`) until it reads
+//     `$18`, which is the `CLC` opcode of the host's own spin loop.
+//   * **`$02EE` is the request byte** (`$CnEE` to the host). The card polls
+//     it from its idle loop (`$DAB2: JSR $D016`):
+//         $D016: LDA $02EE / BMI      ; bit 7 = the host wants service
+//         $D021: BIT $02EE / BVC $D021 ; then WAIT for bit 6
+//         $D031: STZ $02EE            ; consume it
+//         $D034: AND #$0F             ; low nibble = the command
+//         $D045: LDA $02DB / CMP #$42 ; ...and $42 is ATINIT's call
+//   * **The card steers the host by PATCHING the host's code.** This is the
+//     part that makes the page make sense. Scanning every absolute write the
+//     card firmware makes into `$02xx`: it writes `$CnBB`/`$CnBC` fourteen
+//     times each — those are the operand bytes of the host's
+//     `$CnBA: JMP $Cn95` — and `$CnC3`/`$CnC4`/`$CnC6`/`$CnC7` four times
+//     each, which are the address operands of the host's block-move loop
+//     `$CnC2: LDA $FFFF,X / STA $FFFF,X` (shipped with `FF FF` placeholders).
+//     So the card decides where the host jumps and what it copies, by
+//     rewriting the instructions before releasing it.
+//   * **Data slots.** The card writes `$CnEA` (the byte the host then hands
+//     back through `$C080,X`), `$CnE8`, `$CnEC`, `$CnED`, `$CnE6`; it reads
+//     `$CnDB` (the command — `$42` for ATINIT), `$CnDC`/`$CnDD` (the
+//     parameter-block pointer the host wrote), `$CnE4`, `$CnE9`, `$CnF1`.
+//     A card-to-host byte stream looks like `STA $02EA / LDA #$38 /
+//     STA $02A9` — put the byte, then release the host's spin.
+//   * **`$0289` is written exactly once in the whole firmware** (`$D01E`),
+//     and never restored to `$18`. So the first rendezvous is a one-shot per
+//     transaction, not a repeating gate — which is why a host that keeps
+//     re-entering the page is a symptom of the transaction never completing,
+//     not of a missing restore.
+//   * **Bit 6 of `$02EE` was a red herring, and the story is worth
+//     keeping.** The card waits on `BIT $02EE / BVC` for a bit the host's
+//     page code never writes, which looked like proof that the `$C08x`
+//     strobe must set it. Wiring that did move the card one step further —
+//     which made it look righter still. It was not: the real fault was the
+//     `$C800-$CFFF` window being based $400 too high, so the host's
+//     `JMP $CC00` landed on a block-copy loop instead of the driver
+//     prologue. With the base corrected the whole transaction completes
+//     **with no strobe modelling at all**. The lesson: a change that moves a
+//     stuck system one step is not evidence that it is correct.
 //
 // WHAT THIS COSTS. The card runs a second 6502 at the Apple II's own rate,
 // so plugging it roughly doubles the emulation work. That is what a
@@ -139,7 +183,18 @@ public:
     /// Where the Apple II's $Cn00 window lands in that RAM.
     static constexpr uint16_t kSharedPage = 0x0200;
     /// Offsets in the dump of the two host-visible slices.
-    static constexpr std::size_t kExpansionRomOffset = 0xC800;
+    /// Where the host's `$C800-$CFFF` expansion ROM lives in the dump.
+    /// Determined by experiment, not by reading: with the card plugged and a
+    /// `JSR $Cn14 / .BYTE $42 / .WORD block` call driven at it, **0xC400 is
+    /// the only base at which the transaction completes** — the host returns
+    /// past its inline parameters, `$CnDB` receives the command byte and
+    /// both semaphores come back to rest. Nine candidates were swept
+    /// (0xC000, 0xC200, 0xC3DA, 0xC400, 0xC4BD, 0xC4DA, 0xC600, 0xC800,
+    /// 0xCC00); the other eight deadlock. Note it overlaps the tail of the
+    /// `$Cn00` page image at 0xC3DA-0xC4BC, which is fine: the host enters
+    /// this window at `$CC00` (file 0xC800), where the prologue
+    /// `CLD / PHP / SEI / LDA #$50 / STA $C080,X` lives.
+    static constexpr std::size_t kExpansionRomOffset = 0xC400;
 
     explicit WorkstationCard(int slot);
     ~WorkstationCard() override;

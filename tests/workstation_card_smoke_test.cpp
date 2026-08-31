@@ -191,14 +191,21 @@ int main()
     std::printf("  ok: $Cn00 is a read/write window on card RAM $0200\n");
 
     // ─── The expansion ROM is the dump's own host-side driver ────────────
-    // $C800 begins CLD / PHP / SEI / LDA #$50 / STA $C080,X — the sequence
-    // that identified this slice as Apple II code in the first place.
-    assert(card.expansionRomRead(0x000) == 0xD8);   // CLD
-    assert(card.expansionRomRead(0x001) == 0x08);   // PHP
-    assert(card.expansionRomRead(0x002) == 0x78);   // SEI
-    assert(card.expansionRomRead(0x005) == 0x9D);   // STA abs,X
-    assert(card.expansionRomRead(0x007) == 0xC0);   // …$C080,X
-    std::printf("  ok: $C800-$CFFF serves the host-side driver\n");
+    // The `$Cn00` page enters this window with `JMP $CC00`, and $CC00 is
+    // where the host-side prologue lives: CLD / PHP / SEI / LDA #$50 /
+    // STA $C080,X. Getting the window's base wrong by $400 — which is what
+    // it was until the driver call was actually driven — lands the host on a
+    // block-copy loop instead and deadlocks the whole handshake, with no
+    // symptom this test could otherwise see.
+    assert(card.expansionRomRead(0x400) == 0xD8);   // CLD
+    assert(card.expansionRomRead(0x401) == 0x08);   // PHP
+    assert(card.expansionRomRead(0x402) == 0x78);   // SEI
+    assert(card.expansionRomRead(0x403) == 0xA9);   // LDA #
+    assert(card.expansionRomRead(0x404) == 0x50);   // …#$50
+    assert(card.expansionRomRead(0x405) == 0x9D);   // STA abs,X
+    assert(card.expansionRomRead(0x407) == 0xC0);   // …$C080,X
+    std::printf("  ok: $C800-$CFFF serves the host-side driver "
+                "(prologue at $CC00)\n");
 
     // ─── The host strobes are recorded, not invented ─────────────────────
     assert(card.hostStrobeLog().empty());
@@ -250,6 +257,63 @@ int main()
     assert(card.postErrors() == 0x00 && "the firmware should re-pass its POST");
     assert(card.scc().txRate(A) == 230400);
     std::printf("  ok: reset re-boots the card cleanly\n");
+
+    // ─── It services a driver call the way AppleShare makes one ──────────
+    // AppleShare's ATINIT calls the card at `$Cn14` in ProDOS-MLI style —
+    // `JSR $Cn14 / .BYTE command / .WORD parameter-block` — with command
+    // $42. Servicing it exercises the whole two-CPU handshake: the host
+    // spins inside the shared page, the card releases it by writing `$38`
+    // (`SEC`) over the `$18` (`CLC`) the host is executing, patches the
+    // host's own `JMP` operands to steer it, streams bytes through `$CnEA`,
+    // and finally lets the call return. Nothing here is POM2 talking to
+    // itself: both sides are Apple's code.
+    {
+        Memory host;
+        M6502  hostCpu(&host);
+        host.clearRam();
+        host.resetSoftSwitches();
+        host.setIIEMode(true);
+        if (!host.loadAppleIIRom("roms/apple2e.rom", false)) {
+            std::printf("  (skipped the driver-call case: no roms/apple2e.rom)\n");
+        } else {
+            auto plugged = std::make_unique<pom2::WorkstationCard>(4);
+            assert(plugged->loadRom(romPath));
+            auto* live = plugged.get();
+            host.slotBus().plug(4, std::move(plugged));
+            hostCpu.setCpuMode(M6502::CpuMode::CMOS);
+            hostCpu.hardReset();
+
+            for (int i = 0; i < 1200; ++i) host.advanceCycles(4096 * 5);
+            assert(live->postErrors() == 0x00);
+
+            // JSR $C414 / .BYTE $42 / .WORD $9000 / JMP *
+            const uint8_t stub[] = { 0x20, 0x14, 0xC4, 0x42, 0x00, 0x90,
+                                     0x4C, 0x06, 0x03 };
+            for (std::size_t i = 0; i < sizeof stub; ++i)
+                host.writeRamUnchecked(static_cast<uint16_t>(0x300 + i), stub[i]);
+            hostCpu.setProgramCounter(0x0300);
+            hostCpu.setStackPointer(0xF8);
+
+            bool returned = false;
+            for (long n = 0; n < 4000000; ++n) {
+                if (hostCpu.getProgramCounter() == 0x0306) { returned = true; break; }
+                hostCpu.step();
+            }
+
+            assert(returned && "the driver call never returned — the handshake stalled");
+            // The command byte reached the card through the shared page...
+            assert(live->slotRomRead(0xDB) == 0x42);
+            // ...and both rendezvous semaphores are back at rest ($18 is the
+            // `CLC` opcode of the host's own spin loops).
+            assert(live->slotRomRead(0x89) == 0x18);
+            assert(live->slotRomRead(0xA9) == 0x18);
+            // A completed transaction, not a runaway: the strobe log stays
+            // far below its 4096 cap.
+            assert(live->hostStrobeLog().size() < 500);
+            std::printf("  ok: serviced an ATINIT-style $Cn14 call "
+                        "(cmd $42, %zu strobes)\n", live->hostStrobeLog().size());
+        }
+    }
 
     // ─── Plugged into a real slot bus, seen from the Apple II ────────────
     // Everything above drove the card directly. This is the path a guest

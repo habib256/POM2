@@ -3081,15 +3081,31 @@ poll iteration. Widen it and `workstation_card_smoke` says so.
 **What it costs**: a second 6502 at the Apple II's own rate, so roughly double
 the emulation work while plugged. That is what a coprocessor board is.
 
-**What is NOT done, and why it is not a detail.** The `$C0nX` strobes between
-the two CPUs are unestablished — the driver writes `$71` to `$C080,X` and
-`$C081,X` and `$50` from the expansion ROM, and the card firmware has no
-interrupt path for any of it (its handler counts anything that is neither SCC
-nor timer as spurious, at `$EE07`), so the handshake is presumably a poll of
-the shared page. `hostStrobeLog()` records what the guest does; reads answer
-`$FF`. And SDLC framing is missing on both sides of the port — MAME does not
-model it either. So guest AppleTalk software finds the card and then waits.
-→ `TODO.md` § Workstation Card
+**The host handshake works, and it is worth understanding once.** AppleShare's
+`ATINIT` calls the card at `$Cn14` in ProDOS-MLI style —
+`JSR $Cn14 / .BYTE cmd / .WORD block` — and POM2 services it: the AppleShare
+IIe Workstation disk boots, passes the card's power-up diagnostics and reaches
+its menu. The mechanism is that **the card rewrites the host's code**. It
+releases the host's spin loops by writing `$38` (`SEC`) over the `$18` (`CLC`)
+the host is executing in the shared page; it patches `$CnBB`/`$CnBC` — the
+operands of the host's own `JMP` — to steer where the host goes next, and
+`$CnC3`/`$C4`/`$C6`/`$C7`, the address operands of the host's block-move loop,
+to say what it copies. Data crosses a byte at a time through `$CnEA` with
+`$02A9` as the handshake.
+
+**One number cost three sessions**, so it is written down: the
+`$C800-$CFFF` window is served from file **`0xC400`**, not `0xC800`. With the
+wrong base the page's `JMP $CC00` lands on a block-copy loop instead of the
+driver prologue and the two CPUs deadlock with nothing pointing at the cause.
+Nine bases were swept; only `0xC400` completes a transaction. On the way there
+a plausible theory — that the `$C08x` strobe must set bit 6 of `$02EE`,
+because the card waits on it and nothing else writes it — was wired up and
+**moved the card one step further**, which made it look right. It was not: with
+the base corrected everything completes with no strobe modelling at all.
+A change that unsticks a stuck system is not evidence that it is correct.
+
+`$C0nX` therefore still answers `$FF`, and `hostStrobeLog()` records what a
+guest does with it. → `TODO.md` § Workstation Card
 
 Pinned by `workstation_card_smoke`: cold reset enters `$C000` in the high ROM
 half, the card's 65C02 completes the POST, the SCC ends in SDLC at 230400

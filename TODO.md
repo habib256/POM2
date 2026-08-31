@@ -527,6 +527,74 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [Cards] slot cards & peripherals
 
+- 🔵 **The MAME `a2bus` backlog — what is worth porting, and why.** *(survey,
+  not a task)* <a id="a2bus-backlog"></a>The Workstation Card cost what it did
+  **because MAME does not have it**. That is the criterion for everything
+  below: a card MAME already models is a port with an oracle; a card it does
+  not is reverse engineering. `src/devices/bus/a2bus` crossed against POM2's
+  actual gaps:
+
+  **The four that earn their keep.**
+
+  - **Videx VideoTerm** (`a2videoterm`) — *the clearest functional hole.*
+    POM2 does the //e's 80 columns (internal, `$C300` firmware + AUX under
+    `iieMode`), so a **II/II+ has none at all**. The VideoTerm is the card
+    that made AppleWorks, word processors and CP/M usable on a II+. Not
+    cheap: it carries its own 6845 and its own dot clock, so it is a second
+    complete video path, not a slot peripheral. Cousins if the shape works:
+    `a2ultraterm`, `suprterminal`. **The one to do first** — it changes what
+    the machine can *do*, not what it can imitate.
+  - **Mountain Computer Music System** (`a2mcms`) — the real blind spot for
+    an emulator that already has Mockingboard A/C, Sound II, Phasor, SSI263
+    and a stereo bus. 16 digital voices, the Apple II's first polyphonic
+    synth, and an architecture with nothing in common with the AYs. Plays
+    straight to the project's strength.
+  - **E-Z Color Graphics Interface** (`ezcgi`) — a **TMS9918 in an Apple II
+    slot**: hardware sprites on a machine that has none. The strangest card
+    on the list and the one that would show off the display layer best. The
+    VDP is well-understood and MAME has it.
+  - **Applied Engineering TransWarp** (`transwarp`) — cheap, because the
+    acceleration plumbing already exists (`cyclesPerFrame`, the //c+'s 4×).
+    A slot TransWarp is mostly a speed latch plus cache semantics. Visible
+    effect, small effort.
+
+  **Quick wins, a few hours each.**
+
+  - **4play** (`4play`) and **SNES MAX** (`snesmax`) — plain shift registers,
+    MAME oracle, and directly useful to the `pom2adventure` repo. Four
+    players on an Apple II.
+  - **TimeMaster H.O.** (`timemasterho`) — the other common clock beside the
+    ThunderClock+ POM2 already has.
+  - **Apple Parallel Interface Card** (`a2pic`) — the third printer lineage
+    beside the Grappler+ and the synthetic card. Small, and it rounds off the
+    printer work.
+  - **Memory Expansion Card / RamFactor** (`a2memexp`) — a slot RAM disk,
+    distinct from the AUX-slot RamWorks POM2 has. Gives a II+ a RAM disk.
+
+  **Heavier, only if the appetite is there.**
+
+  - **Apple II SCSI / High-Speed SCSI** (`a2scsi`, `a2hsscsi`) — fidelity
+    rather than capability, since CFFA and the synthetic HDV already cover
+    the need. The point would be running software that talks to the real
+    card.
+  - **The Mill** (`a2themill`) — a 6809 coprocessor, OS-9 on an Apple II.
+    Same shape as the Workstation Card, so **`Memory::ForeignBus` is already
+    there for it** (PERFORMANCE § 9).
+  - **PC Transporter** (`pc_xporter`) — a whole 8086. MAME has it; it is a
+    project in itself.
+
+  **Deliberately skipped.** LANceGS (two Ethernet cards already), the Z80
+  variants (`a2applicard`, `softcard3`, `titan3plus2` — the Microsoft SoftCard
+  covers it), IEEE-488, ComputerEyes, and the modern storage cards (`a2sd`,
+  `booti`, `sider`) that FujiNet + CFFA + HDV already cover.
+
+  **What a hardware archive adds that MAME does not.** Not schematics —
+  **DIP-switch and jumper positions with their meanings**. That is exactly
+  what POM2 already models for the Grappler+ (its seven printer-type
+  positions) and the SSC (its two blocks), and for a Videx or a TransWarp it
+  is the source MAME lacks.
+
+
 - 🟡 **Apple II Workstation Card — the card boots; the host handshake does
   not.** *(~2-4 d to finish)*
   <a id="apple-ii-workstation-card"></a>The card that put a IIe on LocalTalk,
@@ -549,38 +617,36 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
   **What remains, in order:**
 
-  1. ❌ **The `$C0nX` handshake between the two CPUs.** This is what stops a
-     guest AppleTalk stack from completing a transaction: it finds the card
-     and then waits. **Static and dynamic analysis have been taken about as
-     far as they go**; what they produced, so nobody repeats it:
+  1. ✅ **The host handshake works.** AppleShare's `ATINIT` calls the card at
+     `$Cn14` in ProDOS-MLI style — `JSR $Cn14 / .BYTE cmd / .WORD block`,
+     command `$42` — and POM2 now services it end to end: the command byte
+     reaches `$CnDB`, both rendezvous semaphores return to rest, and the call
+     returns past its inline parameters. Pinned by `workstation_card_smoke`.
 
-     - The published `$Cn00` page layout: entry points from `$Cn14` (each
-       `LDY #cmd` + branch to the common body at `$Cn36`), the acquired
-       LocalTalk node at `$CnF0`, and **`ATLK` at `$CnF9-$CnFC`** — the
-       signature guest software finds the card by. Pinned by
-       `workstation_card_smoke`, and confirmed from outside by CardCat.
-     - The strobe sites: `$71` to `$C080,X`/`$C081,X` from the page, `$50` to
-       `$C080,X` from the expansion ROM, and `$CnB8: STA $C080,X` with X from
-       `$CnEB` and the byte from `$CnEA` — both host-written shared-page
-       slots.
-     - The card has **no IRQ path** for the strobe (`$EE07` counts anything
-       that is neither SCC nor timer as spurious) but **does have an NMI
-       path**, and arms it: `$ED57` tests bit 7 of `$3A` and dispatches
-       through `($01FE)`, and the card sets that bit at `$DBD6` ~5 s in. The
-       vector is still `$ED5E` (an RTS) at that point, so **/NMI is the
-       leading hypothesis, not a fact** — POM2 does not wire it, because
-       guessing here would be worse than answering `$FF`.
-     - Negative result: writing `$02E7`/`$02EB` alone does **not** make the
-       card rebuild its page. It does read `$02F1` (`CMP #$12` at `$C1BF`)
-       and consumes `$02EB` when it builds the OTHER page image, the low-half
-       one at `$81B8`.
+     **The bug was one number**: the `$C800-$CFFF` window was based at file
+     `0xC800` instead of `0xC400`, so the page's `JMP $CC00` landed on a
+     block-copy loop rather than the driver prologue
+     (`CLD / PHP / SEI / LDA #$50 / STA $C080,X`). Nine bases were swept;
+     `0xC400` is the only one at which the transaction completes.
 
-     **The way in is a guest AppleTalk disk** — an AppleShare workstation
-     disk, or anything with the `.ATP`/ATALK driver — driven exactly the way
-     `workstation_card_cardcat` drives CardCat: boot it, log
-     `hostStrobeLog()` and the shared page, and read the answer off the
-     firmware instead of guessing. **There is no such disk in the repo**;
-     adding one is the unblock. *~1 d once there is one.*
+     **Two things worth keeping from how long that took.** The card steers
+     the host by *patching the host's code* — it writes `$CnBB`/`$CnBC` (the
+     operands of the host's `JMP`) and `$CnC3`/`$C4`/`$C6`/`$C7` (the address
+     operands of its block-move), and releases the host's spin loops by
+     writing `$38` (`SEC`) over the `$18` (`CLC`) it is executing. And the
+     "missing bit 6 of `$02EE`" was a **red herring**: wiring it moved the
+     card one step further, which made it look right, and it was not. A
+     change that unsticks a stuck system is not evidence that it is correct.
+
+     Still open, and now cheap to look at: `$C0nX` reads answer `$FF` and
+     writes are ignored, and the transaction completes anyway — so whatever
+     the strobes are for, this path does not need them. `hostStrobeLog()`
+     records them for whoever wants to find out.
+
+     ✅ **Verified end to end**: `disks_3.5/AppleShare IIe Workstation.po`
+     boots in POM2, its ATINIT passes the card's power-up diagnostics and
+     the workstation software reaches its menu.
+
   2. ❌ **Why lapACK does not move the node.** Answering the card's lapENQ
      with lapACK is accepted by the chip — the FIFO fills, the interrupt fires
      — and the driver enquires again anyway rather than picking another
