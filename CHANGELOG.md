@@ -5,6 +5,32 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-31 — Videx LOWER CASE CHIP, and two things a ROM's size never told us
+
+The 1980 Videx **LOWER CASE CHIP** — a drop-in replacement for the II/II+
+motherboard character generator — is now a `CharRomCatalog` entry
+(`videx_lc`, `roms/Videx Lower Case Chip ROM.bin`). Adding it broke two
+assumptions POM2 had been making from the dump's SIZE alone.
+
+**"2 KB means no lowercase."** `Apple2Display` folded a-z onto A-Z whenever
+`charRomSize < 4096`. Right for the stock generator; exactly wrong for this
+chip, which is also 2 KB and exists *for* those glyphs. The real test is in
+the Videx manual's own description of the part it replaces: *"Characters
+80 - BF are identical to characters C0 - FF"*. `loadCharRom` now compares
+those two 512-byte blocks and publishes `Memory::charRomHasLowercase()`; the
+renderer folds on that.
+
+**"Bit 7 marks the inverse range."** True of the //e dumps and AppleWin's
+`Apple2_Video.rom`. The Videx dump never sets bit 7 anywhere, so
+normalisation has to split the range by offset instead. `loadCharRom` probes
+for the marker once and picks the rule. This one was worth pinning because
+it is *invisible*: the glyph shapes are identical either way, so a wrong
+choice only shows up as the whole normal range rendering inverse — and in a
+screenshot of ordinary white-on-black text, nothing looks obviously off.
+
+Pinned by `videx_lowercase_char_rom`, which loads BOTH dumps: proving the
+detection is not a constant requires the ROM that answers the other way.
+
 ## 2026-08-31 — DIX-fix: RETURN at the menu now plays the whole anthology
 
 `tools/make_dix_fix.py` builds **`disks_3.5/DIX-fix.po`** from the pristine

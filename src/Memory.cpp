@@ -371,9 +371,24 @@ int Memory::loadCharRom(const char* filename, int bank)
     //     bit 0 = leftmost natively. XOR every byte with 0xFF flips to
     //     1 = ON; no reverse needed.
     if (size == 2048) {
+        // Two 2 KB conventions exist, and they differ only in bit 7.
+        //
+        // AppleWin's `Apple2_Video.rom` uses bit 7 of each byte as the
+        // range marker described above. The Videx LOWER CASE CHIP dump does
+        // not: it stores the plain glyph everywhere and never sets bit 7,
+        // so the marker test would XOR the whole inverse AND flashing range
+        // and draw both wrong. Detect the plain kind by the absence of the
+        // marker across the first 1 KB, and fall back to the offset for the
+        // range split — $00-$3F is inverse, $40-$7F is flashing.
+        bool markerPresent = false;
+        for (size_t i = 0; i < 1024; ++i) {
+            if (characterRom[i] & 0x80) { markerPresent = true; break; }
+        }
         for (size_t i = 0; i < 2048; ++i) {
             uint8_t n = characterRom[i];
-            if (i < 1024 && !(n & 0x80)) n ^= 0x7F;
+            const bool invert = markerPresent ? (i < 1024 && !(n & 0x80))
+                                              : (i < 512);
+            if (invert) n ^= 0x7F;
             uint8_t d = 0;
             for (int j = 0; j < 7; ++j) {
                 d = static_cast<uint8_t>((d << 1) | (n & 1));
@@ -381,13 +396,36 @@ int Memory::loadCharRom(const char* filename, int bank)
             }
             characterRom[i] = d;
         }
+        if (!markerPresent) {
+            pom2::log().info("ROM",
+                std::string("Char ROM: 2 KB dump with no bit-7 range marker "
+                            "(Videx-style), split by offset instead"));
+        }
     } else if (size == 4096) {
         for (size_t i = 0; i < 4096; ++i) {
             characterRom[i] ^= 0xFF;
         }
     }
+    // Does this ROM actually carry lowercase glyphs? The Videx LOWER CASE
+    // CHIP manual states the invariant that answers it (§ Discussion of
+    // character display): on a stock Apple II generator "Characters 80 - BF
+    // are identical to characters C0 - FF", so the lowercase slots hold
+    // repeats. A chip that adds lowercase breaks that equality. The
+    // comparison is made AFTER normalisation, which consumes the bit-7
+    // marker the two 2 KB conventions disagree about.
+    //
+    // 4 KB IIe-class ROMs always have lowercase.
+    charRomLowercase_ = true;
+    if (size == 2048) {
+        charRomLowercase_ =
+            std::memcmp(characterRom.data() + 1024,
+                        characterRom.data() + 1536, 512) != 0;
+    }
+
     pom2::log().info("ROM",
-        "Loaded char ROM (" + std::to_string(size) + " B): " + filename);
+        "Loaded char ROM (" + std::to_string(size) + " B" +
+        (charRomLowercase_ ? ", lowercase" : ", uppercase only") + "): " +
+        filename);
     return 1;
 }
 

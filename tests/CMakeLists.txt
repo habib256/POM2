@@ -360,6 +360,29 @@ add_test(NAME fourplay_card COMMAND test_fourplay)
 set_tests_properties(fourplay_card PROPERTIES TIMEOUT 10)
 
 
+# ─── Videx LOWER CASE CHIP vs the stock generator ─────────────────────────
+# Two 2 KB character ROMs that must NOT be treated the same. Pins the dump
+# convention (the Videx dump never sets bit 7, so its inverse range is split
+# by offset, not by that marker) and the lowercase test taken from the Videx
+# manual: a stock generator repeats $80-$BF at $C0-$FF, a lowercase chip
+# does not. ROM-gated — SKIPs without both dumps.
+
+add_executable(test_videx_lowercase_char_rom
+    videx_lowercase_char_rom_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_videx_lowercase_char_rom
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_videx_lowercase_char_rom PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+add_test(NAME videx_lowercase_char_rom
+         COMMAND test_videx_lowercase_char_rom
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(videx_lowercase_char_rom PROPERTIES TIMEOUT 10)
+
+
 # ─── Z8530 against the Workstation Card's own firmware ────────────────────
 # Runs Apple's 341-0358-A ROM until it finishes its power-on self-test and
 # programs the chip for LocalTalk. The POST includes a 255-byte loopback

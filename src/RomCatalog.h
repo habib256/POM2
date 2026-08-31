@@ -133,6 +133,13 @@ inline const std::vector<RomCatalogEntry>& romCatalog()
           "0xC800-0xCFFF (expansion ROM), and the card's own 65C02 image is "
           "the upper 32 KB." },
 
+        { "Other cards", "Videx LOWER CASE CHIP character generator (1980)",
+          { "roms/Videx Lower Case Chip ROM.bin" }, 2048, 0x00F68076u,
+          "sha1 447874fe0850c8add3fd5b13fa98f6648fe6f999",
+          "The Videx entry disappears from the character-set picker; the "
+          "II/II+ keeps its stock uppercase-only generator, which is what "
+          "the machine shipped with." },
+
         { "Other cards", "ThunderClock+ slot ROM (Thunderware)",
           { "roms/thunderclock_u9_v1.3.bin", "roms/thunderclock_u9.bin",
             "roms/thunderclock.rom" }, 0, 0, "",

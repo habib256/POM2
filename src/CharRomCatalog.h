@@ -51,6 +51,13 @@ enum class CharRomLocale : uint8_t {
     // it on a IIe profile silently disables MouseText.
     AppleIIClassic,
 
+    // Videx LOWER CASE CHIP (1980) — also 2 KB, also a II / II+ part, but
+    // it DOES carry lowercase: it replaced the motherboard's character
+    // generator so a II/II+ could display lowercase at all. The renderer
+    // no longer folds a-z to A-Z on ROM size for exactly this reason; see
+    // `Memory::charRomHasLowercase()`.
+    VidexLowerCase,
+
     // 4 KB IIe-class ROMs (lowercase + mousetext when Enhanced).
     AppleIIeUS_Enhanced,
     AppleIIeUS_Unenhanced,

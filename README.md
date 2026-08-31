@@ -373,6 +373,7 @@ Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), an
 | `apple2cp.rom` | //c+ banks 0 + 1 |
 | `apple2_char.rom` | II/II+ character ROM (also the IIe-class fallback) |
 | `apple2e_char.rom` / `apple2e_char_2k.rom` | //e character ROMs — Enhanced 4 KB (mousetext) / Unenhanced 2 KB |
+| `Videx Lower Case Chip ROM.bin` | Videx LOWER CASE CHIP — the 1980 drop-in generator that gave a II/II+ lowercase |
 | `disk2.rom` / `disk2_13.rom` | Disk II boot PROMs (16- / 13-sector; embedded 341-0027-A default for 16-sector) |
 | `diskii_p6.rom` / `diskii_p6_13.rom` | Disk II P6 LSS sequencer PROMs (embedded default when absent) |
 | `liron.rom` | Liron / SmartPort controller firmware (real $Cn0D dispatch identity) |

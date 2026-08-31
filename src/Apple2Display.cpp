@@ -1149,6 +1149,7 @@ struct GlyphLookup {
 static GlyphLookup lookupCsbitsGlyph(uint8_t screenByte,
                                      const uint8_t* charRom,
                                      std::size_t charRomSize,
+                                     bool charRomLower,
                                      bool altCharSet)
 {
     GlyphLookup g{};
@@ -1156,10 +1157,18 @@ static GlyphLookup lookupCsbitsGlyph(uint8_t screenByte,
 
     uint8_t mapped = screenByte;
 
-    // Lowercase fallback for 2 KB II/II+ ROMs (no lowercase glyphs).
-    // Maps a-z to A-Z by clearing bit 5, mirroring the IIe firmware's
-    // own fallback when no IIe char ROM is installed.
-    if (charRomSize < 4096) {
+    // Lowercase fallback for a generator that has no lowercase glyphs:
+    // map a-z to A-Z by clearing bit 5, mirroring the IIe firmware's own
+    // fallback when no IIe char ROM is installed.
+    //
+    // Gated on what the ROM CONTAINS, not on how big it is. The stock 2 KB
+    // II/II+ generator has no lowercase, but the **Videx LOWER CASE CHIP**
+    // is also 2 KB and does — replacing the motherboard's character
+    // generator was how a II/II+ got lowercase on screen in 1980. Keying on
+    // size would fold its glyphs away and render the card pointless.
+    // `Memory::charRomHasLowercase()` decides, using the invariant the Videx
+    // manual itself states.
+    if (!charRomLower) {
         const uint8_t ascii = mapped & 0x7F;
         if (ascii >= 0x61 && ascii <= 0x7A) {
             mapped = static_cast<uint8_t>((mapped & 0x80) | (ascii - 0x20));
@@ -1223,12 +1232,14 @@ static GlyphLookup lookupCsbitsGlyph(uint8_t screenByte,
 static std::array<uint8_t, 8> glyphRows7(uint8_t screenByte,
                                          const uint8_t* charRom,
                                          std::size_t charRomSize,
+                                         bool charRomLower,
                                          bool useCharRom, bool altCharSet,
                                          bool flashPhase)
 {
     std::array<uint8_t, 8> rows{};
     if (useCharRom) {
-        const auto g = lookupCsbitsGlyph(screenByte, charRom, charRomSize, altCharSet);
+        const auto g = lookupCsbitsGlyph(screenByte, charRom, charRomSize,
+                                         charRomLower, altCharSet);
         for (int gy = 0; gy < 8; ++gy) {
             uint8_t bits = g.bytes[gy];
             if (g.flash && flashPhase) bits ^= 0x7Fu;
@@ -1292,6 +1303,7 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
             const int cellY = row * 8;
 
             const auto rows = glyphRows7(src, charRom.data(), charRom.size(),
+                                         mem.charRomHasLowercase(),
                                          useCharRom, altCharSet, flashPhase);
             for (int gy = 0; gy < 8; ++gy) {
                 const int y = cellY + gy;
@@ -1342,6 +1354,7 @@ void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
             // bit 0 = leftmost, 1 = lit) with invert/flash already applied,
             // so the 14-dot widening below is shared by both font paths.
             const auto glyphRows = glyphRows7(src, charRom.data(), charRom.size(),
+                                         mem.charRomHasLowercase(),
                                               useCharRom, altCharSet, flashPhase);
 
             for (int gy = 0; gy < 8; ++gy) {
@@ -2038,6 +2051,7 @@ void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
                 const int     cellY = row * 8;
 
                 const auto rows = glyphRows7(src, charRom.data(), charRom.size(),
+                                         mem.charRomHasLowercase(),
                                              useCharRom, altCharSet, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = cellY + gy;
@@ -2467,6 +2481,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
             for (int col = col0; col < col1; ++col) {
                 const uint8_t src = ram[rowAddr + col];
                 const auto bytes = glyphRows7(src, charRom.data(), charRom.size(),
+                                         mem.charRomHasLowercase(),
                                               useCharRom, state.altChar, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = row * 8 + gy;
@@ -2496,6 +2511,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
                 const uint8_t src = (col & 1) ? ram[rowAddr + (col >> 1)]
                                               : aux[rowAddr + (col >> 1)];
                 const auto bytes = glyphRows7(src, charRom.data(), charRom.size(),
+                                         mem.charRomHasLowercase(),
                                               useCharRom, state.altChar, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = row * 8 + gy;

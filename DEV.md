@@ -553,6 +553,36 @@ The deep per-mode comparison with each origin source — algorithm
 provenance, deviations, pinned tests and side-by-side captures —
 lives in [`docs/graphics_modes_comparison.md`](docs/graphics_modes_comparison.md).
 
+### Character generators, and the Videx LOWER CASE CHIP
+
+Text glyphs come from a dumped character ROM (`Memory::loadCharRom`,
+selectable per locale from `CharRomCatalog`). Two properties of a dump are
+NOT knowable from its size, and POM2 used to guess both from it:
+
+**The inverse/flash range.** In the 4 KB //e dumps and AppleWin's
+`Apple2_Video.rom`, bit 7 of each byte marks the range that renders inverse.
+The Videx dump never sets bit 7 at all, so that marker is absent and the
+range has to be split by OFFSET (the first 512 bytes) instead. `loadCharRom`
+now scans for the marker once and picks the rule accordingly. Getting this
+backwards inverts the entire normal range — and because the glyph SHAPES are
+unaffected, it is invisible in a screenshot of ordinary text.
+
+**Whether there is lowercase.** POM2 previously read "2 KB" as "no
+lowercase" and folded a-z onto A-Z at render time
+(`Apple2Display::lookupCsbitsGlyph`). That is correct for the stock
+II/II+ generator and exactly wrong for the **Videx LOWER CASE CHIP**
+(1980) — a drop-in replacement for the motherboard generator, also 2 KB,
+whose entire reason to exist is those glyphs. The test comes from the Videx
+manual's own description of the stock part: *"Characters 80 — BF are
+identical to characters C0 — FF"*. A generator that adds lowercase breaks
+that equality, so `loadCharRom` compares the two 512-byte blocks and
+publishes the answer as `Memory::charRomHasLowercase()`; the display folds
+on that, not on the size. Pinned by `videx_lowercase_char_rom`, which runs
+both dumps and checks the fold, the bit order and the ranges.
+
+Catalog key `videx_lc`, file `roms/Videx Lower Case Chip ROM.bin`. The chip
+is a II/II+ part: on a //e lowercase is already in the machine.
+
 ### DHGR (IIe, `eightyCol && hiRes && dhgr && !textMode`)
 
 `renderDhgr` interleaves aux (dots `c*14..+6`) with main (`+7..+13`)
