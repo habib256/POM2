@@ -838,7 +838,7 @@ void MainWindow::dumpScreenToPrinter()
     // digits and bit 0.
     std::vector<uint8_t> stream;
     const pom2::IwModelProfile& head = imageWriter->modelProfile();
-    if (head.escP) {
+    if (head.lineage == pom2::IwLineage::EscP) {
         // ...and within the Epson lineage, `ESC *` is FX-generation. An
         // MX-80 has only `ESC K`, and would print an `ESC *` dump's data
         // bytes as text.

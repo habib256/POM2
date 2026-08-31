@@ -124,7 +124,29 @@ enum class IwModel : uint8_t {
     /// Epson RX-80 — an FX-80 minus proportional spacing and user-defined
     /// characters, at a slower carriage.
     EpsonRX80,
+    /// Apple LaserWriter in its DIABLO 630 emulation mode — the daisywheel
+    /// command set its back-panel switch offered so unmodified software
+    /// could print text without speaking PostScript. A THIRD lineage: it is
+    /// neither C. Itoh nor ESC/P, it has no graphics at all, and its motion
+    /// commands are indices (HMI/VMI in 1/120 and 1/48 in) rather than
+    /// pitches. See `execDiabloEscape`.
+    ///
+    /// This is the honest in-scope LaserWriter. PostScript is not a command
+    /// set POM2 can parse — it is a Turing-complete stack language with a
+    /// full graphics model — so it is delegated to an external interpreter
+    /// instead; see docs/printer_plan_2.md.
+    LaserWriterDiablo,
     Count
+};
+
+/// Which command grammar a head speaks. Three lineages now share this one
+/// mechanism (page, dot plotter, margins, paper, pacing, PDF, history) and
+/// disagree only above it — the same finding that kept the C. Itoh models a
+/// table instead of a hierarchy, applied one level up.
+enum class IwLineage : uint8_t {
+    CItoh = 0,   ///< ImageWriter I/II, Apple DMP, Prowriter, NEC
+    EscP,        ///< Epson MX / RX / FX
+    Diablo,      ///< Diablo 630 daisywheel (LaserWriter emulation mode)
 };
 
 /// ESC/P heads only: what this one actually has hardware for. The ESC/P
@@ -195,10 +217,11 @@ struct IwModelProfile {
     /// unless `qualityTiers`.
     double  draftCps;
     double  nlqCps;
-    /// True when this head speaks ESC/P instead of the C. Itoh set, i.e. it
-    /// needs the other parser entirely.
-    bool escP;
-    /// ESC/P capability mask (`IwEscPFeature`). Ignored unless `escP`.
+    /// Which command grammar this head speaks. Anything but `CItoh` needs a
+    /// different parser entirely — the grammars collide outright (`ESC G` is
+    /// graphics on the C. Itoh family and double-strike on the Epson).
+    IwLineage lineage;
+    /// ESC/P capability mask (`IwEscPFeature`). Ignored unless ESC/P.
     uint32_t escPFeatures;
     /// ESC codes this head has no hardware for. They are still CONSUMED with
     /// their parameter bytes — the manual's rule is that an unrecognised code
@@ -756,6 +779,23 @@ private:
     bool                  modelIgnoresEsc(uint8_t cmd) const;
     /// True when the fitted ESC/P head has `feature` (`IwEscPFeature`).
     bool                  modelHasEscP(uint32_t feature) const;
+
+    // ── Diablo 630 (LaserWriter emulation mode) ──────────────────────────
+    // A third parser over the SAME mechanism, on the FX-80's precedent.
+    // Motion is by INDEX here — an HMI in 1/120 in and a VMI in 1/48 in
+    // replace pitch and line spacing — and there are no graphics commands at
+    // all, so nothing below the command layer changes.
+    bool processDiabloChar(uint8_t ch);
+    void execDiabloEscape();
+    /// The motion indices land straight in the mechanism's existing `hmi_`
+    /// and `lineSpacing_` — `hmi_` is already "the guest saying move exactly
+    /// this far, which outranks the font" (see printCharInternal), which is
+    /// precisely what a Diablo HMI is. No parallel state.
+    uint8_t diabloCmd_ = 0;
+    uint8_t diabloNeed_ = 0;
+    /// Column tab stops, inches from the left edge. The 630 sets them at the
+    /// CURRENT position (ESC 1) rather than by number.
+    std::vector<double> diabloTabs_;
 
     // ── Epson ESC/P (printer plan phase C3) ──────────────────────────────
     // A second parser over the SAME mechanism. Everything below the command

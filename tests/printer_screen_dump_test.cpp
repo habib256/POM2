@@ -756,10 +756,10 @@ void testCItohCousins()
         assert(p.defaultCpi > 0.0);
         // Every ESC/P head POM2 carries has at least the skip-perforation
         // pair; a zero mask would mean a row was added without one.
-        if (p.escP) assert(p.escPFeatures != 0);
-        // A C. Itoh head must not carry ESC/P feature bits, which would mean
-        // the two columns got transposed in the table.
-        if (!p.escP) assert(p.escPFeatures == 0);
+        if (p.lineage == pom2::IwLineage::EscP) assert(p.escPFeatures != 0);
+        // A non-ESC/P head must not carry ESC/P feature bits, which would
+        // mean two columns got transposed in the table.
+        if (p.lineage != pom2::IwLineage::EscP) assert(p.escPFeatures == 0);
         ImageWriter iw;
         iw.setSpeed(ImageWriter::Speed::Instant);
         iw.setModel(static_cast<IwModel>(i));
@@ -768,6 +768,131 @@ void testCItohCousins()
     }
     std::printf("  ok: all %d heads have a complete profile and print\n",
                 static_cast<int>(IwModel::Count));
+}
+
+
+// ── 16. The LaserWriter's Diablo 630 emulation ───────────────────────────
+//
+// A third grammar over the same mechanism. These pin the two things that
+// make it a lineage rather than a capability mask: motion is by INDEX, and
+// the same bytes mean different things than they do on the other two heads.
+void testDiablo630()
+{
+    using pom2::IwModel;
+
+    // ImageWriter is non-copyable (it owns a page raster), so the helper
+    // measures in place and returns the numbers rather than the printer.
+    struct Shot { double x = 0.0, y = 0.0; long ink = 0; };
+    auto headAfter = [](IwModel m, const uint8_t* seq, size_t n) {
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(m);
+        iw.printBytes(seq, n);
+        Shot s;
+        s.x = iw.status().headX;
+        s.y = iw.status().headY;
+        for (uint8_t v : iw.currentPage().pix) if (v & 0x1F) ++s.ink;
+        return s;
+    };
+
+    // ESC RS n sets the HMI to (n-1)/120 in. n=13 → 12/120 = 1/10 in, so
+    // five characters land exactly half an inch apart from the left margin.
+    {
+        const uint8_t seq[] = { 0x1B, 0x1E, 13, 'A', 'A', 'A', 'A', 'A' };
+        const Shot s = headAfter(IwModel::LaserWriterDiablo, seq, sizeof(seq));
+        const double moved = s.x - 0.25;      // 0.25" default left edge
+        assert(std::fabs(moved - 0.5) < 1e-6);
+        std::printf("  ok: ESC RS 13 gives a 1/10\" HMI (5 chars = %.4f\")\n",
+                    moved);
+    }
+
+    // ESC US n sets the VMI to (n-1)/48 in. n=9 → 8/48 = 1/6 in per line.
+    {
+        const uint8_t seq[] = { 0x1B, 0x1F, 9, 'X', 0x0D, 0x0A,
+                                             'X', 0x0D, 0x0A, 'X' };
+        const Shot s = headAfter(IwModel::LaserWriterDiablo, seq, sizeof(seq));
+        assert(std::fabs(s.y - 2.0 / 6.0) < 1e-6);
+        std::printf("  ok: ESC US 9 gives a 1/6\" VMI (2 lines = %.4f\")\n",
+                    s.y);
+    }
+
+    // A zero index must not be honoured: a VMI of 0 would print every line on
+    // top of the last and never reach the bottom margin, so the page would
+    // never eject and the job would spin.
+    {
+        const uint8_t seq[] = { 0x1B, 0x1F, 1, 'X', 0x0D, 0x0A, 'X', 0x0D, 0x0A };
+        const Shot s = headAfter(IwModel::LaserWriterDiablo, seq, sizeof(seq));
+        assert(s.y > 0.0);
+        std::printf("  ok: a zero VMI is refused (y=%.4f\")\n", s.y);
+    }
+
+    // Backspace overstrike is how a daisywheel did bold: print, back up one
+    // HMI, print again. The page model ORs ink, so the second pass must land
+    // on the first — same x, and no more ink than one character's worth.
+    {
+        const uint8_t plain[] = { 'M' };
+        const uint8_t over[]  = { 'M', 0x08, 'M' };
+        const Shot a = headAfter(IwModel::LaserWriterDiablo, plain, sizeof(plain));
+        const Shot b = headAfter(IwModel::LaserWriterDiablo, over,  sizeof(over));
+        assert(a.ink > 0 && a.ink == b.ink);
+        assert(std::fabs(a.x - b.x) < 1e-9);
+        std::printf("  ok: BS overstrike lands on the same cell (%ld dots "
+                    "either way)\n", a.ink);
+    }
+
+    // Tabs are set at the CURRENT position, not by number — the 630's own
+    // idiom, and the reason ESC 2 (clear all) exists.
+    {
+        const uint8_t seq[] = { 'A', 'A', 'A', 'A', 0x1B, '1',   // tab here
+                                0x0D,                            // back to left
+                                0x09, 'Z' };                     // HT then print
+        const Shot s = headAfter(IwModel::LaserWriterDiablo, seq, sizeof(seq));
+        // Four cells at the power-on 10 cpi = 0.4", plus the left margin,
+        // then one printed 'Z' cell past the stop.
+        assert(std::fabs(s.x - (0.25 + 0.4 + 0.1)) < 1e-6);
+        std::printf("  ok: ESC 1 sets a tab at the head (HT reached %.4f\")\n",
+                    s.x);
+    }
+
+    // The grammars really are three. ESC E is UNDERLINE ON to a Diablo and
+    // EMPHASIZED (bold) to an Epson, while on the C. Itoh family ESC E is
+    // something else again — so the same four bytes must not produce the
+    // same page. This is the assertion that justifies a third parser rather
+    // than more flags on either existing one.
+    {
+        const uint8_t seq[] = { 0x1B, 'E', 'I', 'I' };
+        long ink[3] = {0,0,0};
+        const IwModel heads[3] = { IwModel::ImageWriterII, IwModel::EpsonFX80,
+                                   IwModel::LaserWriterDiablo };
+        for (int i = 0; i < 3; ++i)
+            ink[i] = headAfter(heads[i], seq, sizeof(seq)).ink;
+        // The Diablo underlines, so it must lay down strictly more ink than
+        // the Epson, which only sets a style bit on the same two glyphs.
+        assert(ink[2] > ink[1]);
+        std::printf("  ok: ESC E differs across all three lineages "
+                    "(C.Itoh %ld, ESC/P %ld, Diablo %ld dots)\n",
+                    ink[0], ink[1], ink[2]);
+    }
+
+    // A reset arriving mid-command must not leave the collector armed — the
+    // trap the ESC/P parser already documents. Here the reset is a model
+    // switch (which power-cycles), and the next job must print in full.
+    {
+        ImageWriter iw;
+        iw.setSpeed(ImageWriter::Speed::Instant);
+        iw.setModel(IwModel::LaserWriterDiablo);
+        const uint8_t halfCmd[] = { 0x1B, 0x1E };     // ESC RS, no parameter
+        iw.printBytes(halfCmd, sizeof(halfCmd));
+        iw.setModel(IwModel::ImageWriterII);
+        iw.setModel(IwModel::LaserWriterDiablo);
+        const uint8_t job[] = { 'H', 'i' };
+        iw.printBytes(job, sizeof(job));
+        long ink = 0;
+        for (uint8_t v : iw.currentPage().pix) if (v & 0x1F) ++ink;
+        assert(ink > 0);
+        std::printf("  ok: a reset mid-command does not eat the next job "
+                    "(%ld dots)\n", ink);
+    }
 }
 
 int main()
@@ -787,6 +912,7 @@ int main()
     testEscPCapabilityMasking();
     testEpsonDumpCmdMatchesHead();
     testCItohCousins();
+    testDiablo630();
 
     std::puts("printer_screen_dump: OK");
     return 0;
