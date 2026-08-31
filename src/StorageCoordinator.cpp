@@ -21,6 +21,7 @@
 #include "DiskIICard.h"
 #include "DiskImage.h"
 #include "EmulationController.h"
+#include "MediaMount.h"
 #include "MountableMediaCard.h"
 #include "ProDOSBlockCard.h"
 #include "ProDOSHardDiskCard.h"
@@ -152,10 +153,15 @@ bool appendMediaBaySettingUpdates(
     return false;
 }
 
+/// `prepared` non-null = the caller already read the image with no lock held
+/// (phase 1); the unit adopts those bytes instead of reading the file a second
+/// time under `stateMutex`. Leave it null for a unit kind with no block
+/// backing (the 3.5" unit), whose phase 1 would be wasted.
 bool mountSmartPortUnitAs(
     SmartPortCard& card, int bay, std::string_view kind,
     const std::string& path, std::vector<SettingUpdate>& updates,
-    std::string& error, int autoSmartPortSlot)
+    std::string& error, int autoSmartPortSlot,
+    Block512Backing::PreparedImage* prepared = nullptr)
 {
     if (bay < 0 || bay >= static_cast<int>(SmartPortCard::kMaxUnits)) {
         error = "invalid SmartPort unit " + std::to_string(bay + 1);
@@ -181,8 +187,25 @@ bool mountSmartPortUnitAs(
         card.setUnit(index, std::move(replacement));
         unit = card.unit(index);
     }
-    if (!unit || !unit->loadImage(path)) {
-        error = unit ? unit->lastError() : "SmartPort unit creation failed";
+    if (!unit) {
+        error = "SmartPort unit creation failed";
+        return false;
+    }
+    // Phase 2 when the caller ran phase 1: adopting costs no file I/O, where
+    // loadImage() would re-read the whole image — up to 32 MiB — with the lock
+    // held. An empty error back from adoptImage is the "this unit kind has no
+    // block backing" answer, not a failure, so fall back to the inline read
+    // for those (same rule as pom2::mountSmartPortUnit).
+    bool loaded = false;
+    if (prepared) {
+        loaded = unit->adoptImage(std::move(*prepared));
+        if (!loaded && !unit->lastError().empty()) {
+            error = unit->lastError();
+            return false;
+        }
+    }
+    if (!loaded && !unit->loadImage(path)) {
+        error = unit->lastError();
         return false;
     }
     (void)appendMediaBaySettingUpdates(
@@ -998,9 +1021,15 @@ StorageCoordinator::RoutedMediaCommandResult StorageCoordinator::mountHdv(
         if (!result.ok && cards.primarySmartPort) {
             result.usesSmartPort = true;
             result.bootSlot = cards.primarySmartPort->getSlot();
+            // `prepared` is still untouched here: the block-card branch above
+            // either takes it and succeeds or returns, so reaching this means
+            // it never ran. Handing it over is what keeps the //c shape (no
+            // block card, built-in SmartPort) from throwing phase 1 away and
+            // reading the whole image a second time under the lock.
             result.ok = mountSmartPortUnitAs(
                 *cards.primarySmartPort, 0, SmartPortHdvUnit::kKindKey,
-                path, updates, result.error, autoSmartPortSlot_);
+                path, updates, result.error, autoSmartPortSlot_,
+                preparedOk ? &prepared : nullptr);
         }
         if (!result.ok && result.error.empty())
             result.error = "no HDV or SmartPort card plugged";
@@ -1346,6 +1375,17 @@ StorageCoordinator::applySmartPortPanel(
     std::vector<SettingUpdate> settingUpdates;
     const std::string slotKey = "smartport_slot" + std::to_string(slot);
 
+    // Mounts are collected under the lock and performed after it: an HDV is up
+    // to 32 MiB and this panel runs every frame with the CPU worker live, so
+    // reading the image inline froze the machine and the window together.
+    struct PendingMount {
+        std::size_t    unitIndex = 0;
+        SmartPortUnit* unit      = nullptr;
+        std::string    path;
+        std::string    base;
+    };
+    std::vector<PendingMount> pendingMounts;
+
     {
         auto state = controller.lockState();
         auto& bus = state.memory().slotBus();
@@ -1407,17 +1447,11 @@ StorageCoordinator::applySmartPortPanel(
                 status.visibleSeconds = 3.0;
             }
             if (!action.mountPath.empty()) {
-                if (unit->loadImage(action.mountPath)) {
-                    rememberString(base + "_path", action.mountPath);
-                    status.message = "SmartPort unit " +
-                        std::to_string(unitIndex) + ": mounted " +
-                        action.mountPath;
-                } else {
-                    status.message = "SmartPort unit " +
-                        std::to_string(unitIndex) + ": mount failed: " +
-                        unit->lastError();
-                }
-                status.visibleSeconds = 4.0;
+                // Deferred, not mounted here: mountSmartPortUnit takes
+                // stateMutex itself for phase 2, and stateMutex is
+                // non-recursive — doing it inside this scope would deadlock.
+                pendingMounts.push_back(
+                    {unitIndex, unit, action.mountPath, base});
             }
             if (action.eject) {
                 const bool ok = unit->eject();
@@ -1429,6 +1463,26 @@ StorageCoordinator::applySmartPortPanel(
                 status.visibleSeconds = 4.0;
             }
         }
+    }
+
+    // Two phases, both outside the scope above: the read runs with no lock
+    // held, the swap takes stateMutex on its own. The unit pointers stay valid
+    // across the gap because the unit table is UI-thread-confined and this is
+    // the UI thread (same contract as pom2::mountDiskII — MediaMount.h).
+    for (auto& mount : pendingMounts) {
+        std::string mountError;
+        if (mountSmartPortUnit(controller, *mount.unit, mount.path,
+                               mountError)) {
+            appendStringSetting(settingUpdates, mount.base + "_path",
+                                mount.path);
+            status.message = "SmartPort unit " +
+                std::to_string(mount.unitIndex) + ": mounted " + mount.path;
+        } else {
+            status.message = "SmartPort unit " +
+                std::to_string(mount.unitIndex) + ": mount failed: " +
+                mountError;
+        }
+        status.visibleSeconds = 4.0;
     }
 
     // Settings storage is deliberately outside the machine critical section.

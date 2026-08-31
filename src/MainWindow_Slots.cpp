@@ -673,17 +673,25 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(buf[0] == '\0' || !typeAllows);
                     if (ImGui::Button("Mount")) {
-                        std::string err;
-                        bool ok = false;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = media->mountBay(b, buf, err);
-                            if (ok) persistMediaBay(s, b, p);
+                        // Two-phase mount (the coordinator reads the image with
+                        // no lock held, then adopts it and persists the bay
+                        // keys). mountBay() under stateMutex stalled the CPU
+                        // worker and the window for the whole read — 25.8 ms
+                        // for a 32 MiB HDV, more than a PAL frame.
+                        // Resolved BEFORE the call: the coordinator re-resolves
+                        // the card by slot, so `p` is only known-live up to here.
+                        const bool isHdv =
+                            dynamic_cast<ProDOSHardDiskCard*>(p) != nullptr;
+                        const auto r = storageCoordinator_->mountMediaBay(
+                            *controller, *settings, s, b, buf);
+                        if (r.ok && isHdv) {
+                            hdvPath   = buf;
+                            hdvStatus = std::string("loaded: ") + buf;
                         }
-                        if (ok) settings->save();
-                        tapeStatusMessage = ok
+                        tapeStatusMessage = r.ok
                             ? ("Slot " + std::to_string(s) + ": mounted " + buf)
-                            : ("Slot " + std::to_string(s) + ": mount failed: " + err);
+                            : ("Slot " + std::to_string(s) + ": mount failed: " +
+                               r.error);
                         tapeStatusUntil = lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();

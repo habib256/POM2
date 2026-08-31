@@ -22,16 +22,19 @@
 
 #include "CliDispatcher.h"
 
+#include "AtomicFileReplace.h"
 #include "EmulationController.h"
 #include "MachineSnapshot.h"
 #include "SnapshotIO.h"
 #include "Logger.h"
 
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace pom2 {
@@ -150,24 +153,60 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 // + MEX, captured under the state lock. These two actions
                 // were parser-accepted and documented in --help but were
                 // silent no-ops for a while ("not yet wired").
-                pom2::SnapshotWriter w(a.pathS);
-                if (!w.good()) {
+                //
+                // Serialise under the lock, WRITE outside it. The capture is
+                // RAM-only and takes microseconds; the file write and its two
+                // fsyncs are what would otherwise hold `stateMutex` (30 ms for
+                // 4 MB on the measured host), freezing the CPU worker and the
+                // window mid-frame.
+                std::vector<uint8_t> blob;
+                bool captured = false;
+                {
+                    pom2::SnapshotWriter w(blob);
+                    auto st = emu.lockState();
+                    pom2::captureMachineState(w, st.cpu(), st.memory());
+                    captured = w.finish();
+                }
+                if (!captured) {
                     pom2::log().error("CLI",
-                        "--snapshot-save: cannot open " + a.pathS);
+                        "--snapshot-save: capture failed for " + a.pathS);
                     break;
                 }
-                auto st = emu.lockState();
-                pom2::captureMachineState(w, st.cpu(), st.memory());
-                if (!w.finish()) {
+                std::error_code ec;
+                if (!pom2::writeFileAtomic(a.pathS, blob.data(), blob.size(),
+                                           ec)) {
                     pom2::log().error("CLI",
-                        "--snapshot-save: write failed for " + a.pathS);
+                        "--snapshot-save: write failed for " + a.pathS +
+                        ": " + ec.message());
                     break;
                 }
                 pom2::log().info("CLI", "--snapshot-save: wrote " + a.pathS);
                 break;
             }
             case CliAction::Kind::SnapshotLoad: {
-                pom2::SnapshotReader r(a.pathS);
+                // Read the whole file BEFORE taking the lock, then parse from
+                // memory. The file-backed reader pulls its bytes lazily from
+                // inside restoreMachineState(), so constructing it here and
+                // restoring under the lock would still put the disk read
+                // (64 KiB MEM + a MEX section capped at 16 MiB) inside the
+                // critical section.
+                std::vector<uint8_t> blob;
+                {
+                    std::ifstream in(a.pathS, std::ios::binary);
+                    if (!in) {
+                        pom2::log().error("CLI",
+                            "--snapshot-load: cannot open " + a.pathS);
+                        break;
+                    }
+                    blob.assign(std::istreambuf_iterator<char>(in),
+                                std::istreambuf_iterator<char>());
+                    if (!in && !in.eof()) {
+                        pom2::log().error("CLI",
+                            "--snapshot-load: read error on " + a.pathS);
+                        break;
+                    }
+                }
+                pom2::SnapshotReader r(blob.data(), blob.size());
                 if (!r.good()) {
                     pom2::log().error("CLI",
                         "--snapshot-load: cannot read " + a.pathS +

@@ -245,6 +245,15 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // hard-wires it), so the tap defaults ON there — a //c user gets
         // PR#1 landing on the ImageWriter with zero configuration.
         raw->setPrinterTap(settings->getBool("ssc_printer_tap" + sk, s == 1));
+        // Give the card its host transport at plug time, listening or not.
+        // The card cannot build one itself — that would be a device reaching
+        // into runtime — and `startListening` refuses outright without one,
+        // so injecting it only when the saved state was already "listening"
+        // left the Super Serial panel's "Start listener" button permanently
+        // dead (it reported "bind failed (port busy?)" for a socket that was
+        // never created). Constructing the transport opens nothing; the
+        // socket and its worker thread appear on start().
+        raw->setTransport(pom2::makeSuperSerialTcpTransport(*raw, s));
         const bool listenDefault = legacyPrimary
             ? settings->getBool("ssc_listening", false) : false;
         if (settings->getBool("ssc_listening" + sk, listenDefault)) {
@@ -252,10 +261,6 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
                 ? settings->getInt("ssc_port", SuperSerialCard::kDefaultPort)
                 : SuperSerialCard::kDefaultPort;
             const int p = settings->getInt("ssc_port" + sk, portDefault);
-
-            // Give the card its host transport at plug time. The card cannot
-            // build one itself — that would be a device reaching into runtime.
-            raw->setTransport(pom2::makeSuperSerialTcpTransport(*raw, s));
             raw->startListening(static_cast<uint16_t>(p));
         }
     };
@@ -669,6 +674,23 @@ bool MainWindow::swapSlotCardVariant(const char* fromKey, const char* toKey)
 
     const std::string key      = "slot_" + std::to_string(slot) + "_card";
     const std::string previous = settings->getString(key, "");
+
+    // `slotCards[]` is the RESOLVED plan, so on a profile-forced slot it holds
+    // the PROFILE's card, not the user's saved choice — writing the swap back
+    // there clobbers an unrelated //e-era card key (the //c on-board Mouse in
+    // slot 4 over a saved `mockingboard`), and the swap would not even take
+    // live effect because the rebuild re-forces the built-in. Same guard as
+    // the ~MainWindow persist loop and Slot Config's Apply.
+    if (!pom2::slotKeyIsUserChoice(pom2::profileConfig(activeProfile), slot,
+                                   toKey, previous)) {
+        tapeStatusMessage = std::string("Slot ") + std::to_string(slot) +
+                            " is a built-in of this profile — " + fromKey +
+                            " cannot be swapped for " + toKey + " here.";
+        tapeStatusUntil   = lastFrameTime + 6.0;
+        pom2::log().warn("Abstraction", tapeStatusMessage);
+        return false;
+    }
+
     settings->setString(key, toKey);
     if (!settings->save()) {
         settings->setString(key, previous);
