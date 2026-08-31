@@ -5,6 +5,151 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-08-31 — DIX-fix: RETURN at the menu now plays the whole anthology
+
+`tools/make_dix_fix.py` builds **`disks_3.5/DIX-fix.po`** from the pristine
+`DIX.po`: same 800 KB image, **12 bytes different**, and pressing RETURN (or
+SPACE) on the fresh menu launches *ALL DEMOS IN AUTOMATIC MODE* instead of
+crashing.
+
+**The bug is DIX's, and it was already fully diagnosed** — 2026-08-08, in
+`docs/test_corpus.md` § "DIX menu: RETURN before any arrow key wedges". The
+menu keeps its highlighted entry in `CurrentChoice = $DFFF`, initialised to
+0; entry 0 is the "USE ARROWS TO SELECT DEMO" prompt, so only an arrow key
+ever gives it a valid 1..16. The launcher then indexes a **16-entry,
+one-based** table: `LDX CurrentChoice / DEX` turns 0 into `$FF`, reads
+`$D175`/`$D185`, and `JSR $17E1` walks off into unwritten RAM — picture
+frozen, Mockingboard music still playing. POM2 reproduces it faithfully.
+
+**The fix reuses what DIX already has.** Menu entry 16 *is* "ALL DEMOS IN
+AUTOMATIC MODE" (`AUTOMODE`, `loader.a:132-148`), and jump-table slot 15 is
+`$D042`. So index 0 is redirected there — the missing guard turns the dead
+keystroke into the most useful thing it could do, and the "use arrows"
+prompt and the first-boot intro trigger (both keyed on `CurrentChoice = 0`)
+survive untouched.
+
+**Where the nine spare bytes came from.** The loader image is packed solid:
+blocks 1-7 fill `$D000-$DDFF` to the last byte — the demo-name text is cut
+mid-word at `$DDFF`. But the boot block reads **8** blocks
+(`boot_unidisk.a` `SP_BLOCKS2READ = 8`, not the 7 the makefile comment
+claims), so block 8 lands at `$DE00-$DFFF` and its tail `$DF56-$DFFE` is 169
+bytes of zeros — loaded, resident, and as safe as the loader itself, since
+`CurrentChoice` at `$DFFF` already has to survive every part. The stub goes
+at `$DF60`:
+
+```
+$D02C  20 60 DF  JSR PICKDEMO     ; was  AE FF DF  LDX CurrentChoice
+$D02F  EA        NOP              ; was  CA        DEX
+
+$DF60  AE FF DF  LDX CurrentChoice
+$DF63  CA        DEX
+$DF64  10 02     BPL +
+$DF66  A2 0F     LDX #15          ; AUTOMODE
+$DF68  60      + RTS
+```
+
+`JSR`/`RTS` leave X alone and `LDA DemosL,X` does not read the incoming
+flags, so the selected-demo path is bit-identical to the original.
+
+**Verified by booting both images** through `dix_return_crash_probe`, which
+grew a `--disk` flag and an `ExpoMode` column for the purpose. Same machine
+(//e PAL, slot-4 Mockingboard, slot-5 SmartPort), same RETURN at 20 s:
+`DIX.po` → `RUNAWAY: BRK at $17E4` 0.22 s later, then 25 s of frozen video;
+`DIX-fix.po` → `expo=1` within the second, part code at `$7xxx`, video
+moving for 70 s and a loader re-entry at 87 s as AUTOMODE chains to the next
+part. RIGHT-then-RETURN still runs demo 1 with `expo=0`, unchanged.
+
+The patcher refuses to touch an image whose two sites do not hold the exact
+original bytes, and re-checks that table slot 15 still points at an
+`AUTOMODE` that still starts with `LDA #1 / STA ExpoMode`. `--verify`
+re-reads a built image. DIX is GPLv3 and its sources carry the code this
+patch reasons about; the modification is described byte-for-byte above.
+
+## 2026-08-31 — The handshake works, and it was one wrong number
+
+POM2 now services AppleShare's driver call. `ATINIT` calls the card at
+`$Cn14` in ProDOS-MLI style — `JSR $Cn14 / .BYTE cmd / .WORD block`, command
+`$42` — and the whole two-CPU transaction completes: the command byte reaches
+`$CnDB`, both rendezvous semaphores come back to rest, and the call returns
+past its inline parameters. Pinned by `workstation_card_smoke`.
+
+**The bug was the expansion-ROM base.** `$C800-$CFFF` was served from file
+`0xC800`; it is `0xC400`. So the page's `JMP $CC00` landed on a block-copy
+loop instead of the host-side prologue (`CLD / PHP / SEI / LDA #$50 /
+STA $C080,X`), and the two CPUs deadlocked with no symptom that pointed at
+the cause. Nine bases were swept and `0xC400` is the only one at which the
+transaction completes — which is why the constant now carries that sweep in
+its comment rather than a derivation.
+
+**The red herring is the part worth keeping.** The card waits on
+`BIT $02EE / BVC` for a bit the host's page code never writes, which looked
+like proof that the `$C08x` strobe had to set it. Wiring that up **moved the
+card one step further**, from the `$D021` wait into the `$02A9` rendezvous —
+which made the theory look righter still, and it was wrong. With the base
+corrected the transaction completes with **no strobe modelling at all**. A
+change that unsticks a stuck system is not evidence that it is correct, and
+three sessions were spent learning that here.
+
+**How the two CPUs actually talk**, now fully mapped in
+`WorkstationCard.h` § THE HANDSHAKE: the card **patches the host's code**. It
+writes `$CnBB`/`$CnBC` — the operands of the host's own `JMP` — to steer
+where the host goes, and `$CnC3`/`$C4`/`$C6`/`$C7`, the address operands of
+the host's block-move loop, to say what it copies. It releases the host's
+spin loops by writing `$38` (`SEC`) over the `$18` (`CLC`) the host is
+executing at that address. Data goes through `$CnEA` a byte at a time with
+`$02A9` as the handshake.
+
+**Verified end to end**: `disks_3.5/AppleShare IIe Workstation.po` boots, its
+ATINIT passes the card's power-up diagnostics — where it used to print *"The
+workstation card failed power up diagnostics. AppleTalk has not been
+initalized."* — and the workstation software reaches its menu.
+
+## 2026-08-31 — AppleShare finds the card, and the handshake is decoded
+
+`disks_3.5/AppleShare IIe Workstation.po` boots in POM2 with the Workstation
+Card plugged, finds it, runs its power-up diagnostics against it and reports:
+
+> The workstation card failed power up diagnostics.
+> AppleTalk has not been initalized.
+
+That message is progress, not a defeat: real AppleTalk software is now
+talking to the card. Extracting `ATINIT` from the disk (type $E2, key block
+50, loads at $2000) and reading it against the card's own firmware decoded
+almost all of the handshake — recorded in `WorkstationCard.h` § THE HANDSHAKE
+so it is never re-derived:
+
+* **Detection** is `ATLK` at `$CnF9-$CnFC` plus a version byte at `$CnFD`.
+  POM2's card passes; that is also why CardCat names it.
+* **The driver entry is `$Cn14`**, called ProDOS-MLI style —
+  `JSR $Cn14 / .BYTE cmd / .WORD paramblock` — and ATINIT's first call is
+  command `$42`.
+* **The two CPUs rendezvous by rewriting code the other is executing.** The
+  host spins inside the shared page on `$Cn89: 18 90 EB` (`CLC` then a branch
+  back) and the card releases it by writing `$38` — `SEC` — into `$0289`, so
+  the branch stops being taken. The mirror runs at `$02A9`, where the card
+  writes `$38` and waits until it reads `$18`, the host's own `CLC` opcode.
+  It is a genuinely lovely piece of 1988 engineering and it is invisible
+  unless you watch both CPUs at once.
+* **`$02EE` is the request byte**, polled from the card's idle loop: bit 7
+  means the host wants service, then `BIT $02EE / BVC` waits for **bit 6**,
+  then `STZ $02EE` consumes it, `AND #$0F` is the command, and `$02DB`
+  carries the `$42`.
+
+**One bit is still missing, and it is not shipped.** The host page writes only
+`$80` to `$CnEE` and strobes `$C080,X`/`$C081,X` in the same loop, so the
+strobe must be what sets bit 6 — nothing else in the system can. Wiring that
+as an experiment moves the card exactly one documented step further, from the
+`$D021` wait into the `$02A9` rendezvous. It stays out of the card because
+*which* register does it, and whether it self-clears, is not established, and
+a card that invents hardware behaviour would undo the discipline the rest of
+it was built with. → `TODO.md`
+
+One process note worth keeping: the AppleShare disk did **not** boot in the
+hand-rolled headless harness used for the investigation, and did boot in the
+app — twice over, that harness cost more than it saved. The lesson is the one
+CardCat already taught: drive the emulator the way the app drives it, and let
+guest software be the oracle.
+
 ## 2026-08-31 — SDLC, and the card talks LocalTalk
 
 ### What the card publishes, and how far the handshake got

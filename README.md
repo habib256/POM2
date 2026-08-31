@@ -286,10 +286,12 @@ datagrams. And if you boot **CardCat** on the emulated //e, it names the card
 in slot 4, which is the check that matters: real 1980s-descended software
 identifying it by its firmware signature.
 
-One honest limit remains: the **handshake between the two CPUs** at `$C0nX` is
-not worked out, so guest AppleTalk software will find the card and then wait.
-Note the card runs a second 6502 at the Apple II's own rate, so it roughly
-doubles the emulation work while plugged.
+And the software agrees: **AppleShare's own IIe Workstation disk boots, passes
+the card's power-up diagnostics and reaches its menu**. Its driver reaches the
+card at `$Cn14` and the two CPUs complete their handshake — which they do by
+rewriting each other's code in a shared page, an arrangement worth seeing
+once. Note the card runs a second 6502 at the Apple II's own rate, so it
+roughly doubles the emulation work while plugged.
 
 **FujiNet.** POM2 does not emulate a [FujiNet](https://fujinet.online/) — it **relays** to a real one. Put the `fujinet` card in **slot 7** (the //e scans it before the Disk II in slot 6, so the machine boots straight into FujiNet's CONFIG) and point it at either:
 

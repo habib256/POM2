@@ -62,7 +62,11 @@
 // Usage:
 //   dix_return_crash_probe [--key-at <emulated seconds>] [--run <seconds>]
 //                          [--keys 15,0D] [--no-key] [--trace]
+//                          [--disk <path.po>]
 //
+//   --disk   the 800K .po to boot (default disks_3.5/DIX.po). Point it at
+//            disks_3.5/DIX-fix.po (built by tools/make_dix_fix.py) to see
+//            the same RETURN reach AUTOMODE instead of the BRK storm.
 //   --keys   comma-separated hex Apple II key codes, 0.5 s apart
 //            (08 = LEFT, 15 = RIGHT, 0D = RETURN, 20 = SPACE).
 //            Default: a single RETURN.
@@ -130,11 +134,13 @@ int main(int argc, char** argv)
     double runSec   = 25.0;
     bool   sendKey  = true;
     bool   trace    = false;
+    std::string diskArg;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
         if      (a == "--key-at" && i + 1 < argc) keyAtSec = std::atof(argv[++i]);
         else if (a == "--run"    && i + 1 < argc) runSec   = std::atof(argv[++i]);
         else if (a == "--no-key")                 sendKey  = false;
+        else if (a == "--disk"   && i + 1 < argc) diskArg  = argv[++i];
         else if (a == "--keys" && i + 1 < argc) {
             // Comma-separated hex Apple II key codes sent 0.5 s apart,
             // starting at --key-at. e.g. --keys 15,0D = RIGHT then RETURN.
@@ -153,7 +159,9 @@ int main(int argc, char** argv)
     }
 
     const std::string rom = firstExisting({"roms/apple2e.rom"});
-    const std::string po  = firstExisting({"disks_3.5/DIX.po"});
+    const std::string po  = firstExisting(diskArg.empty()
+                                          ? std::vector<std::string>{"disks_3.5/DIX.po"}
+                                          : std::vector<std::string>{diskArg});
     if (rom.empty() || po.empty()) {
         std::printf("SKIP: missing apple2e.rom or disks_3.5/DIX.po\n");
         return 0;
@@ -355,10 +363,14 @@ int main(int argc, char** argv)
             // $C000 without touching $C010: is a keystroke still latched?
             const uint8_t kb = mem.memRead(0xC000);
 
-            std::printf("[%2.0fs] pc=$%04X top=$%02Xxx  video=%s  kbd=%s%s\n",
+            // ExpoMode (zp $04) = 1 once the loader's AUTOMODE entry is
+            // running, i.e. "ALL DEMOS IN AUTOMATIC MODE" was launched.
+            std::printf("[%2.0fs] pc=$%04X top=$%02Xxx  video=%s  kbd=%s  "
+                        "expo=%u%s\n",
                         double(cycles) / kClock, lastPc, topPage >> 8,
                         frozen ? "FROZEN" : "moving",
                         (kb & 0x80) ? "LATCHED" : "-",
+                        unsigned(mem.peekMainRam(0x04)),
                         frozenRun >= 3 ? "   <<< STUCK" : "");
 
             // Once wedged for 4 s, capture the loop: every distinct PC it
