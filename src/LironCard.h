@@ -94,6 +94,8 @@ public:
 
     void advanceCycles(int cycles) override;
     void onReset() override;
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    void loadSnapshotState(const uint8_t* data, std::size_t len) override;
 
     // ── MountableMediaCard ───────────────────────────────────────────────
     // Two fixed 3.5" bays, the daisy chain the real port carries. No type
