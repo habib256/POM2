@@ -49,9 +49,14 @@ namespace {
 constexpr std::array<std::string_view, 8> kDefaultCards{
     "",             // slot 0: Language Card is owned by Memory
     "grappler",     // slot 1: Grappler+ parallel printer
-    "mouseaw",      // slot 2: AppleWin HLE mouse
+    "mockingboard", // slot 2: Mockingboard A/C — DIX & friends SCAN $C7→$C1
+                    // for the 6522 (boot_unidisk.a `bdet`), so it does not
+                    // need slot 4; hard-coded-MB titles must move it there.
     "",             // slot 3: IIe 80-column firmware is internal
-    "mockingboard", // slot 4: Mockingboard A/C
+    "mouseaw",      // slot 4: mouse — Apple's slot for it, and the one
+                    // French mouse software hard-codes: Extasie calls the
+                    // firmware entries at $C4xx by self-modified JSR with
+                    // no scan (DET $75FA/$7639). In slot 2 its mouse is dead.
     "smartport35",  // slot 5: SmartPort 3.5"
     "diskii",       // slot 6: Disk II
     "chatmauve",    // slot 7: Le Chat Mauve RGB

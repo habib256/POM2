@@ -225,7 +225,7 @@ Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`i
 
 | sl1 | sl2 | sl3 | sl4 | sl5 | sl6 | sl7 |
 |---|---|---|---|---|---|---|
-| Grappler+ | Mouse (AppleWin HLE) | *empty* | Mockingboard A/C | SmartPort 3.5" | Disk II | Le Chat Mauve |
+| Grappler+ | Mockingboard A/C | *empty* | Mouse (AppleWin HLE) | SmartPort 3.5" | Disk II | Le Chat Mauve |
 
 Slot 3 is empty because the //e's 80-column card isn't a slot card: the firmware is internal ROM at `$C300` and the Extended 80-Column Text Card sits on the AUX connector — both come with the profile. Everything here is a *default*: change any slot in Slot Configuration (or the profile in `Machine → Profile`) and your choice is what loads next time. POM2 falls back to **Apple ][+** if no //e ROM is found.
 

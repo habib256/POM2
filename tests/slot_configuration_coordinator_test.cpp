@@ -65,9 +65,9 @@ int main()
         pom2::SystemProfile::AppleIIe);
     assert(defaults[0].empty());
     assert(defaults[1] == "grappler");
-    assert(defaults[2] == "mouseaw");
+    assert(defaults[2] == "mockingboard");   // DIX scans $C7→$C1 for its 6522
     assert(defaults[3].empty());
-    assert(defaults[4] == "mockingboard");
+    assert(defaults[4] == "mouseaw");        // Apple's mouse slot; Extasie hard-codes $C4xx
     assert(defaults[5] == "smartport35");
     assert(defaults[6] == "diskii");
     assert(defaults[7] == "chatmauve");

@@ -3014,6 +3014,36 @@ add_test(NAME purplesoft_eve_screens COMMAND test_purplesoft_eve_screens
          WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
 set_tests_properties(purplesoft_eve_screens PROPERTIES TIMEOUT 120)
 
+# Extasie mouse probe (diagnostic executable, no add_test): boots the Chat
+# Mauve mixed-mode program with a Féline + AppleWin-HLE mouse, dumps what it
+# shows, logs every device-select write, injects host-mouse motion.
+add_executable(test_extasie_mouse_probe
+    extasie_mouse_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_ChatMauve.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/MouseCardAppleWin.cpp
+    ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/M68705P3.cpp
+    ${CMAKE_SOURCE_DIR}/src/MC6821.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_extasie_mouse_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_extasie_mouse_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_extasie_mouse_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_extasie_mouse_probe PRIVATE winmm)
+endif()
+
 # Purplesoft-on-an-Eve probe (diagnostic executable, no add_test): boots the
 # card maker's demo disk with a Le Chat Mauve Eve, types a RUN, logs the Eve
 # switch changes against what the card decodes, writes PPM frames.

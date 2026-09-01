@@ -4993,7 +4993,11 @@ SELECT never asserts, so a card there has no `$Cs00` page at all —
 Software finds the mouse by scanning slots for the Apple signature
 (`$Cn05=$38`, `$Cn07=$18`, `$Cn0B=$01`, `$Cn0C=$20`); measured with the
 same card and ROM, slot 3 reads `00 00 00 00` and slot 4 reads
-`38 18 01 20`. So A2DeskTop / MousePaint / MultiScribe find the
+`38 18 01 20`. **French mouse software often does not scan at all**:
+Extasie reads the entry-point table at `$C412+` and calls the firmware by
+self-modified `JSR $C4xx` (DET `$75FA/$7639`) — slot 4 or nothing, which is
+why slot 4 is the fresh-install default and Slot Config warns on any other
+(`tests/extasie_mouse_probe.cpp` is the reproduction). So A2DeskTop / MousePaint / MultiScribe find the
 80-column firmware where the signature should be, decide there is no
 mouse and run keyboard-only. Real hardware is identical — Apple sold the
 mouse for slot 4. The same window kills anything else that needs it: a

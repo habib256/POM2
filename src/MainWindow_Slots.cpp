@@ -374,6 +374,23 @@ void MainWindow::renderSlotConfigPanel()
             // and wraps after every character (real hardware does exactly
             // the same — the Grappler+ manual says slot 1). Everything
             // else about the card works, so warn instead of forbidding.
+            // Apple sold the mouse for slot 4, and French mouse software
+            // takes that literally: Extasie calls the slot-4 firmware
+            // entries by self-modified `JSR $C4xx` with no slot scan, so a
+            // mouse anywhere else is simply never touched. Scanning
+            // software (A2DeskTop, MousePaint) finds it in any slot — warn,
+            // don't forbid.
+            if (s != 4 && (draft[s] == "mouse" || draft[s] == "mouseaw")) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                                   "(Extasie & friends want the mouse in slot 4)");
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Apple's mouse slot is 4. Software that scans the\n"
+                        "slots (A2DeskTop, MousePaint) will find it here,\n"
+                        "but French titles like Extasie call the slot-4\n"
+                        "firmware directly and will not see this card.");
+            }
             if (s == 3 && profileCfg.iieMode &&
                 (draft[s] == "grappler" || draft[s] == "printer")) {
                 ImGui::SameLine();

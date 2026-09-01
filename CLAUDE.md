@@ -233,9 +233,9 @@ Built-in slots force their listed card onto the SlotBus on profile load (overrid
 | Profile | `Apple //e Enhanced PAL (50 Hz)` — falls back to `Apple ][+` if no //e ROM resolves |
 | Display | `Composite (OpenEmulator)` GPU pipeline |
 | sl1 | `grappler` — Grappler+ parallel printer |
-| sl2 | `mouseaw` — Mouse, AppleWin HLE |
+| sl2 | `mockingboard` — Mockingboard A/C (DIX **scans** $C7→$C1 for it — `boot_unidisk.a` `bdet`; titles that hard-code MB@4 must move it) |
 | sl3 | *empty* — the //e's 80 columns are **internal** ($C300 firmware + AUX ext80 under `iieMode`), never a slot card |
-| sl4 | `mockingboard` — Mockingboard A/C |
+| sl4 | `mouseaw` — Mouse, AppleWin HLE — **Apple's mouse slot**, and Extasie calls the $C4xx firmware entries with no scan |
 | sl5 | `smartport35` — SmartPort 3.5" |
 | sl6 | `diskii` — Disk II |
 | sl7 | `chatmauve` — Le Chat Mauve RGB |

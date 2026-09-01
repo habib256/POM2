@@ -5,6 +5,36 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — Extasie's mouse: slot 4 or nothing
+
+**Reported: "the mouse does not work in Extasie."** Reproduced headless
+(`tests/extasie_mouse_probe.cpp` boots the ProDOS disk, walks the menus by
+keyboard, injects host-mouse motion, and logs every device-select write) and
+diagnosed from Extasie's own code: DET's mouse layer reads the firmware
+entry-point table at `$C412+` and calls it by **self-modified `JSR $C4xx`**
+(`$75FA`: `LDX $C414 / STX $763E / LDX #$C4 / LDY #$40 / JSR $C400`) — no
+slot scan, slot 4 or nothing. With the mouse in slot 4 the probe shows the
+whole chain working, for BOTH card variants: firmware clamps the mouse to
+`[0..559]×[0..191]`, MOUSE_READ streams (hundreds of thousands of PIA
+accesses), and the arrow cursor tracks the injected motion. In any other
+slot Extasie never touches the card. The reporter's config had the mouse in
+slot 1; POM2's old fresh-install default put it in slot 2 — dead either way.
+
+Two changes. The **fresh-install default map** now gives slot 4 to the
+mouse — Apple's slot for it — and slot 2 to the Mockingboard, which is safe
+for the priority corpus because DIX *scans* `$C7→$C1` for its 6522
+(`boot_unidisk.a` `bdet`, timer read twice, expects −8); titles that
+hard-code a slot-4 Mockingboard must swap the two in Slot Config, which now
+**warns inline** whenever a mouse card sits anywhere but slot 4 (same
+pattern as the slot-3 printer warning). Existing installs keep their saved
+`slot_N_card` keys — the warning is what reaches them.
+
+Found on the way: the probe first ran the MAME-LLE card with its two 2 KB
+ROMs swapped (`loadRoms(slotRom, mcuRom)` takes the slot EPROM FIRST; both
+are 2048 bytes, so the mistake loads silently and the firmware page reads
+zeros — no signature, no entry table). The probe now passes them the right
+way round; worth remembering when wiring the LLE card by hand.
+
 ## 2026-09-01 — Le Chat Mauve, P0-P2: four cards in one, dot-exact, and Purplesoft says what the manual could not
 
 `docs/chatmauve_plan.md` phases P0, P1 and P2 landed the same day the plan
