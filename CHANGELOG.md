@@ -5,6 +5,91 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — Extasie's SCHEMA: the disk was lying, and POM2 could prove it
+
+**Reported: "the circuit file doesn't display correctly in Extasie's
+images."** The circuit is `SCHEMA` on the slideshow side, and it renders as
+non-deterministic noise — a different garbage every pass while the nine
+other images re-unpack byte-identically. The trail: RAM dumps per slide
+showed the renderer faithfully painting garbage RAM; re-rendering that RAM
+under every interpretation (BW560, COL140, mixed) stayed noise, so the
+slideshow's own decompressor was producing it. The Reloaded source disk
+carries the decompressor's assembly listing plus a compressed/uncompressed
+reference pair (CAMELOT): a Python reimplementation of the exact RLE
+(count byte, bit 7 = repeat, column-major writes, AUX then MAIN, 6502
+`DEC`-wrap semantics) matches CAMELOT 100 % — and matches the EMULATED
+garbage for SCHEMA to 99.7 %, deraililng past EOF exactly as the machine
+does. So POM2 executes the decompressor faithfully; the input is bad:
+`disks_5.4/gist/Extasie disk2.dsk` carries a SCHEMA of 11 264 bytes that
+is 66-86 % zeros. The second preservation (underground2e.free.fr,
+`Extasie_Slide.dsk`) is byte-identical for every other file and has
+SCHEMA at 3 886 bytes, intact: through POM2 it displays a clean 560-mono
+electronics schematic, pixel-identical to the offline decompression. On the
+user's explicit call, the gist image was replaced in place by that intact
+preservation (the damaged version stays one `git checkout` away) — the
+standing "never touch disk images as cleanup" rule bends only to an
+explicit owner decision, which this was.
+
+Found and fixed on the way: the day-old motor-off coast let a stale
+write-mode flag spray nibbles through the one-second window — the //c+
+IWM forwarding leaves the shadow Disk II in write mode while its 3.5"
+boots, and `iic_external_smartport` case E (its 5.25" takes ZERO flux)
+caught it. The legacy gate now serves reads only while coasting.
+
+## 2026-09-02 — Arlequin boots, the PLA turns out to be a router, the latch beam-races, the RVB Graph gets its four strobes
+
+The rest of the Chat Mauve "next up" list, each item taken to where its
+sources allow.
+
+**Arlequin, headless.** The demo side fetched yesterday boots through the
+generic probe (`extasie_mouse_probe` + `POM2_PROBE_DISK`): ProDOS →
+« MENU PRINCIPAL ARLEQUIN » (80-col text) → « DÉMONSTRATION » → its
+« MENU DE DEMO » rendered full-screen in **Féline mixed mode** — the
+maker's own condensed-text driver, yellow on magenta, 560 wide, through
+POM2's per-dot mixed rule. The graphics editor asks for side 1 (Pascal),
+as the real thing did. Corpus § 5 updated; a pinned golden of that menu
+screen is the natural next step.
+
+**P3 closed as bounded.** The PLS100 simulation (over the decoded fuse
+map, § 3.5.1 of the plan) settles what the chip IS: a dot-stream router
+and cell assembler — at I9=0 the window taps map I2→F1, I7→F4, I3→F5,
+I6→F2 and at I9=1 the pairs swap; families keyed by I12/I13/I14/I4 feed
+the same four latch lines with F6 as a family strobe. Nothing in it is a
+palette. So SPEC1/2, DASH and the COL280 colours are decided downstream
+(the LS parts and the resistor DAC on the board photo), and the fuse map
+cannot arbitrate them: they stay modelled from the manual's prose and
+Purplesoft's bytes. Reopen only on a schematic or board trace.
+
+**P6, first rung: the mode latch beam-races.** The card appends a
+timestamped (cycle, fifo before/after) edge to a small ring at every
+clock; `forEachBeamSegment` now walks the latch in parallel with
+DisplayState from the same event log — a Dhgr ON→OFF event IS the AN3
+rising edge, clocking the logged 80COL level — seeded by
+`latchBefore(first event)`. Each band paints with the latch of its own
+moment (`bandLatch_` → `dhgrModeFor`), so a French-Touch frame can run
+COL140 on top and BW560 below. Pinned by `chatmauve_latch_split`, both
+directions plus a no-clock merge guard. Still per frame: the Eve's
+`$C0Bx` (no video events), the in-cell dot position, the TTL palette.
+
+**P4, partial: the RVB Graph exists.** Fifth variant (`rvb`), II/II+
+slot card, with the only four registers on record (forum.system-cfg
+t=9395, from a Sonotec clone): `$C0F0-$C0F3` at the card's device select
+= colour + white text / colour + green text / mono white / mono green —
+any access decodes, like Apple's own switches. COL140/BW560 by the
+latch, no mixed, no 160; mono strobes force the 560-dot monochrome; green
+text rides the TXTGREEN pass. The text-colour register, the six
+programmable HGR colours and the dotted-lines option stay unmodelled:
+the manual has never surfaced. Snapshot blob v4 carries the strobe.
+
+**P5 stays deliberately unbuilt.** The //c adapter's inferred-80COL
+quirk has no grounded mechanism anywhere public: fenarinarsa's two
+articles give the symptom only (PoP's title dropping to mono), and the
+silicium.org clone thread — the one place the LCM chip was reverse
+engineered — sits behind an Anubis proof-of-work wall that no plain
+fetch passes (a real browser session is the way in, when one is
+connected). Modelling a failure mode without its mechanism would be
+fiction; TODO records the exact source to unlock.
+
 ## 2026-09-02 — Extasie's mouse: slot 4 or nothing
 
 **Reported: "the mouse does not work in Extasie."** Reproduced headless

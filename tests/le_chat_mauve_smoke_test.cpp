@@ -727,7 +727,7 @@ int main()
         eve.setCpreg(0x5A);
         std::vector<uint8_t> blob;
         eve.appendSnapshotState(blob);
-        assert(blob.size() == 9 && blob[2] == 3);
+        assert(blob.size() == 10 && blob[2] == 4);
         LeChatMauveCard back(7, LeChatMauveCard::Variant::Eve);
         back.loadSnapshotState(blob.data(), blob.size());
         assert(back.currentMode() == LeChatMauveCard::RenderMode::BW560);
@@ -743,7 +743,57 @@ int main()
         assert(fel.eveSwitches() == 0);
     }
 
-    // ─── 13. ColorNTSC fallback when card not plugged ─────────────────────
+    // ─── 13. RVB Graph (partial): the four $C0F0-$C0F3 mode strobes ──────
+    //
+    // forum.system-cfg t=9395 (Sonotec clone): POKE −16144…−16141 =
+    // colour + white text / colour + green text / mono white / mono green,
+    // decoded at the card's own device select (slot 7 here). The colour
+    // registers stay unmodelled (no manual) — docs/chatmauve_plan.md § 3.6.
+    {
+        Memory mem;                       // a ][+-class machine: no IIe mode
+        Apple2Display display;
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::RvbGraph);
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(raw);
+        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+
+        (void)mem.memRead(0xC050); (void)mem.memRead(0xC057); (void)mem.memRead(0xC054);
+        clearHgrLine(mem, 0);
+        writeHgrByte(mem, 0, 0, 0x01);    // a lone dot: magenta under LCM
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+
+        assert(raw->rvbMode() == 0);      // power-on: colour + white text
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == magenta);
+
+        (void)mem.memRead(0xC0F2);        // mono white
+        assert(raw->rvbMode() == 2);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kWhite && *pixelAt(display, 2, 0) == kBlack);
+
+        mem.memWrite(0xC0F0, 0);          // back to colour (write decodes too)
+        assert(raw->rvbMode() == 0);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == magenta);
+
+        // Green text: an inverse space turns green, normal text stays black.
+        (void)mem.memRead(0xC051);
+        mem.memWrite(loresAddr(0), 0x20);
+        mem.memWrite(loresAddr(1), 0xA0);
+        const uint32_t green = pack(0x33, 0xFF, 0x33);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kWhite);      // $C0F0: white text
+        (void)mem.memRead(0xC0F3);        // mono green
+        assert(raw->rvbMode() == 3);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == green);
+        (void)mem.memRead(0xC0F1);        // colour + green text
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == green);
+    }
+
+    // ─── 14. ColorNTSC fallback when card not plugged ─────────────────────
     {
         Memory mem;     // no card plugged
         Apple2Display display;
@@ -762,6 +812,6 @@ int main()
 
     std::printf("Le Chat Mauve smoke: OK (FIFO, LCM HGR, BW560, lo-res grays, bit7 invert, "
                 "Eve $C0B0-$C0BF + CPREG auto-write + TXT16 + TXTGREEN + table IX-1, "
-                "AN3-off per variant, snapshot v3, NTSC fallback)\n");
+                "AN3-off per variant, RVB Graph $C0F0-3, snapshot v4, NTSC fallback)\n");
     return 0;
 }

@@ -413,6 +413,38 @@ result to cross-check SPEC1/2/DASH hypotheses, and accept that the exact
 output encoding needs the schematic or a board trace. The measured-
 behaviour models stay the reference.
 
+**The simulation ran (2026-09-02) and settled it.** Evaluating the whole
+truth table (48 terms, convention as § 3.5.1) family by family:
+
+- `/I12·/I13` (gated by I8): the window inputs route to the outputs as a
+  **phase demultiplexer** — at I9=0, I2→F1, I7→F4, I3→F5, I6→F2; at I9=1
+  the pairs SWAP (I2→F4, I7→F1, I6→F5, I3→F2). Two interleaved dot streams
+  distributed onto four latch lines by the cell phase: the PLA is
+  *assembling the 2-dot cells* (COL280's, as measured off `& PLOT`) for the
+  LS273/LS374 latches downstream, not decoding colours. With the window
+  empty and I8=0, F3 asserts alone — the mono/blank line.
+- `I12·I14` (gated by I5, F6 strobed low across the family): the same
+  four-way routing off {I1, I3, I6, I7} in the /I15·/I0 subfamily
+  (I1→F4, I3→F2, I6→F5, I7→F1, F3 high), with I15 / I0 switching to the
+  paired-output combinations of T35-T43 — a second assembly mode over the
+  same latch lines (the 4-bit cell family: COL140 / CP280 side).
+- `I12·/I14`: the HGR-shaped family — wider windows, the /I10 vs /I11
+  duplicated pairs — same output lines, less separable in isolation
+  (several terms overlap unless the real mode bits exclude each other).
+- `I4` (TEXT side): near-constant fills keyed by I0 (the dot) with I9/I15
+  trims — consistent with text fg/bg selection ahead of the palette.
+
+So the PLS100's job is **dot-stream steering and cell assembly** — phase
+demux, byte-boundary handling, path select (F0/F3/F7), a family strobe
+(F6) — and the palette/colour semantics live in the downstream TTL and the
+resistor DAC the board photo shows. P3-by-fuse-map is hereby **bounded and
+closed**: the map *corroborates* the measured structure (2-dot cells for
+COL280, 4-dot assembly for the 140 family, a distinct HGR window family)
+and can arbitrate future structural questions, but SPEC1/SPEC2/DASH's exact
+pixel rules and the COL280A/B palettes are downstream of it. They stay
+modelled from the manual's prose and Purplesoft's bytes (`cm/eve/*`
+goldens) until a schematic or board trace surfaces.
+
 ### 3.6 The RVB Graph (II / II+)
 
 Registers at the slot-7 device select (system-cfg forum, from a Sonotec
@@ -537,7 +569,14 @@ registers exist and which modes fall back. Snapshot v3. Pinned by
 `Purplesoft DEMO GR16K` and `TEXT DEMO` goldens and a register test
 driven from BASIC POKEs.
 
-**P3 — The Eve's pixel rules, from the PLA (2-3 d, research).** Pin the
+**P3 — The Eve's pixel rules, from the PLA (2-3 d, research). ▣ BOUNDED
+AND CLOSED 2026-09-02** — the fuse map is decoded and simulated in-tree
+(§ 3.5.1): the PLS100 is a dot-stream router/cell assembler, not the colour
+decoder, so SPEC1/2, DASH and the COL280 palettes are downstream of it and
+stay modelled from the manual's prose + Purplesoft's bytes. Reopen only if
+a schematic or board trace surfaces.
+
+*As planned:* Pin the
 PLS100's pin roles: assume the 7-dot window and mode inputs, evaluate the
 decoded terms against COL140 / BW560 / HRAPPLE (whose outputs are known)
 until the assignment is unique, then read COL280A/B, CP280, SPEC1/2, DASH
@@ -554,7 +593,17 @@ the plan records exactly which forum threads to ask.
 the VID7M/LDPS cadence rather than read from the switch, behind a toggle,
 so the PoP regression reproduces as on the real box. Off by default.
 
-**P6 — Video tap (1-2 d).** Move the Chat Mauve renderers onto the
+**P6 — Video tap (1-2 d). ◔ First rung landed 2026-09-02**: the mode LATCH
+now beam-races — `forEachBeamSegment` walks it in parallel with
+DisplayState from the same event log (a Dhgr ON→OFF event = the AN3 rising
+edge clocking the logged 80COL level), seeded by the card's timestamped
+edge ring (`latchBefore`), and each band paints with the latch of its own
+moment. Pinned by `chatmauve_latch_split` (COL140/BW560 split both ways in
+one frame). Still per-frame: the Eve's `$C0Bx` switches (no video events),
+the exact in-cell dot position, the TTL-RGBI palette option, and the DIX /
+PoP goldens.
+
+*As planned:* Move the Chat Mauve renderers onto the
 per-dot tap driven by the existing soft-switch event log, so mid-scanline
 mode changes (DIX) and per-line register changes land at the dot; PAL
 convenience; TTL-RGBI palette option next to the capture; UI panel shows

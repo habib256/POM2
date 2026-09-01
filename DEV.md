@@ -713,11 +713,22 @@ variant combo, plus the latch, what the card decodes, and on the Eve the
 eight switches (a click is a `STA $C0Bx`) with CPREG and whether the aux
 shadow is armed.
 
-**Not yet** (plan P3-P6): the Eve's decoder from its PLS100 fuse map, the RVB
-Graph, the //c adapter's inferred-80COL quirk, and the dot-clock tap that
-lands a mid-line `$C05E/F` or `$C0Bx` at the dot rather than the frame.
-`tests/purplesoft_eve_probe.cpp` boots the maker's demo disk with an Eve
-for the visual check (see `docs/test_corpus.md` § 5).
+**Beam-raced latch** (plan P6, first rung): the card appends a timestamped
+(cycle, fifo-before/after) edge to a small ring at every clock, and
+`forEachBeamSegment` replays the latch alongside DisplayState from the same
+event log, so a mid-frame `$C05E/$C05F` reclock paints each band with the
+latch of its own moment (`renderDhgr` reads the band's value through
+`bandLatch_`/`dhgrModeFor`). Pinned by `chatmauve_latch_split`.
+
+**Not yet** (plan P3-P6): the Eve's `$C0Bx` switches still land per frame
+(they push no video events), the PLS100 is decoded but is a dot router —
+its colour semantics live downstream (plan § 3.5.1, closed as bounded);
+the RVB Graph variant models only its four documented `$C0F0-$C0F3` mode
+strobes (colour/mono × white/green text — the colour registers need the
+manual); the //c adapter's inferred-80COL quirk has no grounded mechanism
+on record. `tests/purplesoft_eve_probe.cpp` boots the maker's demo disks
+(Purplesoft, Extasie, Arlequin via `POM2_PROBE_DISK`) for the visual
+check (see `docs/test_corpus.md` § 5).
 
 ### DLGR (IIe, `eightyCol && !hiRes && dhgr && !textMode`)
 

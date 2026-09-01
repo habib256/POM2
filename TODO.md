@@ -66,21 +66,28 @@ out as the maker drew them.
   screens (COL140 / COL280A / COL280B / CP280 / BW560 / final prompt) + 7
   TEXTE screens. ~4 s of wall time; SKIPs without the disk; regenerate with
   `POM2_GOLDEN_RECORD=1` after an intentional timing change.
-- 🟠 **P3 — the Eve's pixel rules from the PLA** (`Chat_Mauve_eve_PLA.jed`,
-  48 terms decoded): SPEC1 / SPEC2 are modelled from the manual's prose (5-dot
-  window: `11011` → black, `00100` → white), DASH renders as HRAPPLEII, HR3
-  alone with AN3 off is assumed BW560 — all to be read out of the fuse map.
-  Purplesoft `& GR 2..5` on the probe gives the pictures to compare.
-- 🟡 **P6 — the dot-clock video tap**: a mid-line `$C05E/F` or `$C0Bx` still
-  lands at the frame (`renderStateKey` is per frame). DIX's Chat Mauve
-  screens and PoP's title are the goldens to add once it exists. TTL-RGBI
-  palette option next to the Féline capture.
-- 🟡 **Extasie / Arlequin goldens**: `Extasie disk1/2.dsk` are ProDOS
-  (DOS-order sectors) and want a 128 K //e boot in the probe's shape; the
-  Chat Mauve demo sides, Arlequin and Eve Leonard are still to fetch
-  (apple2.org.za).
+- ✅ **P3 — closed as bounded** (2026-09-02): the PLA is decoded, simulated
+  and understood — a dot-stream router/cell assembler, NOT the colour
+  decoder (plan § 3.5.1). SPEC1/2/DASH/COL280 palettes stay modelled from
+  the manual + Purplesoft's bytes; reopen only on a schematic/board trace.
+- ◔ **P6 — first rung landed** (2026-09-02): the mode latch beam-races
+  (`chatmauve_latch_split`). Remaining: the Eve's `$C0Bx` as loggable
+  events, the exact in-cell dot position, the TTL-RGBI palette option, and
+  DIX / PoP golden screens.
+- 🟡 **Extasie / Arlequin goldens**: both boot headless now (Extasie's
+  editor with the slot-4 mouse; Arlequin side 2 to its mixed-mode demo
+  menu — corpus § 5). Next: pin the Arlequin demo-menu screen and an
+  Extasie editor screen as goldens; Eve Leonard still to find.
+- ◔ **P4 — RVB Graph, partial** (2026-09-02): variant `rvb` with the four
+  documented `$C0F0-$C0F3` strobes (colour/mono × white/green text) at the
+  card's device select. The text-colour and HGR-colour registers and the
+  dotted-lines option stay gated on the manual (never surfaced online).
 - 🟢 **P5 — //c adapter quirk** (inferred 80COL; PoP's attract loop dropping
-  to mono), behind a toggle. **P4 — RVB Graph**, gated on its manual.
+  to mono): NO grounded mechanism on record — fenarinarsa's articles give
+  the symptom only, and the silicium.org clone thread (t=21639, LCM chip
+  reverse-engineering, CPLD equations) sits behind an Anubis proof-of-work
+  wall that WebFetch cannot pass; needs a real browser session. Blocked on
+  that source, deliberately unmodelled rather than invented.
 - 🟢 **P7 — docs**: `DEV.md` § Le Chat Mauve and `docs/lle_vs_hle.md` are
   rewritten; `docs/chatmauve_plan.md` § 2.1 is the model as built. Remaining:
   fold § 3.4's corrected table back into § 3 prose (today it is a note under

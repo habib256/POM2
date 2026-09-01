@@ -1589,6 +1589,33 @@ endif()
 add_test(NAME le_chat_mauve_smoke COMMAND test_le_chat_mauve)
 set_tests_properties(le_chat_mauve_smoke PROPERTIES TIMEOUT 5)
 
+# Chat Mauve mode-latch beam split (plan P6, first rung): a mid-frame
+# $C05E/$C05F reclock renders each band with the latch of its own moment —
+# COL140 top / BW560 bottom in one frame, both directions, plus the
+# no-clock regression guard.
+add_executable(test_chatmauve_latch_split
+    chatmauve_latch_split_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_ChatMauve.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_chatmauve_latch_split PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_chatmauve_latch_split PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_chatmauve_latch_split PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_chatmauve_latch_split PRIVATE winmm)
+endif()
+add_test(NAME chatmauve_latch_split COMMAND test_chatmauve_latch_split)
+set_tests_properties(chatmauve_latch_split PROPERTIES TIMEOUT 10)
+
 # Le Chat Mauve dot rules (docs/chatmauve_plan.md P1): the LCM HGR rule and
 # the mixed-DHGR boundary rules against ports of AppleWin RGBMonitor.cpp
 # `UpdateHiResRGBCell` / `UpdateDHiResCellRGB` (validated on a real //c

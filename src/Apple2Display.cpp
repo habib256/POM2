@@ -467,7 +467,9 @@ void Apple2Display::forEachBeamSegment(
     const Memory::DisplayState& frameStart,
     std::vector<Memory::VideoEvent> events,
     VideoStandard std,
-    const std::function<void(const Memory::DisplayState&, int, int, int, int)>& paint)
+    uint8_t startLatch,
+    const std::function<void(const Memory::DisplayState&, int, int, int, int,
+                             uint8_t)>& paint)
 {
     // ── Double-buffer page flips (DROL-class) vs beam-raced page splits ──
     // A frame whose PAGE2 events all go ONE direction is a buffer flip, not
@@ -508,21 +510,29 @@ void Apple2Display::forEachBeamSegment(
     // subdivide it at their byteCol; the end-of-line state carries into the
     // next line. A scanline with no events is a single full-width [0, 40)
     // segment — the common case.
-    struct Seg { int colEnd; Memory::DisplayState st; };
+    struct Seg { int colEnd; Memory::DisplayState st; uint8_t latch; };
     std::array<std::vector<Seg>, kHeight> perLine;
 
+    // The Chat Mauve mode latch, replayed from the same events: a Dhgr
+    // event going ON→OFF is the $C05E→$C05F rising edge of AN3, which
+    // clocks the current 80COL level — the state-change view of the same
+    // edges the card counted live (LeChatMauveCard::onVideoSoftSwitch).
     Memory::DisplayState cur = start;
+    uint8_t latch = startLatch & 0b11;
     size_t ei = 0;
     for (int y = 0; y < kHeight; ++y) {
         std::vector<Seg> segs;
         int prevCol = 0;
         while (ei < events.size() && events[ei].scanline == y) {
             const int col = frameCycleToPos(events[ei].emuCycle, std).byteCol;
-            if (col > prevCol) { segs.push_back({col, cur}); prevCol = col; }
+            if (col > prevCol) { segs.push_back({col, cur, latch}); prevCol = col; }
+            if (events[ei].kind == Memory::VideoEventKind::Dhgr &&
+                cur.dhgr && !events[ei].value)
+                latch = static_cast<uint8_t>(((latch << 1) | (cur.eightyCol ? 1u : 0u)) & 0b11);
             applyVideoEvent(cur, events[ei].kind, events[ei].value);
             ++ei;
         }
-        segs.push_back({40, cur});
+        segs.push_back({40, cur, latch});
         perLine[y] = std::move(segs);
     }
 
@@ -540,7 +550,8 @@ void Apple2Display::forEachBeamSegment(
     auto sameSegs = [&](const std::vector<Seg>& a, const std::vector<Seg>& b) {
         if (a.size() != b.size()) return false;
         for (size_t i = 0; i < a.size(); ++i)
-            if (a[i].colEnd != b[i].colEnd || !sameState(a[i].st, b[i].st))
+            if (a[i].colEnd != b[i].colEnd || !sameState(a[i].st, b[i].st) ||
+                a[i].latch != b[i].latch)
                 return false;
         return true;
     };
@@ -550,7 +561,7 @@ void Apple2Display::forEachBeamSegment(
         if (y == kHeight || !sameSegs(perLine[y], perLine[bandY0])) {
             int col0 = 0;
             for (const auto& s : perLine[bandY0]) {
-                paint(s.st, bandY0, y, col0, s.colEnd);
+                paint(s.st, bandY0, y, col0, s.colEnd, s.latch);
                 col0 = s.colEnd;
             }
             bandY0 = y;
@@ -562,10 +573,18 @@ void Apple2Display::renderBeamRacing(Memory& mem,
                                      std::vector<Memory::VideoEvent> events)
 {
     setUseFrame80(false);
+    // Frame-start latch: the value in force just before this frame's first
+    // event, from the card's timestamped ring.
+    const uint8_t startLatch = (chatMauve && !events.empty())
+        ? static_cast<uint8_t>(chatMauve->latchBefore(events.front().emuCycle))
+        : 0b11;
     forEachBeamSegment(mem.getDisplayStateAtFrameStart(), std::move(events),
-        mem.videoStandard(),
-        [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
+        mem.videoStandard(), startLatch,
+        [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1,
+            uint8_t latch) {
+            bandLatch_ = latch;
             renderInternalSegment(mem, st, y0, y1, col0, col1);
+            bandLatch_ = -1;
         });
 }
 
@@ -1978,7 +1997,13 @@ void Apple2Display::renderDhgr(Memory& mem, const Memory::DisplayState& state,
     // patent latch, the variant's fallbacks, the Eve's table IX-1). Three
     // of the Eve's answers are not decodes of the 560-dot stream at all.
     using DhgrMode = LeChatMauveCard::DhgrMode;
-    const DhgrMode dm = useChatMauve ? chatMauve->dhgrMode() : DhgrMode::COL140;
+    // Inside a beam-raced replay the band carries the latch of its own
+    // moment; a whole-frame render asks the card's current value.
+    const DhgrMode dm = !useChatMauve ? DhgrMode::COL140
+        : (bandLatch_ >= 0
+               ? chatMauve->dhgrModeFor(
+                     static_cast<LeChatMauveCard::RenderMode>(bandLatch_ & 0b11))
+               : chatMauve->dhgrMode());
     if (useChatMauve) {
         if (dm == DhgrMode::CP280 && auxRam != nullptr) {
             renderHgrDuochrome(mem, state, firstScanline, lastScanline,
@@ -2477,8 +2502,9 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     // segment into signalBuf. `state` is the mutable local the paint helpers
     // capture by reference, so set it per segment before painting.
     forEachBeamSegment(mem.getDisplayStateAtFrameStart(), events,
-        mem.videoStandard(),
-        [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1) {
+        mem.videoStandard(), 0b11,
+        [&](const Memory::DisplayState& st, int y0, int y1, int col0, int col1,
+            uint8_t) {
             state = st;
             paintSignalBand(y0, y1, col0, col1);
         });

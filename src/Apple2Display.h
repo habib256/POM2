@@ -591,13 +591,23 @@ private:
     // each band × column segment. Both renderBeamRacing (RGBA) and
     // fillCompositeSignal (composite signal) drive their painters through it,
     // so the two horizontal-split replays can never diverge.
+    // `startLatch` + the per-segment latch: the Chat Mauve mode latch is
+    // walked in parallel with DisplayState from the same event log ($C05E/F
+    // rising edges clock the $C00C/D level), so a mid-frame latch change
+    // paints each band with the value of ITS moment. Callers without a card
+    // pass 0b11 (COL140) and ignore the parameter.
     static void forEachBeamSegment(
         const Memory::DisplayState& frameStart,
         std::vector<Memory::VideoEvent> events,
         VideoStandard std,
+        uint8_t startLatch,
         const std::function<void(const Memory::DisplayState&,
-                                 int y0, int y1, int col0, int col1)>& paint);
+                                 int y0, int y1, int col0, int col1,
+                                 uint8_t latch)>& paint);
     void renderBeamRacing(Memory& mem, std::vector<Memory::VideoEvent> events);
+    // The Chat Mauve latch for the band being painted by the beam-raced
+    // replay (renderDhgr consumes it); < 0 outside a replay = ask the card.
+    int bandLatch_ = -1;
 
     static void applyVideoEvent(Memory::DisplayState& state, Memory::VideoEventKind kind,
                                 bool value);

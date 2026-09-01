@@ -29,6 +29,7 @@ const char* LeChatMauveCard::variantKey(Variant v)
         case Variant::IIcAdapter: return "iic";
         case Variant::Eve:        return "eve";
         case Variant::Video7:     return "video7";
+        case Variant::RvbGraph:   return "rvb";
     }
     return "feline";
 }
@@ -40,6 +41,7 @@ const char* LeChatMauveCard::variantLabel(Variant v)
         case Variant::IIcAdapter: return "Adaptateur //c (DB-15)";
         case Variant::Eve:        return "Eve (//e aux slot, $C0B0-$C0BF)";
         case Variant::Video7:     return "Video-7 AppleColor RGB (US)";
+        case Variant::RvbGraph:   return "RVB Graph (II/II+, partial)";
     }
     return "?";
 }
@@ -61,6 +63,7 @@ void LeChatMauveCard::setVariant(Variant v)
     // becomes an Eve powers up with all of them off, like the real board.
     eveSwitches_ = 0;
     cpreg_       = 0;
+    rvbMode_     = 0;
     syncAuxShadow();
 }
 
@@ -92,6 +95,19 @@ void LeChatMauveCard::onReset()
         eveSwitches_ = 0;
         syncAuxShadow();
     }
+}
+
+uint8_t LeChatMauveCard::deviceSelectRead(uint8_t low4)
+{
+    // RVB Graph mode strobes — POKE −16144…−16141 in the sources, i.e. any
+    // access decodes the address, read or write.
+    if (variant_ == Variant::RvbGraph && low4 <= 3) rvbMode_ = low4;
+    return 0xFF;
+}
+
+void LeChatMauveCard::deviceSelectWrite(uint8_t low4, uint8_t)
+{
+    if (variant_ == Variant::RvbGraph && low4 <= 3) rvbMode_ = low4;
 }
 
 void LeChatMauveCard::onUnplug()
@@ -183,18 +199,44 @@ void LeChatMauveCard::syncAuxShadow()
 
 void LeChatMauveCard::clockFifo(bool dataBit)
 {
+    const uint8_t before = fifo;
     fifo = static_cast<uint8_t>(((fifo << 1) | (dataBit ? 1u : 0u)) & 0b11);
     mode = static_cast<RenderMode>(fifo);
+    // Timestamped history for the beam-raced replay. Without a Memory
+    // there is no clock to stamp with — the ring stays empty and
+    // latchBefore() degrades to the current value.
+    if (mem_) {
+        latchRing_[latchRingHead_] = { mem_->getCycleCounter(), before, fifo };
+        latchRingHead_ = (latchRingHead_ + 1) % kLatchRing;
+        if (latchRingSize_ < kLatchRing) ++latchRingSize_;
+    }
+}
+
+LeChatMauveCard::RenderMode LeChatMauveCard::latchBefore(uint64_t cycle) const
+{
+    // Newest-first scan for the last edge STRICTLY before `cycle`; the ring
+    // is small and this is called once per rendered frame. An edge stores
+    // the fifo on BOTH sides, so a cycle older than every recorded edge
+    // still gets the right answer (the oldest edge's pre-clock value).
+    for (int k = 0; k < latchRingSize_; ++k) {
+        const int idx = (latchRingHead_ - 1 - k + 2 * kLatchRing) % kLatchRing;
+        if (latchRing_[idx].cycle < cycle)
+            return static_cast<RenderMode>(latchRing_[idx].after & 0b11);
+        if (k == latchRingSize_ - 1)
+            return static_cast<RenderMode>(latchRing_[idx].before & 0b11);
+    }
+    // Empty ring: the latch never clocked (or no Memory to timestamp with).
+    return mode;
 }
 
 // ─── What the renderers ask ──────────────────────────────────────────────
 
-LeChatMauveCard::DhgrMode LeChatMauveCard::dhgrMode() const
+LeChatMauveCard::DhgrMode LeChatMauveCard::dhgrModeFor(RenderMode latch) const
 {
     switch (variant_) {
     case Variant::Video7:
         // The four patent modes, as MAME's dhgr_update rgbmode 0-3.
-        switch (mode) {
+        switch (latch) {
             case RenderMode::BW560:     return DhgrMode::BW560;
             case RenderMode::Mixed:     return DhgrMode::Mixed;
             case RenderMode::Chunky160: return DhgrMode::Chunky160;
@@ -207,13 +249,19 @@ LeChatMauveCard::DhgrMode LeChatMauveCard::dhgrMode() const
         // No 160-wide mode on the Chat Mauve boards: AppleWin's
         // RGB_Is140Mode() folds it into COL140 for the Féline, and the
         // Manuel Arlequin lists only 140 / 560 / mixed.
-        switch (mode) {
+        switch (latch) {
             case RenderMode::BW560:     return DhgrMode::BW560;
             case RenderMode::Mixed:     return DhgrMode::Mixed;
             case RenderMode::Chunky160: return DhgrMode::COL140;
             case RenderMode::COL140:    return DhgrMode::COL140;
         }
         return DhgrMode::COL140;
+
+    case Variant::RvbGraph:
+        // The plan's family table: COL140 and BW560 only — no mixed, no
+        // 160. The two mono strobes force the 560-dot monochrome.
+        if (rvbMode_ >= 2) return DhgrMode::BW560;
+        return latch == RenderMode::BW560 ? DhgrMode::BW560 : DhgrMode::COL140;
 
     case Variant::Eve: {
         // Table IX-1, AN3 off rows (all need 80COL on, which is the DHGR
@@ -261,6 +309,12 @@ LeChatMauveCard::HgrMode LeChatMauveCard::hgrMode(bool an3On) const
         // foreground/background mode with the colours in aux.
         return an3On ? HgrMode::LcmColor : HgrMode::FgBg;
 
+    case Variant::RvbGraph:
+        // $C0F2/$C0F3 are whole-screen monochrome; the HGR colour
+        // registers (6 programmable of 16) are not modelled — standard LCM
+        // colours until the manual surfaces.
+        return rvbMode_ >= 2 ? HgrMode::Mono : HgrMode::LcmColor;
+
     case Variant::Eve: {
         // Table IX-1, AN3 on rows, confirmed by Purplesoft's `& GR 1..5`
         // tables: 1 HRAPPLEII = 000, 2 HRSPEC1 = 100, 3 HRSPEC2 = 110
@@ -298,6 +352,12 @@ LeChatMauveCard::TextMode LeChatMauveCard::textMode(bool eightyCol, bool an3On) 
         // from aux, hi nibble = foreground.
         return (!eightyCol && !an3On) ? TextMode::Color : TextMode::Plain;
 
+    case Variant::RvbGraph:
+        // $C0F1/$C0F3 turn the text green (white otherwise). The
+        // whole-screen text COLOUR register is not modelled (no address on
+        // record) — colour text renders white.
+        return (rvbMode_ & 1) ? TextMode::Green : TextMode::Plain;
+
     case Variant::Eve:
         // Manual IV-2.2: TXT16 on + 80COL off → 40-col colour text, hi
         // nibble = background. No AN3 condition (the BASIC recipe never
@@ -315,7 +375,8 @@ uint32_t LeChatMauveCard::renderStateKey() const
     return static_cast<uint32_t>(variant_)
          | (static_cast<uint32_t>(mode)          << 4)
          | (static_cast<uint32_t>(eveSwitches_)  << 8)
-         | (invertBit7_ ? (1u << 16) : 0u);
+         | (invertBit7_ ? (1u << 16) : 0u)
+         | (static_cast<uint32_t>(rvbMode_)      << 17);
 }
 
 // ─── Snapshot ────────────────────────────────────────────────────────────
@@ -326,19 +387,20 @@ void LeChatMauveCard::appendSnapshotState(std::vector<uint8_t>& out) const
     // were the $C0B8/$C0BA pair under their old, wrong labels). Both are
     // written by the guest through $C0Bx, so a rewind past a `STA $C0B9`
     // has to put them back.
-    out.push_back('C'); out.push_back('M'); out.push_back(3);
+    out.push_back('C'); out.push_back('M'); out.push_back(4);
     out.push_back(fifo);
     out.push_back(static_cast<uint8_t>(mode));
     out.push_back(an3Prev ? 1 : 0);
     out.push_back(eightyColLatched ? 1 : 0);
     out.push_back(eveSwitches_);
     out.push_back(cpreg_);
+    out.push_back(rvbMode_);          // v4: the RVB Graph mode strobe
 }
 
 void LeChatMauveCard::loadSnapshotState(const uint8_t* data, std::size_t len)
 {
     if (len < 7 || data[0] != 'C' || data[1] != 'M' ||
-        data[2] < 1 || data[2] > 3) return;
+        data[2] < 1 || data[2] > 4) return;
     fifo             = static_cast<uint8_t>(data[3] & 0b11);
     mode             = static_cast<RenderMode>(data[4] & 0b11);
     an3Prev          = data[5] != 0;
@@ -349,9 +411,10 @@ void LeChatMauveCard::loadSnapshotState(const uint8_t* data, std::size_t len)
         // switches they really were.
         eveSwitches_ = static_cast<uint8_t>((data[7] ? (1u << TXT16)    : 0u) |
                                             (data[8] ? (1u << TXTGREEN) : 0u));
-    } else if (data[2] == 3 && len >= 9) {
+    } else if (data[2] >= 3 && len >= 9) {
         eveSwitches_ = data[7];
         cpreg_       = data[8];
+        if (data[2] >= 4 && len >= 10) rvbMode_ = data[9] & 0x03;
     }
     if (!isEve()) eveSwitches_ = 0;
     syncAuxShadow();

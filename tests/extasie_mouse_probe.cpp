@@ -124,7 +124,9 @@ int main()
     const std::string rom  = findFirst({ "../roms/apple2e.rom", "roms/apple2e.rom" });
     const std::string boot = findFirst({ "../roms/disk2.rom", "roms/disk2.rom" });
     const std::string mrom = findFirst({ "../roms/mouse_341-0270-c.bin", "roms/mouse_341-0270-c.bin" });
-    const std::string dsk  = findFirst({
+    const std::string dsk  = std::getenv("POM2_PROBE_DISK")
+        ? std::string(std::getenv("POM2_PROBE_DISK"))
+        : findFirst({
         "../disks_5.4/gist/Extasie disk1.dsk", "disks_5.4/gist/Extasie disk1.dsk" });
     if (rom.empty() || boot.empty() || mrom.empty() || dsk.empty()) {
         std::printf("extasie_mouse_probe SKIP: missing rom/prom/mouse rom/disk\n");
@@ -208,11 +210,25 @@ int main()
     auto stamp = [&]() { return static_cast<double>(mem.getCycleCounter()) / kSecond; };
 
     int shot = 0;
+    const bool dumpRam = std::getenv("POM2_PROBE_DUMPRAM") != nullptr;
     auto snap = [&](const char* tag) {
         disp.render(mem);
         char name[512];
         std::snprintf(name, sizeof(name), "%s/extasie_%02d_%s.ppm", outDir.c_str(), shot++, tag);
         writePpm(name, disp);
+        if (dumpRam) {
+            // Both hi-res pages, main and aux — to tell "the unpacker put
+            // garbage in RAM" apart from "the renderer mangled good RAM".
+            char rn[512];
+            std::snprintf(rn, sizeof(rn), "%s.ram", name);
+            if (FILE* f = std::fopen(rn, "wb")) {
+                std::fwrite(mem.data() + 0x2000, 1, 0x4000, f);
+                std::fwrite(mem.auxData() + 0x2000, 1, 0x4000, f);
+                std::fclose(f);
+            }
+            std::printf("      page2=%d 80store=%d\n",
+                        mem.getDisplayState().page2, mem.getDisplayState().eightyStore);
+        }
         std::printf("t=%6.1fs shot %s (%dx%d) text=%d hires=%d 80col=%d an3off=%d mode=%d PC=$%04X\n",
                     stamp(), name + outDir.size() + 1, disp.width(), disp.height(),
                     mem.getDisplayState().textMode, mem.getDisplayState().hiRes,
@@ -229,7 +245,17 @@ int main()
     // Optional keys (menu picks), 5 s apart.
     if (keys) {
         for (const char* k = keys; *k; ++k) {
-            const char c = (*k == ',') ? '\r' : *k;
+            char c = *k;
+            if (c == ',') c = '\r';
+            else if (c == '_') c = 0x0A;   // down arrow
+            else if (c == '^') c = 0x0B;   // up arrow
+            else if (c == '<') c = 0x08;   // left
+            else if (c == '>') c = 0x15;   // right
+            else if (c == '~') c = 0x1B;   // esc
+            else if (c == '.') {           // no key — just wait
+                runSeconds(5.0);
+                continue;
+            }
             mem.queueKey(static_cast<uint8_t>(c));
             std::printf("t=%6.1fs key '%c'\n", stamp(), c);
             runSeconds(5.0);
@@ -268,8 +294,14 @@ int main()
     dumpText(mem);
     log.report();
 
-    runSeconds(runFor > 60 ? runFor - 60 : 5.0);
-    snap("end");
+    // Tail: one shot every 10 s (slideshows advance on their own).
+    double left = runFor > 60 ? runFor - 60 : 5.0;
+    while (left > 0) {
+        const double step = left > 10 ? 10 : left;
+        runSeconds(step);
+        left -= step;
+        snap("end");
+    }
     dumpText(mem);
     log.report();
     return 0;

@@ -39,6 +39,13 @@
 //               (COL280A/B, CP280, HRBW, SPEC1/2, DASH), TXT16 colour text
 //               with the aux nibbles the OTHER way round from Video-7's,
 //               TXTGREEN, LOCKRES.
+//   RvbGraph    Le Chat Mauve RVB Graph (II / II+ slot card) — PARTIAL: the
+//               four documented mode strobes at its slot's device select
+//               ($C0F0-$C0F3 in slot 7: colour + white text, colour + green
+//               text, mono white, mono green — forum.system-cfg t=9395, via
+//               a Sonotec clone). The whole-screen text colour register, the
+//               HGR colour registers and the dotted-line option stay
+//               unmodelled: its manual has never surfaced (plan § 3.6/P4).
 //   Video7      Video-7 AppleColor RGB / Apple Extended 80-col RGB card: the
 //               four patent modes including 160-wide chunky, F/B colour text
 //               (aux hi nibble = foreground) and F/B HGR when AN3 is off —
@@ -96,8 +103,9 @@ public:
         IIcAdapter = 1,
         Eve        = 2,
         Video7     = 3,
+        RvbGraph   = 4,
     };
-    static constexpr int kVariantCount = 4;
+    static constexpr int kVariantCount = 5;
 
     /// The raw two-bit mode latch (value == F2 F1 as POM2 clocks 80COL).
     enum class RenderMode : uint8_t {
@@ -192,6 +200,14 @@ public:
     /// arrives through onVideoSoftSwitchWrite with its data byte.
     void onVideoSoftSwitch(uint16_t addr) override;
     void onVideoSoftSwitchWrite(uint16_t addr, uint8_t value) override;
+    /// RVB Graph only: the four mode strobes live in the card's own
+    /// device-select window (any access decodes, like the Apple soft
+    /// switches). Other variants keep the base no-op.
+    uint8_t deviceSelectRead (uint8_t low4) override;
+    void    deviceSelectWrite(uint8_t low4, uint8_t v) override;
+    /// RVB Graph mode register: 0 colour + white text, 1 colour + green
+    /// text, 2 mono white, 3 mono green ($C0F0-$C0F3 at slot 7).
+    uint8_t rvbMode() const { return rvbMode_; }
 
     // Rewind/snapshot: the guest-visible state. v3 = v2 + the Eve's switch
     // byte and CPREG (guest-written through $C0Bx, so guest-volatile).
@@ -201,7 +217,11 @@ public:
 
     // ── What the renderers ask ───────────────────────────────────────────
     RenderMode currentMode() const { return mode; }          // raw latch
-    DhgrMode   dhgrMode() const;
+    DhgrMode   dhgrMode() const { return dhgrModeFor(mode); }
+    /// The same decode for an EXPLICIT latch value — the beam-raced replay
+    /// paints each band with the latch of ITS moment (latchBefore), not the
+    /// end-of-frame value.
+    DhgrMode   dhgrModeFor(RenderMode latch) const;
     HgrMode    hgrMode(bool an3On) const;                    // 80COL off, or AN3 on
     TextMode   textMode(bool eightyCol, bool an3On) const;
     /// Colour-text / CP280 / F/B nibble order: Video-7 puts the foreground in
@@ -218,6 +238,14 @@ public:
     uint8_t eveSwitches() const { return eveSwitches_; }
     bool    eveSwitch(EveSwitch s) const { return (eveSwitches_ >> s) & 1u; }
     uint8_t cpreg()       const { return cpreg_; }
+
+    /// The latch value in force just BEFORE `cycle` — served from a small
+    /// ring of (cycle, fifo) pairs appended at every clock edge (timestamped
+    /// through `mem_`; without a Memory the ring stays empty and the current
+    /// latch is returned, which is the pre-P6 behaviour). This is what lets
+    /// a mid-frame `$C05E/$C05F` land on the right scanline: the replay asks
+    /// for the frame-start value and walks the same logged edges forward.
+    RenderMode latchBefore(uint64_t cycle) const;
 
     /// UI override: force a latch value independent of the bus. Resets back
     /// to the bus-driven value on the next AN3 rising edge.
@@ -245,6 +273,14 @@ private:
     bool       invertBit7_      = false;
     uint8_t    eveSwitches_     = 0;        // all off at power-on
     uint8_t    cpreg_           = 0;
+    uint8_t    rvbMode_         = 0;        // RVB Graph: colour + white text
+    // Rolling latch history for beam-raced replay (latchBefore). 512 edges
+    // is > one PAL frame of per-scanline clocking.
+    struct LatchEdge { uint64_t cycle; uint8_t before; uint8_t after; };
+    static constexpr int kLatchRing = 512;
+    LatchEdge  latchRing_[kLatchRing] {};
+    int        latchRingHead_ = 0;          // next write slot
+    int        latchRingSize_ = 0;
 
     bool isEve() const { return variant_ == Variant::Eve; }
     void clockFifo(bool dataBit);

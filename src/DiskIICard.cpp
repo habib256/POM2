@@ -972,7 +972,7 @@ void DiskIICard::legacyAdvance(int cycles)
     while (cycleAccum >= kCyclesPerNibble) {
         cycleAccum -= kCyclesPerNibble;
         pos = (pos + 1) % DiskImage::kNibblesPerTrack;
-        if (writeMode) {
+        if (writeMode && motorOffDelay <= 0) {
             // Write the most-recently-latched nibble onto the track.
             // Real hardware streams bits through the LSS shift register;
             // we model one nibble per ~32 CPU cycles, matching the read
@@ -980,7 +980,14 @@ void DiskIICard::legacyAdvance(int cycles)
             // store (see deviceSelectWrite). Honour writeBackEnabled
             // symmetrically with the LSS path — the user toggle off
             // must keep host files intact regardless of which gate is
-            // active.
+            // active. During the 556 motor-off COAST the gate serves
+            // READS only (that is what RWTS's spin check needs): before
+            // the coast existed a motor-off stopped everything at once,
+            // and letting a stale write-mode flag spray nibbles through
+            // the window regressed `iic_external_smartport` case E — the
+            // //c+ IWM forwarding leaves the shadow Disk II in write
+            // mode while the 3.5" boots, and its 5.25" must take ZERO
+            // flux from that traffic.
             if (writeBackEnabled) {
                 img.writeNibbleAt(track, pos, writeLatch);
                 ++writeFlushCount;
