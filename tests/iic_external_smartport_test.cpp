@@ -337,6 +337,14 @@ int main()
         if (o.bus.commandTaken)
             fail("C: the port took a command with no media — an empty chain "
                  "must be silence, or the firmware boots an absent disk");
+        // With nothing on the port the firmware's probe still drives the IWM
+        // lines behind $C0E0-$C0EF; none of it may reach the 5.25" as flux.
+        // (A 2026-07-30 write-back left 20 bytes of sync garbage over a data
+        // prologue of a DOS 3.3 .nib at track 0 — Best1a.nib, restored from
+        // git; whatever wrote it, this is the rule it broke.)
+        if (o.diskIIFlushes || o.diskIIDirty)
+            fail("C: the Disk II wrote flux with an empty port — firmware probe "
+                 "bytes reached the slot-6 card");
         if (g_failures) std::printf("%s", o.screen.c_str());
     }
 
