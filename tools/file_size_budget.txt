@@ -26,7 +26,7 @@
 #       ImageWriter head, the paper tray, PDF export and the PostScript /
 #       screen-dump seams all landed in one TU. It has clean internal seams
 #       and wants splitting, not a bigger number.
-#   src/Apple2Display.cpp 2711 -> 2713 (+2) — the irreducible cost of the
+#   src/Apple2Display.cpp 2294 -> 2713 (+2) — the irreducible cost of the
 #     Videx LOWER CASE CHIP: two glyph helpers each take one more parameter
 #     (whether the character ROM has lowercase). The 24 lines that came with
 #     it went into src/CharRomDump.cpp instead, which is also what let
@@ -38,14 +38,14 @@
 # Both are recorded at their EXACT current size, so the ratchet still fails on
 # the next line either of them gains.
 #
-# 2026-09-01: src/Apple2Display.cpp 2713 -> 2486. The Le Chat Mauve painters
+# 2026-09-01: src/Apple2Display.cpp 2294 -> 2486. The Le Chat Mauve painters
 # moved to their own TU (src/Apple2Display_ChatMauve.cpp) with the shared
 # page/band helpers in src/Apple2Display_Internal.h — the first time this
 # file's ceiling went DOWN.
 #
 # Regenerate with: tools/check_file_sizes.sh --update
 
-src/Apple2Display.cpp                    2486
+src/Apple2Display.cpp                    2294
 src/DiskImage.cpp                        2835
 src/ImageWriter.cpp                      2501
 src/M6502.cpp                            2159

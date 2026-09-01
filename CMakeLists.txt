@@ -178,6 +178,7 @@ set(SOURCES
     src/AiControlServer.cpp
     src/Apple2Display.cpp
     src/Apple2Display_ChatMauve.cpp
+    src/Apple2Display_Beam.cpp
     src/AppleWinNtsc.cpp
     src/AtaBlockDevice.cpp
     src/AudioDevice.cpp
@@ -621,6 +622,7 @@ set(POM2_RUNTIME_SOURCES
     src/TnfsMedia.cpp
     src/Apple2Display.cpp
     src/Apple2Display_ChatMauve.cpp
+    src/Apple2Display_Beam.cpp
     src/AudioDevice.cpp
     src/CharRomCatalog.cpp
     src/EmulationController.cpp
@@ -1141,6 +1143,7 @@ set(POM2_CORE_SOURCES
     src/Pom2Core.cpp
     src/Apple2Display.cpp
     src/Apple2Display_ChatMauve.cpp
+    src/Apple2Display_Beam.cpp
     src/AppleWinNtsc.cpp
     src/AtaBlockDevice.cpp
     src/AudioDevice.cpp
@@ -1349,6 +1352,7 @@ add_executable(pom2_headless
     # boot smoke). No GL anywhere — Apple2Display decodes into a CPU buffer.
     src/Apple2Display.cpp
     src/Apple2Display_ChatMauve.cpp
+    src/Apple2Display_Beam.cpp
     src/AppleWinNtsc.cpp
     src/CharRomCatalog.cpp
     src/CharRomDump.cpp
@@ -1431,6 +1435,7 @@ add_executable(pom2_bench
     src/pom2_bench.cpp
     src/Apple2Display.cpp
     src/Apple2Display_ChatMauve.cpp
+    src/Apple2Display_Beam.cpp
     src/AppleWinNtsc.cpp
     src/AudioDevice.cpp
     src/CassetteDevice.cpp
