@@ -5,6 +5,153 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The //c+ boots a 3.5" disk with its own firmware
+
+Not through POM2's host-served SmartPort substitute at slot 5 — through the
+real path: the //c+ ROM drives the MIG gate array, the MIG selects the drive,
+the IWM walks the bit cells, the Sony drive turns its motor and steps its
+head, and **ProDOS 8 v2.4.3 boots off the internal 3.5" bay** with nothing
+else mounted in the machine. TODO § Storage called this "the largest
+remaining fidelity gap in the storage stack" and put three features behind it.
+
+**The evidence, because "it boots now" is a claim worth distrusting.** The
+same harness on the pre-fix build prints `UNABLE TO FIND A BOOTABLE DISK
+ONLINE.` and leaves the head parked on track 0 — it cannot read the boot block
+to learn where to go next. Post-fix, on four in-repo 800K images: A2DeskTop
+reaches ProDOS at 8.4 M cycles, The New Print Shop walks the head to **track
+22** across both sides and paints 7401 of 8192 hi-res bytes, DIX paints 4128.
+Same harness, same images, same cycle budget; the difference is the
+controller and nothing else. Pinned as `iicplus_boot35`, and
+mutation-checked: restoring either half of the controller fix turns the test
+red with the firmware's own message.
+
+**Nothing in the firmware, the MIG or the drive model had to change.** All of
+it was already there and individually pinned; what was missing was a test that
+crossed the seam between the encoder and the IWM's walker. Both faults are in
+the entry above.
+
+**A harness bug worth recording, because it cost an hour and pointed at
+innocent code.** The first version of this test plugged no card into slot 6.
+`IIcClassProfile::ioReadIWM` hands the CPU the IWM's byte only while a 3.5"
+Sony is selected and falls through to the slot-6 DiskIICard otherwise — with
+no card the fall-through returns the **floating bus**, and $FF has bit 5 set,
+which reads as "drive enabled". The firmware then sat in a loop at $E51D
+polling a status it thought it had already got, and every pass through its MIG
+routine reset the IWM. It looked exactly like a MIG decode bug. It was an
+empty slot: the //c+ has an on-board 5.25" drive, and modelling the machine
+without it is not modelling the machine.
+
+## 2026-09-01 — The 800K read path works: two faults, one clock
+
+The harness below said the fault was between the encoder and the decoder, in
+the flux → bit-cell-window path, and that granularity was the suspect. Acting
+on that took two fixes, and the second one only became visible after the
+first. The path now reads **every sector on all five speed zones, both heads,
+payloads exact**, through the real `IWMDevice`: 12/12, 11/11, 10/10, 9/9, 8/8.
+
+**1. The IWM does not run on the CPU clock, and now POM2 does not pretend it
+does.** On a //c the controller is wired to A2BUS_7M — 14.31818/2 = 7.159 MHz
+— which is exactly seven times the 6502's 14.31818/14. POM2 had collapsed the
+device onto the CPU clock and divided MAME's window constants by 7, so 28/14
+became 4/2 and 36/18 became 5/2: two of the four window settings ended up
+identical, and none could place an edge inside a 2.02-cycle Sony cell. The
+state machine now counts in IWM ticks (`POM2_IWM_TICKS_PER_CPU_CYCLE`,
+CpuClock.h) and MAME's 28/14/36/18, its 4/8-tick register delay and its 7- and
+14-tick write constants are used verbatim — several of which had been
+individually "corrected" over time in ways that were each wrong (the async
+stale-data timer went 14 → 2 to stop it firing 7× late; in ticks it is 14
+again, which is what the hardware always said). `Sony35Drive`'s flux timeline
+moved to the same unit, read and write side together.
+
+That alone took address-field recovery from 4 of 24 to 17 of 24 — and still
+zero complete sectors.
+
+**2. `nextTransition(lastSync_ + 1)` where MAME asks from `lastSync_`.** POM2
+queried the flux stream one tick late, so any transition landing exactly one
+tick past the last sync point was skipped — and `nextFluxChange` is a local
+reset on every `sync()` entry, so the transition was skipped for good rather
+than picked up on the next pass. That alignment is not rare: `lastSync_` parks
+on the caller's poll boundary every time a `sync()` runs out of time
+mid-window. The cost was one 1-bit read as 0 roughly every 35 bytes — enough
+for an 8-byte address field to survive and a 700-byte data field never to,
+which is exactly the shape the numbers had. Invisible under the old clock,
+where coarser errors swamped it.
+
+**Whether this is what a real //c+ needs is still unproven** — the firmware
+has to drive the MIG, the IWM and the drives itself, and that is the next
+item. What is proven is that the controller underneath it reads Sony GCR.
+
+Two consequences worth knowing:
+
+- **Snapshot blobs are `IWM2`.** The state-machine stamps in them are ticks,
+  a different number for the same instant; restoring a v1 blob verbatim would
+  park the walker seven times too early and freeze the device until emulated
+  time caught up — the exact hazard `iwm_mig_snapshot` exists to prevent. The
+  loader accepts both and scales v1.
+- **`Sony35Drive::writeFlux` and `nextTransition` take ticks now.** Read and
+  write have to share one timeline or a write lands on a different cell than
+  the read that verifies it.
+
+The harness's investigation half is a plain test as of this commit: it
+asserts what it used to merely report. `POM2_GCR_CONTROL_ONLY=1` still runs
+only the encoder→decoder control, which is what to reach for if it ever fails
+again — it says in one run whether the format or the controller broke.
+
+## 2026-09-01 — The 3.5" harness, and the answer it gave in five minutes
+
+TODO § Storage has asked, for months, that the 800K campaign start with a
+harness rather than a card: "find out where the GCR read path diverges …
+building a card first would only produce a card that does not boot." Three
+features sit behind that one question — the //c+ on-board boot, a Liron card,
+the plain //c. `tests/sony35_iwm_read_path_test.cpp` is that harness, and the
+answer is unambiguous:
+
+| Path | Address fields | Sectors |
+| ---- | -------------- | ------- |
+| blocks → Sony GCR encoder → decoder, no IWM | 12 of 12 | **12/12, payloads exact** |
+| the same track through `IWMDevice`'s window walker | ~4 per revolution | **0** |
+
+Same on all five speed zones and both heads. The encoder, the zone layout,
+`sony35::blockIndexFor` and the decoder are therefore exonerated, and that
+half of the harness is now a pinned regression test (`sony35_gcr_zones`)
+covering every zone on both heads — which nothing did before; the existing
+3.5" tests either stop at `debugCellStream()` or never leave track 0. It is
+mutation-checked: shifting `blockIndexFor`'s head term by one zone fails it on
+four tracks.
+
+**The finding.** The fault is in the flux → bit-cell-window path, and its
+shape says granularity. The drive clocks a cell every 155745 / 76950 = **2.02
+CPU cycles**; POM2 runs the IWM state machine on whole CPU cycles, so
+`windowSize()` is 2 and a resync can only ever land on a cycle boundary — half
+a cell of error is a coin flip. MAME runs the identical walker on the card's
+~7.16 MHz clock, where the same window is 14 ticks. The parity dashboard
+already carries this as an open item under `IWMDevice` ("Q3 fast clock
+(Mac/IIgs only)") without anyone having connected it to the 3.5" boot. So the
+next step in the campaign is a finer time base for the 3.5" read path, and
+**not** a Liron card: a card debugged against a controller that cannot read a
+sector produces two mysteries instead of one.
+
+**Three bugs in the harness itself, all worth writing down**, because each is
+a way to conclude something false about the hardware:
+
+- Stepping the head with side 1 selected does nothing at all. The drive's
+  register address is `{ HDSEL, CA2, CA1, CA0 }`, so "step" (1) becomes "MFM
+  mode on" (9) and a `while (track() < n)` loop never ends. The harness now
+  selects side 0 before seeking, and bounds the loop so a regression here
+  fails the test instead of hanging CI.
+- The mode register is written by an odd-offset write while **Q6 and Q7 are
+  both set**; `write(0xE, …)` clears Q7 rather than setting Q6. The first draft
+  swept four mode bytes and silently measured mode $00 four times. The harness
+  now reads the mode back and fails if it did not take — the sweep exists
+  precisely to compare modes, so a sweep that cannot change the mode is worse
+  than no sweep.
+- Restarting the harness clock at a fixed value for each track read froze the
+  device: the IWM keeps absolute cycle stamps and its `sync()` walker only
+  moves forward, so a timestamp older than the one it already reached reads
+  nothing at all. The first track worked and every later one came back empty.
+  `IWMDevice.h` documents exactly this hazard for the rewind path; it bites a
+  test the same way.
+
 ## 2026-09-01 — The browser build can remember things now (IDBFS), and the two surprises
 
 `state.cfg` and `imgui.ini` survive a reload of the WASM build. The backlog

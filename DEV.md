@@ -2765,6 +2765,64 @@ MIG-driven `m_35sel/m_intdrive/m_hdsel` (MAME `apple2e.cpp:638-679
 recalc_active_device`). `senseR()` returns active-low register file
 (`/INSERTED`, `/TRACK0`, `/READY`, `/MOTOR ON`, `/SWITCHED`, …).
 
+*The read path through the IWM works, and here is the test that says so*
+(2026-09-01). `tests/sony35_iwm_read_path_test.cpp` drives the whole chain —
+`Disk35Image` blocks → the zoned GCR encoder → flux → `IWMDevice`'s bit-cell
+window walker → `$C0EC` polls → `sony35::decodeSectors` → blocks — with no
+firmware anywhere in it, over all five speed zones on both heads. Set
+`POM2_DUMP_GCR=1` for the per-mode and per-track tables;
+`POM2_GCR_CONTROL_ONLY=1` runs only the encoder→decoder control, which is what
+to reach for if it ever fails: it says in one run whether the format or the
+controller broke.
+
+It was built as a diagnostic and it found two faults, in this order, the
+second only visible once the first was fixed:
+
+1. **The IWM was clocked in whole CPU cycles.** It is wired to A2BUS_7M on a
+   //c — 7.159 MHz, exactly 7× the 6502 — and POM2 had divided MAME's window
+   constants by 7 (28/14 → 4/2, 36/18 → 5/2), which made two of the four
+   settings identical and left no way to place a window edge inside a
+   2.02-cycle Sony cell. The state machine and `Sony35Drive`'s flux timeline
+   now count in `POM2_IWM_TICKS_PER_CPU_CYCLE` units (CpuClock.h) and MAME's
+   constants are verbatim. 4 → 17 address fields of 24, still zero sectors.
+2. **A flux query one tick late.** `nextTransition(lastSync_ + 1)` where MAME
+   asks from `lastSync_`, so a transition landing exactly one tick past the
+   last sync point was dropped — and `nextFluxChange` is a local reset on
+   every `sync()` entry, so it was dropped for good. `lastSync_` parks on the
+   caller's poll boundary whenever a `sync()` runs out of time mid-window, so
+   this fired about once every 35 bytes: fine for an 8-byte address field,
+   fatal for a 700-byte data field.
+
+Only IWM mode $0A reads a Sony disk, and that is correct rather than a
+limitation: it selects the 14-tick window and the cell is 14.17 ticks. $02 and
+$12 (28 and 36 ticks) are the 4 µs 5.25" settings.
+
+Consequences: snapshot blobs are **`IWM2`** (the FSM stamps are ticks — a
+different number for the same instant; the loader still takes `IWM1` and
+scales), and `Sony35Drive::writeFlux`/`nextTransition` take ticks, because
+read and write must share one timeline or a write lands on a different cell
+than the read that verifies it.
+
+**And the //c+ firmware drives all of it** — pinned separately by
+`iicplus_boot35`, which cold-boots the real ROM with an 800K image in the
+internal bay and asserts ProDOS reaches the text page, the motor ran and the
+head left track 0. On the pre-fix controller the same harness gets the
+firmware's own `UNABLE TO FIND A BOOTABLE DISK ONLINE.` with the head on
+track 0. One trap in writing such a harness: plug a `DiskIICard` into slot 6
+even with no 5.25" media. `IIcClassProfile::ioReadIWM` falls through to that
+card whenever a 3.5" drive is not selected, and an empty slot answers with the
+floating bus — $FF, whose bit 5 reads as "drive enabled", sending the firmware
+down a branch the real machine never takes.
+
+Three traps the harness hit, all of which produce a false conclusion about the
+hardware if you miss them: stepping the head while side 1 is selected silently
+addresses registers 8-F (`regSelect()` is `{ HDSEL, CA2, CA1, CA0 }`, so
+"step" becomes "MFM mode on" and the head never moves); the mode register is
+written by an odd-offset write with **both** Q6 and Q7 set, so a sweep that
+gets that wrong measures mode $00 every time; and the IWM's `sync()` walker
+only moves forward, so handing it a timestamp older than one it already
+reached returns an empty stream for the rest of the run.
+
 *WOZ (flux) images* (2026-08-18). A `.woz` holds bit CELLS, and POM2
 stores 3.5" media as a flat block array with no GCR *encoder* — so a flux
 dump has nothing to be mounted as unless it is decoded at LOAD time.

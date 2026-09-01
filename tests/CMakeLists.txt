@@ -509,6 +509,70 @@ add_test(NAME smartport_35_smoke COMMAND test_smartport_35)
 set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── The //c+ boots an 800K disk with its OWN firmware ────────────────────
+# Not the host-served SmartPort substitute at slot 5 (`iic_onboard_smartport_
+# smoke` pins that): the ROM drives the MIG, the MIG selects the drive, the
+# IWM walks the bit cells. Mutation-checked — restoring either half of the
+# 2026-09-01 controller fix turns this red with the firmware's own "UNABLE TO
+# FIND A BOOTABLE DISK ONLINE." Note the slot-6 DiskIICard: a //c+ has an
+# on-board 5.25" drive, and without it the fall-through reads the floating
+# bus and $FF looks like "drive enabled". ROM/disk-gated: SKIPs cleanly.
+
+add_executable(test_iicplus_boot35
+    iicplus_boot35_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iicplus_boot35 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iicplus_boot35 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iicplus_boot35 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iicplus_boot35 PRIVATE winmm)
+endif()
+add_test(NAME iicplus_boot35
+         COMMAND test_iicplus_boot35
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(iicplus_boot35 PROPERTIES TIMEOUT 60 LABELS slow)
+
+
+# ─── The 3.5" GCR read path, end to end, no firmware ──────────────────────
+# blocks → Sony35Drive's zoned encoder → flux → IWMDevice's window walker →
+# $C0EC → decodeSectors → blocks. TODO § Storage asked for this harness
+# BEFORE any card, and it is what found the two 2026-09-01 faults: the IWM
+# running on the CPU clock instead of its own 7.16 MHz one, and a flux query
+# one tick late. Covers all five speed zones on both heads.
+# `POM2_GCR_CONTROL_ONLY=1` runs only the encoder→decoder control, which
+# says in one run whether the format or the controller broke.
+
+add_executable(test_sony35_iwm_read_path
+    sony35_iwm_read_path_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_sony35_iwm_read_path
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_sony35_iwm_read_path PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_sony35_iwm_read_path PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_sony35_iwm_read_path PRIVATE winmm)
+endif()
+add_test(NAME sony35_iwm_read_path COMMAND test_sony35_iwm_read_path)
+set_tests_properties(sony35_iwm_read_path PROPERTIES TIMEOUT 120)
+
+
+
 add_executable(test_iicplus_boot_trace EXCLUDE_FROM_ALL
     iicplus_boot_trace.cpp
     ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp

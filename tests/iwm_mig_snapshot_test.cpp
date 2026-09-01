@@ -72,7 +72,13 @@ void testIwmRoundTrip()
     std::vector<uint8_t> blob;
     a.appendSnapshotState(blob);
     assert(blob.size() > 4);
-    assert(std::memcmp(blob.data(), "IWM1", 4) == 0);
+    // 'IWM2' since 2026-09-01: the state-machine timestamps in this blob are
+    // IWM ticks (7 per CPU cycle) rather than CPU cycles, which is a
+    // different number for the same instant. The magic is what stops an old
+    // blob being restored verbatim and parking the walker seven times too
+    // early — a device frozen until emulated time catches up, which is the
+    // exact failure this file exists to prevent.
+    assert(std::memcmp(blob.data(), "IWM2", 4) == 0);
 
     // A fresh device is at cycle 0 — the exact desync the bug produced.
     pom2::IWMDevice b;

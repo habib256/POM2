@@ -327,6 +327,11 @@ int64_t Sony35Drive::cyclesPerRev() const
     return kCyclesPerRev[zoneForTrack(track_)];
 }
 
+int64_t Sony35Drive::ticksPerRev() const
+{
+    return cyclesPerRev() * POM2_IWM_TICKS_PER_CPU_CYCLE;
+}
+
 void Sony35Drive::invalidateCache() const
 {
     cachedTrack_ = -1;
@@ -388,9 +393,9 @@ int Sony35Drive::decodeAndCommit() const
     return written;
 }
 
-void Sony35Drive::writeFlux(int64_t startCpu, int64_t endCpu,
+void Sony35Drive::writeFlux(int64_t startTick, int64_t endTick,
                             const int64_t* fluxes, int count,
-                            int64_t revStart)
+                            int64_t revStartTick)
 {
     if (!isInserted() || track_ < 0 || track_ >= 80) return;
     if (image_->isWriteProtected()) return;
@@ -399,13 +404,15 @@ void Sony35Drive::writeFlux(int64_t startCpu, int64_t endCpu,
         cachedCyclesPerRev_ <= 0) {
         return;
     }
-    if (endCpu <= startCpu) return;
+    if (endTick <= startTick) return;
 
     const int     n      = cachedCellsPerRev_;
-    const int64_t period = cachedCyclesPerRev_;
+    // Same timeline as the read side: IWM ticks (CpuClock.h).
+    const int64_t period = static_cast<int64_t>(cachedCyclesPerRev_) *
+                           POM2_IWM_TICKS_PER_CPU_CYCLE;
 
-    // Map CPU cycle → cell index inside one revolution (anchored on
-    // `revStart`). Negative offsets wrap forward; offsets ≥ period
+    // Map tick → cell index inside one revolution (anchored on
+    // `revStartTick`). Negative offsets wrap forward; offsets ≥ period
     // wrap modulo. The cell index for a transition at cycle T is the
     // *floor* of (T - revStart) / period × n — the nearest cell-time
     // earlier than or equal to T.
@@ -417,7 +424,7 @@ void Sony35Drive::writeFlux(int64_t startCpu, int64_t endCpu,
     // floor would push every transition one cell earlier and lose
     // address-field markers.
     auto cycleToCell = [&](int64_t cy) -> int {
-        int64_t rel = cy - revStart;
+        int64_t rel = cy - revStartTick;
         rel %= period;
         if (rel < 0) rel += period;
         int cell = static_cast<int>(
@@ -426,12 +433,12 @@ void Sony35Drive::writeFlux(int64_t startCpu, int64_t endCpu,
         return cell;
     };
 
-    const int cellStart = cycleToCell(startCpu);
-    const int cellEnd   = cycleToCell(endCpu);
+    const int cellStart = cycleToCell(startTick);
+    const int cellEnd   = cycleToCell(endTick);
 
     // Clear cells in the write window. The window can wrap around the
     // revolution boundary if the IWM wrote past cell n-1.
-    if (cellStart == cellEnd && endCpu - startCpu >= period) {
+    if (cellStart == cellEnd && endTick - startTick >= period) {
         // Full-track rewrite — clobber everything.
         std::fill(cells_.begin(), cells_.end(), 0);
     } else if (cellStart <= cellEnd) {
@@ -474,28 +481,32 @@ void Sony35Drive::ensureCache() const
     rebuildTransitionsFromCells();
 }
 
-int64_t Sony35Drive::nextTransition(int64_t fromCpuCycle,
-                                    int64_t revStart) const
+int64_t Sony35Drive::nextTransition(int64_t fromTick,
+                                    int64_t revStartTick) const
 {
     ensureCache();
     if (transitionCells_.empty()) return INT64_MAX;
 
-    const int64_t period = cachedCyclesPerRev_;
+    // IWM ticks, seven per CPU cycle (CpuClock.h). At CPU-cycle resolution
+    // this arithmetic quantised a 2.02-cycle cell to 2 or 3 whole cycles,
+    // and the IWM's window walker lost the byte boundary within a sector.
+    const int64_t period = static_cast<int64_t>(cachedCyclesPerRev_) *
+                           POM2_IWM_TICKS_PER_CPU_CYCLE;
     const int     ncells = cachedCellsPerRev_;
     if (period <= 0 || ncells <= 0) return INT64_MAX;
 
-    // Anchor the head: cell 0 was under the head at `revStart`. Find
+    // Anchor the head: cell 0 was under the head at `revStartTick`. Find
     // the relative time inside the current revolution.
-    int64_t rel = fromCpuCycle - revStart;
+    int64_t rel = fromTick - revStartTick;
     int64_t revIdx = rel >= 0 ? (rel / period) : -((-rel + period - 1) / period);
     int64_t relInRev = rel - revIdx * period;
     if (relInRev < 0) { relInRev += period; --revIdx; }
 
     // Convert to cell space. We want the next transition STRICTLY
-    // after `fromCpuCycle`, so look for cell with `cellTime > relInRev`.
+    // after `fromTick`, so look for the cell with `cellTime > relInRev`.
     auto cycleForCell = [period, ncells](int cellIdx) -> int64_t {
-        // Round to nearest CPU cycle. period × cellIdx might overflow
-        // 32 bits but stays inside 64-bit (period ≤ ~156k, ncells ≤ ~77k).
+        // period × cellIdx stays inside 64-bit: period ≤ ~1.1 M ticks,
+        // ncells ≤ ~77 k.
         return (static_cast<int64_t>(cellIdx) * period) / ncells;
     };
 
@@ -509,10 +520,10 @@ int64_t Sony35Drive::nextTransition(int64_t fromCpuCycle,
     }
 
     if (lo < static_cast<int>(transitionCells_.size())) {
-        return revStart + revIdx * period + cycleForCell(transitionCells_[lo]);
+        return revStartTick + revIdx * period + cycleForCell(transitionCells_[lo]);
     }
     // No transition left in this revolution — first event of the next.
-    return revStart + (revIdx + 1) * period + cycleForCell(transitionCells_[0]);
+    return revStartTick + (revIdx + 1) * period + cycleForCell(transitionCells_[0]);
 }
 
 void Sony35Drive::reset()

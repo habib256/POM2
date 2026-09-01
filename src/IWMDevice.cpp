@@ -98,7 +98,7 @@ IWMDevice::IWMDevice()
 void IWMDevice::reset()
 {
     // MAME `iwm.cpp:59-81` device_reset.
-    lastSync_         = now_;
+    lastSync_         = now_ * POM2_IWM_TICKS_PER_CPU_CYCLE;
     nextStateChange_  = 0;
     active_           = MODE_IDLE;
     rw_               = MODE_IDLE;
@@ -281,11 +281,14 @@ void IWMDevice::flushWrite(uint64_t when)
             for (uint32_t i = 0; i < fluxWriteCount_; ++i) {
                 fluxes.push_back(static_cast<int64_t>(fluxWrite_[i]));
             }
+            // Every timestamp here is already in IWM ticks except the
+            // revolution anchor, which is latched from the host clock.
             sony_->writeFlux(static_cast<int64_t>(fluxWriteStart_),
                              static_cast<int64_t>(when),
                              fluxes.empty() ? nullptr : fluxes.data(),
                              static_cast<int>(fluxes.size()),
-                             static_cast<int64_t>(revStart35_));
+                             static_cast<int64_t>(revStart35_) *
+                                 POM2_IWM_TICKS_PER_CPU_CYCLE);
         }
         fluxWriteCount_ = 0;
         if (lastOnEdge) {
@@ -404,8 +407,11 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
                 // moment automatically. No-op on Sony35Drive — 3.5"
                 // images don't carry a splice position.
                 if (disk_) {
+                    // DiskImage speaks LSS cycles (2 per CPU cycle);
+                    // fluxWriteStart_ is in IWM ticks (7 per CPU cycle).
                     disk_->setWriteSplice(qt_,
-                        static_cast<int64_t>(fluxWriteStart_));
+                        (static_cast<int64_t>(fluxWriteStart_) * 2) /
+                            POM2_IWM_TICKS_PER_CPU_CYCLE);
                 }
             }
         }
@@ -456,14 +462,13 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
         rsh_ = 0;
     }
 
-    // Asynchronous mode update scheduling (MAME line 246-247). MAME's `14`
-    // is in IWM-clock ticks (= half a default 28-tick window); POM2 runs the
-    // FSM on the CPU clock and scales every window constant by /7 (see
-    // windowSize / halfWindowSize / readRegisterUpdateDelay). This one was
-    // left raw — 14/7 = 2 — so the async "data goes stale → 0" timer fired
-    // ~7× late on 3.5" async reads.
+    // Asynchronous mode update scheduling (MAME line 246-247). `14` is in
+    // IWM ticks — half a default 28-tick window — which is now the unit the
+    // FSM runs in, so it is MAME's constant unchanged. (It survived the
+    // CPU-cycle era by accident: left raw at 14 it fired 7× late, then
+    // "fixed" to 2, and neither was the hardware's number.)
     if (active_ && !(control_ & 0x80) && !isSync() && (data_ & 0x80)) {
-        asyncUpdate_ = lastSync_ + 2;
+        asyncUpdate_ = lastSync_ + 14;
     }
 
     // Mode register / data register write (MAME line 248-254).
@@ -518,48 +523,46 @@ void IWMDevice::dataW(uint8_t data)
 
 uint64_t IWMDevice::halfWindowSize() const
 {
-    // MAME `iwm.cpp:290-301 half_window_size`, scaled CPU-clock units.
+    // MAME `iwm.cpp:290-301 half_window_size`, VERBATIM — the state machine
+    // is clocked in IWM ticks now (7 per CPU cycle, CpuClock.h), which is
+    // the unit these numbers were always in. They used to be divided by 7
+    // and rounded, which collapsed 14/16 to 2 and 7/8 to 1: two of the four
+    // window settings became indistinguishable, and none of them could place
+    // an edge inside a 14.2-tick Sony cell.
     if (q3ClockActive_) {
         return (mode_ & 0x08) ? 2 : 4;
     }
     switch (mode_ & 0x18) {
-        case 0x00: return 2;     // MAME 14  / 7
-        case 0x08: return 1;     // MAME 7   / 7
-        case 0x10: return 2;     // MAME 16  / 7 (rounded down)
-        case 0x18: return 1;     // MAME 8   / 7 (rounded down)
+        case 0x00: return 14;
+        case 0x08: return 7;
+        case 0x10: return 16;
+        case 0x18: return 8;
     }
-    return 2;
+    return 14;
 }
 
 uint64_t IWMDevice::windowSize() const
 {
-    // MAME `iwm.cpp:302-313 window_size`, scaled CPU-clock units.
+    // MAME `iwm.cpp:302-313 window_size`, VERBATIM. See halfWindowSize.
     if (q3ClockActive_) {
         return (mode_ & 0x08) ? 4 : 8;
     }
     switch (mode_ & 0x18) {
-        case 0x00: return 4;     // MAME 28  / 7
-        case 0x08: return 2;     // MAME 14  / 7
-        case 0x10: return 5;     // MAME 36  / 7 (rounded)
-        case 0x18: return 2;     // MAME 16  / 7 (rounded down)
+        case 0x00: return 28;
+        case 0x08: return 14;
+        case 0x10: return 36;
+        case 0x18: return 18;
     }
-    return 4;
+    return 28;
 }
 
 uint64_t IWMDevice::readRegisterUpdateDelay() const
 {
-    // MAME `iwm.cpp:363-366`: 4 IWM ticks when mode bit 3 is set,
-    // 8 otherwise. The IWM ticks at ~7.16 MHz on a //c+ while POM2
-    // runs everything off `POM2_CPU_CLOCK_HZ` (~1.02 MHz), so the
-    // raw ratio is 1/7. Round-up (ceil) the two values:
-    //   4/7 = 0.57 → 1 CPU cycle
-    //   8/7 = 1.14 → 2 CPU cycles
-    // Round-down would collapse both branches to 1 and erase the
-    // mode-bit distinction, which while sub-CPU-cycle in absolute
-    // terms is still meaningful for relative ordering of register
-    // updates (sync mode polls the data register against this
-    // delay). Round-up at least preserves the mode-bit signal.
-    return (mode_ & 0x08) ? 1 : 2;
+    // MAME `iwm.cpp:363-366`: 4 IWM ticks when mode bit 3 is set, 8
+    // otherwise. Both used to be rounded up into 1 and 2 CPU cycles, which
+    // is a 14 % and a 75 % error on a sub-cycle delay; in ticks they are
+    // simply themselves.
+    return (mode_ & 0x08) ? 4 : 8;
 }
 
 void IWMDevice::writeClockStart()
@@ -568,7 +571,7 @@ void IWMDevice::writeClockStart()
     // the splice cycle.
     if (isSync() && q3Clock_) {
         q3ClockActive_ = true;
-        lastSync_      = now_;
+        lastSync_      = now_ * POM2_IWM_TICKS_PER_CPU_CYCLE;
     }
     fluxWriteStart_ = lastSync_;
     fluxWriteCount_ = 0;
@@ -579,30 +582,37 @@ void IWMDevice::writeClockStop()
     // MAME `iwm.cpp:327-334`.
     if (q3ClockActive_) {
         q3ClockActive_ = false;
-        lastSync_      = now_;
+        lastSync_      = now_ * POM2_IWM_TICKS_PER_CPU_CYCLE;
     }
     fluxWriteStart_ = 0;
 }
 
 int64_t IWMDevice::nextTransition(int64_t from) const
 {
-    // Dispatch by floppy form factor:
-    //  * 3.5" Sony: query Sony35Drive directly. Its flux events are
-    //    already expressed in CPU cycles (the Sony zoned-recording
-    //    keeps the bit-cell rate constant at ~505 kHz so no LSS
-    //    half-cycle scaling is needed).
-    //  * 5.25" Disk II: DiskImage's flux events live in LSS-cycle
-    //    space (= 2× CPU cycles) — see DiskIICard `lssCycle =
-    //    cpuCycleTotal * 2`. We transit the boundary here.
+    // `from` and the return value are IWM ticks. Dispatch by form factor,
+    // and convert at each backend's own boundary:
+    //  * 3.5" Sony: `Sony35Drive` speaks the same tick timeline (that is
+    //    what makes a 2 µs cell 14.2 units wide instead of 2). Only the
+    //    revolution anchor has to be scaled, since it is latched from the
+    //    host's CPU-cycle clock.
+    //  * 5.25" Disk II: `DiskImage`'s flux events live in LSS-cycle space
+    //    (= 2× CPU cycles) — see DiskIICard `lssCycle = cpuCycleTotal * 2`.
+    //    So an LSS cycle is 3.5 ticks. The halving is exact in the
+    //    tick→LSS direction (7 ticks = 2 LSS cycles); the return trip
+    //    rounds down by at most half a tick, which is 1/224 of a 5.25"
+    //    bit cell.
     if (sony_) {
-        const int64_t t = sony_->nextTransition(from, static_cast<int64_t>(revStart35_));
+        const int64_t t = sony_->nextTransition(
+            from, static_cast<int64_t>(revStart35_) *
+                      POM2_IWM_TICKS_PER_CPU_CYCLE);
         if (t != INT64_MAX) return t;
         return noiseTransition(from);
     }
     if (disk_) {
-        const int64_t fromLss = from * 2;
+        const int64_t fromLss = (from * 2) / POM2_IWM_TICKS_PER_CPU_CYCLE;
         const int64_t t = disk_->getNextTransition(qt_, fromLss);
-        if (t != DiskImage::kFluxNever) return t / 2;
+        if (t != DiskImage::kFluxNever)
+            return (t * POM2_IWM_TICKS_PER_CPU_CYCLE) / 2;
     }
     return noiseTransition(from);
 }
@@ -668,7 +678,10 @@ void IWMDevice::sync(uint64_t nowCycles)
         delayDeadline_ = 0;
     }
     if (!active_) return;
-    const uint64_t nextSync = nowCycles;
+    // From here down the clock is IWM TICKS, seven per CPU cycle
+    // (CpuClock.h). Everything crossing back out — the delay deadline
+    // above, `now_`, the snapshot — stays in CPU cycles.
+    const uint64_t nextSync = nowCycles * POM2_IWM_TICKS_PER_CPU_CYCLE;
     switch (rw_) {
         case MODE_IDLE:
             lastSync_ = nextSync;
@@ -678,7 +691,21 @@ void IWMDevice::sync(uint64_t nowCycles)
             int64_t nextFluxChange = 0;
             while (nextSync > lastSync_) {
                 if (nextFluxChange <= static_cast<int64_t>(lastSync_)) {
-                    nextFluxChange = nextTransition(static_cast<int64_t>(lastSync_ + 1));
+                    // MAME asks the floppy for the first transition strictly
+                    // after `m_last_sync` — not after `m_last_sync + 1`. The
+                    // extra tick POM2 used to add silently DROPPED any flux
+                    // landing exactly one tick past the last sync point, and
+                    // that is not a rare alignment: `lastSync_` is parked on
+                    // the caller's poll boundary every time a sync() call runs
+                    // out of time mid-window, so it lands one tick short of a
+                    // transition regularly. `nextFluxChange` is a local reset
+                    // to 0 on every entry, so the recompute happens on every
+                    // call and the same transition is skipped for good — a 1
+                    // bit read as a 0, roughly once every 35 bytes. Invisible
+                    // while the clock was whole CPU cycles (the resolution hid
+                    // it in bigger errors); the dominant fault once the tick
+                    // clock made everything else line up.
+                    nextFluxChange = nextTransition(static_cast<int64_t>(lastSync_));
                     if (nextFluxChange <= static_cast<int64_t>(lastSync_)) {
                         nextFluxChange = static_cast<int64_t>(lastSync_ + 1);
                     }
@@ -763,7 +790,7 @@ void IWMDevice::sync(uint64_t nowCycles)
                         if (mode_ & 0x02) {
                             rwState_         = SW_WINDOW_LOAD;
                             rwBitCount_      = 8;
-                            nextStateChange_ = lastSync_ + 1;  // MAME 7 / 7
+                            nextStateChange_ = lastSync_ + 7;  // MAME's 7 ticks
                         } else {
                             wsh_             = data_;
                             rwState_         = SW_WINDOW_MIDDLE;
@@ -792,11 +819,12 @@ void IWMDevice::sync(uint64_t nowCycles)
                             wsh_             = data_;
                             rwState_         = SW_WINDOW_MIDDLE;
                             whd_            |= 0x80;
-                            // MAME `half_window_size() - 7`; both terms are in
-                            // IWM ticks. POM2 scaled halfWindowSize() by /7 but
-                            // left the 7 raw → halfWindowSize()∈{1,2} - 7
-                            // underflowed in uint64_t. 7/7 = 1.
-                            nextStateChange_ = lastSync_ + halfWindowSize() - 1;
+                            // MAME `half_window_size() - 7`, both terms in IWM
+                            // ticks — which is now the unit, so the constant is
+                            // MAME's again. (Under the old CPU-cycle clock
+                            // halfWindowSize() was 1 or 2 and this underflowed
+                            // in uint64_t until the 7 was scaled to 1 as well.)
+                            nextStateChange_ = lastSync_ + halfWindowSize() - 7;
                         }
                         break;
                     case SW_WINDOW_MIDDLE:
@@ -818,7 +846,7 @@ void IWMDevice::sync(uint64_t nowCycles)
                             if (rwBitCount_ == 0) {
                                 rwState_         = SW_WINDOW_LOAD;
                                 rwBitCount_      = 8;
-                                nextStateChange_ = lastSync_ + 1;  // MAME 7 / 7
+                                nextStateChange_ = lastSync_ + 7;  // MAME's 7 ticks
                             } else {
                                 rwState_         = SW_WINDOW_MIDDLE;
                                 nextStateChange_ = lastSync_ + halfWindowSize();
@@ -843,7 +871,13 @@ void IWMDevice::sync(uint64_t nowCycles)
 // ─────────────────────────────────────────────────────────────────────────
 
 namespace {
-constexpr uint8_t kIwmBlobMagic[4]  = { 'I', 'W', 'M', '1' };
+// 'IWM1' held the state-machine timestamps in CPU cycles. They are IWM ticks
+// since 2026-09-01 (seven per CPU cycle, CpuClock.h), which is a different
+// number for the same instant — restoring a v1 blob verbatim would park the
+// walker seven times too early and freeze the device until emulated time
+// caught up. The loader accepts both and scales.
+constexpr uint8_t kIwmBlobMagic[4]   = { 'I', 'W', 'M', '2' };
+constexpr uint8_t kIwmBlobMagicV1[4] = { 'I', 'W', 'M', '1' };
 }  // namespace
 
 void IWMDevice::appendSnapshotState(std::vector<uint8_t>& out) const
@@ -905,7 +939,8 @@ void IWMDevice::appendSnapshotState(std::vector<uint8_t>& out) const
 bool IWMDevice::loadSnapshotState(const uint8_t* data, size_t n)
 {
     if (data == nullptr || n < 4) return false;
-    if (std::memcmp(data, kIwmBlobMagic, 4) != 0) return false;
+    const bool v1 = std::memcmp(data, kIwmBlobMagicV1, 4) == 0;
+    if (!v1 && std::memcmp(data, kIwmBlobMagic, 4) != 0) return false;
 
     size_t pos = 4;
     bool   ok  = true;
@@ -976,17 +1011,20 @@ bool IWMDevice::loadSnapshotState(const uint8_t* data, size_t n)
     const uint8_t phasesV      = hasPhaseTail ? data[pos]     : 0;
     const uint8_t wdlV         = hasPhaseTail ? data[pos + 1] : 0;
 
+    // v1 wrote the FSM clock in CPU cycles; scale those fields into ticks.
+    // `now_`, `revStart35_` and `delayDeadline_` were and remain CPU cycles.
+    const uint64_t k = v1 ? POM2_IWM_TICKS_PER_CPU_CYCLE : 1;
     now_             = nowV;
     revStart35_      = revV;
-    lastSync_        = lastV;
-    nextStateChange_ = nextV;
-    syncUpdate_      = syncV;
-    asyncUpdate_     = asyncV;
-    fluxWriteStart_  = fluxStart;
+    lastSync_        = lastV * k;
+    nextStateChange_ = nextV * k;
+    syncUpdate_      = syncV * k;
+    asyncUpdate_     = asyncV * k;
+    fluxWriteStart_  = fluxStart * k;
     delayDeadline_   = delayV;
 
     fluxWrite_.fill(0);
-    for (uint32_t i = 0; i < fwCount; ++i) fluxWrite_[i] = flux[i];
+    for (uint32_t i = 0; i < fwCount; ++i) fluxWrite_[i] = flux[i] * k;
     fluxWriteCount_ = fwCount;
 
     q3Clock_       = q3;

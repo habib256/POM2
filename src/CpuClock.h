@@ -36,6 +36,28 @@ inline constexpr int POM2_CPU_CYCLES_PER_MILLISECOND = (POM2_CPU_CLOCK_HZ + 500)
 // relies on frames staying bounded.
 inline constexpr int POM2_MAX_CYCLES_PER_FRAME = 2'000'000;
 
+// ── The IWM's own clock ─────────────────────────────────────────────────
+//
+// The Integrated Wozniak Machine does not run on the CPU clock. On a //c /
+// //c+ it is wired to A2BUS_7M — 14.31818 MHz / 2 = 7.159 MHz — which is
+// EXACTLY seven times the 6502's 14.31818/14. That factor of seven is why
+// MAME's window constants (28 / 14 / 36 / 18 ticks) can be used verbatim
+// once POM2 counts in the same unit.
+//
+// It matters because of the 3.5" Sony drive, and only there. A 5.25" bit
+// cell is 4 µs ≈ 4 CPU cycles, so a state machine clocked in whole CPU
+// cycles has four samples per cell and enough room to place a window edge.
+// A Sony cell is 2 µs = **2.02 CPU cycles**: two samples, and a resync that
+// can only land on a cycle boundary is half a cell out. Measured
+// consequence, before this constant existed: ~4 address fields recovered per
+// revolution and zero complete sectors, while the same track decoded 12/12
+// with no IWM in the path (`tests/sony35_iwm_read_path_test.cpp`).
+//
+// So `IWMDevice`'s state-machine clock and `Sony35Drive`'s flux timeline are
+// both denominated in these ticks. Everything crossing back out to the rest
+// of POM2 — `tick()`, snapshots, the sound sinks — stays in CPU cycles.
+inline constexpr int POM2_IWM_TICKS_PER_CPU_CYCLE = 7;
+
 // ── Video standard (machine timing) ─────────────────────────────────────
 //
 // NTSC and PAL Apple IIs differ in the *whole machine clock*, not just the
