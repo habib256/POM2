@@ -52,6 +52,24 @@ std::filesystem::path executableDir();
 /// durable application output.
 std::filesystem::path userDataDir();
 
+/// Writable per-user POM2 **configuration** directory — where `state.cfg`
+/// and `imgui.ini` live. Distinct from userDataDir() on purpose: on Linux
+/// the config dir follows `XDG_CONFIG_HOME` (`~/.config/POM2`) while data
+/// follows `XDG_DATA_HOME` (`~/.local/share/POM2`), and moving either would
+/// orphan every existing user's settings.
+///
+/// Returns an EMPTY path when no directory could be created, which is a
+/// meaningful answer: callers fall back to a dotfile in `$HOME` or to the
+/// working directory. Not cached — the environment it reads can change
+/// under a test, and it is called a handful of times per session.
+///
+/// Under Emscripten this is `/persistent`, the IDBFS mount the shell page
+/// sets up before the runtime starts. That is the ONLY writable location
+/// in the browser that survives a reload: everything else is MEMFS, which
+/// is a fresh empty filesystem on every visit. See PersistentFs.h for the
+/// other half — a write to IDBFS is not durable until an `FS.syncfs`.
+std::filesystem::path userConfigDir();
+
 /// Ordered, de-duplicated base directories searched for bundled assets.
 /// Search order (first hit wins):
 ///   1. per-user data dir          — explicit override (XDG / LOCALAPPDATA)

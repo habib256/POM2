@@ -211,6 +211,7 @@ set(SOURCES
     src/JoystickPanel_ImGui.cpp
     src/LeChatMauveCard.cpp
     src/LeChatMauve_ImGui.cpp
+    src/LironCard.cpp
     src/M68705P3.cpp
     src/MainWindow.cpp
     src/MainWindow_MemoryMaps.cpp
@@ -227,6 +228,7 @@ set(SOURCES
     src/MainWindow_Screen.cpp
     src/MainWindow_Input.cpp
     src/MainWindow_SlotConfig.cpp
+    src/MainWindow_Session.cpp
     src/PanelRegistry.cpp
     # Host-policy coordinators ported from refactor/core-boundaries-and-coordinators.
     # Renderer-free value/command boundaries over SlotBus + EmulationController;
@@ -273,7 +275,6 @@ set(SOURCES
     src/ProDOSHardDiskCard.cpp
     src/ProDOSVolume.cpp
     src/ResourcePaths.cpp
-    src/RomLoader.cpp
     src/FloppyEmuDevice.cpp
     src/FloppyEmu_ImGui.cpp
     src/Settings.cpp
@@ -375,6 +376,7 @@ set(POM2_DEVICES_SOURCES
     src/FujiNetCard.cpp
     src/GrapplerCard.cpp
     src/LeChatMauveCard.cpp
+    src/LironCard.cpp
     src/M68705P3.cpp
     src/MC6821.cpp
     src/Mockingboard.cpp
@@ -425,9 +427,11 @@ set(POM2_FOUNDATION_HEADERS
     src/Logger.h
     src/NetworkBackend.h
     src/NetworkValues.h
+    src/PersistentFs.h
     src/Pom2Build.h
     src/PrinterSoundSink.h
     src/SerialPort.h
+    src/SettingsList.h
 )
 
 set(POM2_FRONTEND_HEADERS
@@ -502,6 +506,7 @@ set(POM2_FRONTEND_SOURCES
     src/MainWindow_Screen.cpp
     src/MainWindow_Input.cpp
     src/MainWindow_SlotConfig.cpp
+    src/MainWindow_Session.cpp
     src/MemoryViewer_ImGui.cpp
     src/NtscPostProcessor.cpp
     src/CrtEffectStack.cpp
@@ -622,7 +627,6 @@ set(POM2_RUNTIME_SOURCES
     src/PrinterScreenDump.cpp
     src/PrinterSoundDevice.cpp
     src/RewindBuffer.cpp
-    src/RomLoader.cpp
     src/SlirpNetworkBackend.cpp
     src/SpOverSlipLink.cpp
     src/SpSerialTransport.cpp
@@ -685,6 +689,7 @@ set(HEADERS
     src/JoystickPanel_ImGui.h
     src/IconsFontAwesome6.h
     src/LeChatMauveCard.h
+    src/LironCard.h
     src/LeChatMauve_ImGui.h
     src/M68705P3.h
     src/MainWindow.h
@@ -716,9 +721,10 @@ set(HEADERS
     src/ProDOSVolume.h
     src/Logger.h
     src/Settings.h
+    src/SettingsList.h
+    src/PersistentFs.h
     src/CpuClock.h
     src/ResourcePaths.h
-    src/RomLoader.h
     src/FloppyEmuDevice.h
     src/FloppyEmu_ImGui.h
     src/SlotBus.h
@@ -1147,6 +1153,7 @@ set(POM2_CORE_SOURCES
     src/CharRomCatalog.cpp
     src/CharRomDump.cpp
     src/LeChatMauveCard.cpp
+    src/LironCard.cpp
     src/M68705P3.cpp
     src/AudioCoordinator.cpp
     src/DevicePanelCoordinator.cpp
@@ -1174,7 +1181,6 @@ set(POM2_CORE_SOURCES
     src/ProDOSHardDiskCard.cpp
     src/ProDOSVolume.cpp
     src/ResourcePaths.cpp
-    src/RomLoader.cpp
     src/FloppyEmuDevice.cpp
     src/Settings.cpp
     src/SlotBus.cpp
@@ -1353,7 +1359,6 @@ add_executable(pom2_headless
     src/NoSlotClock.cpp
     src/ResourcePaths.cpp
     src/RewindBuffer.cpp
-    src/RomLoader.cpp
     src/SlotBus.cpp
     src/SnapshotIO.cpp
     src/SpeakerDevice.cpp
@@ -1423,7 +1428,6 @@ add_executable(pom2_bench
     src/MemoryProfile_IIcClass.cpp
     src/NoSlotClock.cpp
     src/ResourcePaths.cpp
-    src/RomLoader.cpp
     src/SlotBus.cpp
     src/SmartPortHub.cpp
     src/SnapshotIO.cpp

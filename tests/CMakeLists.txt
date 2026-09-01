@@ -82,7 +82,6 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
     ${CMAKE_SOURCE_DIR}/src/SnapshotIO.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
@@ -508,6 +507,133 @@ if(WIN32)
 endif()
 add_test(NAME smartport_35_smoke COMMAND test_smartport_35)
 set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
+
+
+# ─── The SmartPort BUS protocol, as far as POM2 speaks it ────────────────
+# `liron_boot35` below pins the card with its bus responder OFF (a Liron with
+# an empty port, which is what ships). This one pins it ON: the firmware sees
+# a device, sends its command packet, and reads back a decoded, checksummed
+# reply. Every step of the frame was read out of `roms/liron.rom` with POM2's
+# own disassembler, and every one of them is easy to break silently — a
+# mis-framed decoder still hands back a reply and still looks fine until
+# block numbers matter, so the decoded command is asserted too.
+
+add_executable(test_smartport_bus_handshake
+    smartport_bus_handshake_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LironCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_smartport_bus_handshake
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_bus_handshake PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_bus_handshake PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_bus_handshake PRIVATE winmm)
+endif()
+add_test(NAME smartport_bus_handshake
+         COMMAND test_smartport_bus_handshake
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(smartport_bus_handshake PROPERTIES TIMEOUT 30)
+
+
+# ─── The Liron card, and the wall it hits ─────────────────────────────────
+# The real 4 KB EPROM on a real 6502 over a real IWM. It does NOT boot, and
+# the test pins exactly what IS real — ROM identity, the per-slot page, the
+# probe reaching the drive — because the missing piece is a SmartPort BUS
+# responder, not the card. `POM2_LIRON_BOOT_STRICT=1` is the acceptance test
+# waiting for it. ROM-gated: SKIPs cleanly without roms/liron.rom.
+
+add_executable(test_liron_boot35
+    liron_boot35_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LironCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_liron_boot35 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_liron_boot35 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_liron_boot35 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_liron_boot35 PRIVATE winmm)
+endif()
+add_test(NAME liron_boot35
+         COMMAND test_liron_boot35
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(liron_boot35 PROPERTIES TIMEOUT 60 LABELS slow)
+
+
+# ─── The //c+ boots an 800K disk with its OWN firmware ────────────────────
+# Not the host-served SmartPort substitute at slot 5 (`iic_onboard_smartport_
+# smoke` pins that): the ROM drives the MIG, the MIG selects the drive, the
+# IWM walks the bit cells. Mutation-checked — restoring either half of the
+# 2026-09-01 controller fix turns this red with the firmware's own "UNABLE TO
+# FIND A BOOTABLE DISK ONLINE." Note the slot-6 DiskIICard: a //c+ has an
+# on-board 5.25" drive, and without it the fall-through reads the floating
+# bus and $FF looks like "drive enabled". ROM/disk-gated: SKIPs cleanly.
+
+add_executable(test_iicplus_boot35
+    iicplus_boot35_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iicplus_boot35 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iicplus_boot35 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iicplus_boot35 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iicplus_boot35 PRIVATE winmm)
+endif()
+add_test(NAME iicplus_boot35
+         COMMAND test_iicplus_boot35
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(iicplus_boot35 PROPERTIES TIMEOUT 60 LABELS slow)
+
+
+# ─── The 3.5" GCR read path, end to end, no firmware ──────────────────────
+# blocks → Sony35Drive's zoned encoder → flux → IWMDevice's window walker →
+# $C0EC → decodeSectors → blocks. TODO § Storage asked for this harness
+# BEFORE any card, and it is what found the two 2026-09-01 faults: the IWM
+# running on the CPU clock instead of its own 7.16 MHz one, and a flux query
+# one tick late. Covers all five speed zones on both heads.
+# `POM2_GCR_CONTROL_ONLY=1` runs only the encoder→decoder control, which
+# says in one run whether the format or the controller broke.
+
+add_executable(test_sony35_iwm_read_path
+    sony35_iwm_read_path_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_sony35_iwm_read_path
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_sony35_iwm_read_path PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_sony35_iwm_read_path PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_sony35_iwm_read_path PRIVATE winmm)
+endif()
+add_test(NAME sony35_iwm_read_path COMMAND test_sony35_iwm_read_path)
+set_tests_properties(sony35_iwm_read_path PROPERTIES TIMEOUT 120)
+
 
 
 add_executable(test_iicplus_boot_trace EXCLUDE_FROM_ALL
@@ -1167,6 +1293,7 @@ set_tests_properties(prodos_volume_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_settings_roundtrip
     settings_roundtrip_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_settings_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME settings_roundtrip COMMAND test_settings_roundtrip)
@@ -1599,7 +1726,6 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
     ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
@@ -3976,7 +4102,6 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4022,7 +4147,6 @@ add_executable(test_mockingboard_audio_quality
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_audio_quality PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4072,7 +4196,6 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_sync PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4120,7 +4243,6 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_4am_detect PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4169,7 +4291,6 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_irq_delivery PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4218,7 +4339,6 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_iie_irq PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -5415,7 +5535,6 @@ add_executable(test_mockingboard_timeline
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_timeline PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -6075,6 +6194,25 @@ set_property(TEST pom2_core_sdk_consumer APPEND PROPERTY LABELS slow)
 # failures are REACHABLE. Every card test can only assert its layout flag is
 # clear, which an assembler whose finish() was `return true` would also
 # satisfy.
+# ─── The character-ROM catalog: keys, banks, and the profile partition ────
+# 0 % covered until 2026-09-01 — reachable only from the UI, yet what it
+# holds is a persistence contract (state.cfg stores the string key) written
+# out three times: the catalog vector, the enum→key switch, the key→enum
+# chain. A locale missing from the third reads back as ProfileDefault, so
+# the user's localised char ROM silently reverts on the next launch.
+
+add_executable(test_char_rom_catalog
+    char_rom_catalog_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_char_rom_catalog PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME char_rom_catalog
+         COMMAND test_char_rom_catalog
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(char_rom_catalog PROPERTIES TIMEOUT 10)
+
+
 add_executable(test_slot_rom_asm slot_rom_asm_test.cpp)
 target_include_directories(test_slot_rom_asm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME slot_rom_asm COMMAND test_slot_rom_asm)

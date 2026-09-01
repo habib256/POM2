@@ -2765,6 +2765,114 @@ MIG-driven `m_35sel/m_intdrive/m_hdsel` (MAME `apple2e.cpp:638-679
 recalc_active_device`). `senseR()` returns active-low register file
 (`/INSERTED`, `/TRACK0`, `/READY`, `/MOTOR ON`, `/SWITCHED`, …).
 
+*The read path through the IWM works, and here is the test that says so*
+(2026-09-01). `tests/sony35_iwm_read_path_test.cpp` drives the whole chain —
+`Disk35Image` blocks → the zoned GCR encoder → flux → `IWMDevice`'s bit-cell
+window walker → `$C0EC` polls → `sony35::decodeSectors` → blocks — with no
+firmware anywhere in it, over all five speed zones on both heads. Set
+`POM2_DUMP_GCR=1` for the per-mode and per-track tables;
+`POM2_GCR_CONTROL_ONLY=1` runs only the encoder→decoder control, which is what
+to reach for if it ever fails: it says in one run whether the format or the
+controller broke.
+
+It was built as a diagnostic and it found two faults, in this order, the
+second only visible once the first was fixed:
+
+1. **The IWM was clocked in whole CPU cycles.** It is wired to A2BUS_7M on a
+   //c — 7.159 MHz, exactly 7× the 6502 — and POM2 had divided MAME's window
+   constants by 7 (28/14 → 4/2, 36/18 → 5/2), which made two of the four
+   settings identical and left no way to place a window edge inside a
+   2.02-cycle Sony cell. The state machine and `Sony35Drive`'s flux timeline
+   now count in `POM2_IWM_TICKS_PER_CPU_CYCLE` units (CpuClock.h) and MAME's
+   constants are verbatim. 4 → 17 address fields of 24, still zero sectors.
+2. **A flux query one tick late.** `nextTransition(lastSync_ + 1)` where MAME
+   asks from `lastSync_`, so a transition landing exactly one tick past the
+   last sync point was dropped — and `nextFluxChange` is a local reset on
+   every `sync()` entry, so it was dropped for good. `lastSync_` parks on the
+   caller's poll boundary whenever a `sync()` runs out of time mid-window, so
+   this fired about once every 35 bytes: fine for an 8-byte address field,
+   fatal for a 700-byte data field.
+
+Only IWM mode $0A reads a Sony disk, and that is correct rather than a
+limitation: it selects the 14-tick window and the cell is 14.17 ticks. $02 and
+$12 (28 and 36 ticks) are the 4 µs 5.25" settings.
+
+Consequences: snapshot blobs are **`IWM2`** (the FSM stamps are ticks — a
+different number for the same instant; the loader still takes `IWM1` and
+scales), and `Sony35Drive::writeFlux`/`nextTransition` take ticks, because
+read and write must share one timeline or a write lands on a different cell
+than the read that verifies it.
+
+**And the //c+ firmware drives all of it** — pinned separately by
+`iicplus_boot35`, which cold-boots the real ROM with an 800K image in the
+internal bay and asserts ProDOS reaches the text page, the motor ran and the
+head left track 0. On the pre-fix controller the same harness gets the
+firmware's own `UNABLE TO FIND A BOOTABLE DISK ONLINE.` with the head on
+track 0. One trap in writing such a harness: plug a `DiskIICard` into slot 6
+even with no 5.25" media. `IIcClassProfile::ioReadIWM` falls through to that
+card whenever a 3.5" drive is not selected, and an empty slot answers with the
+floating bus — $FF, whose bit 5 reads as "drive enabled", sending the firmware
+down a branch the real machine never takes.
+
+Three traps the harness hit, all of which produce a false conclusion about the
+hardware if you miss them: stepping the head while side 1 is selected silently
+addresses registers 8-F (`regSelect()` is `{ HDSEL, CA2, CA1, CA0 }`, so
+"step" becomes "MFM mode on" and the head never moves); the mode register is
+written by an odd-offset write with **both** Q6 and Q7 set, so a sweep that
+gets that wrong measures mode $00 every time; and the IWM's `sync()` walker
+only moves forward, so handing it a timestamp older than one it already
+reached returns an empty stream for the rest of the run.
+
+*`LironCard` — the same hardware as `SmartPortCard`, at the other level*
+(2026-09-01). `SmartPortCard` answers ProDOS's block calls from the host and
+borrows only the Liron dump's identity bytes; it works and is what a user
+should plug. `LironCard` is the card as silicon: the real 4 KB EPROM
+executing, an `IWMDevice` behind `$C0nX`, Sony mechanisms under the head.
+Wiring differs from the //c+ in exactly one place — a Liron has no MIG, so the
+IWM's SEL line is head select (and bit 3 of the Sony register address), where
+`SmartPortHub` uses the MIG's `$C240/$C260`.
+
+It runs the firmware and does **not** boot, for a reason that is not the GCR
+path: the scan at `$C800` drives PH1 + LSTRB high, asserts SEL and the motor,
+polls the status register 50× for SENSE, and reports ProDOS `$28` on timeout.
+That is the SmartPort **bus** handshake — only an intelligent device (UniDisk
+3.5, own 65C02) answers it, and the scan has no dumb-drive fallback. The plain
+//c's bank-1 firmware is the same code byte for byte (`$C88C` ≡ the Liron's
+`$C806`), so both remaining 3.5" items need one thing: a SmartPort bus-level
+responder. → `TODO.md` § Storage. Pinned by `liron_boot35`
+(`POM2_LIRON_BOOT_STRICT=1` demands the boot, for whoever writes it). The card
+is intentionally absent from the slot catalog until then.
+
+Two card-side bugs the real firmware exposed, both worth knowing when wiring
+any IWM card: the phase lines must reach EVERY drive on the chain, not only
+the selected one (the firmware sets the register address up before enabling a
+drive); and `devsel` must not pick the drive on a Liron, because SEL is head
+select there.
+
+*The bus responder* (`LironCard::setBusResponderEnabled`, **off** by default).
+The SmartPort bus exchange is a byte stream through the IWM's data register,
+so POM2 answers it at the byte level rather than modulating flux — the same
+seam `SmartPortCard` uses one layer up (docs/lle_vs_hle.md). Implemented and
+pinned (`smartport_bus_handshake`): the presence handshake, the command packet
+DECODED, and a framed reply with the real group encoding and checksum. The
+enumeration accepts the device and stops scanning. What is missing is the
+content of the status reply — the firmware does not go on to the boot's block
+read — not the wire, whose checksum POM2 computes to the same byte the
+firmware holds in `$40`. Protocol map with ROM addresses in `TODO.md` §
+Storage; `POM2_TRACE_SMARTPORT_BUS=1` prints every byte in both directions.
+
+Four behaviours worth knowing before touching it. First, the one that reads
+like a checksum failure and is not: the enumeration's reply buffer is a few
+bytes of ZERO PAGE, so answering its `$05` with a 512-byte block walks over
+`$004B`/`$004C` — the fields that say how long the packet is. Look at the
+command before choosing a payload. Then the three wire ones: the write
+handshake's bit 6 is an underrun flag the firmware waits to see **clear**
+(answer `$80`, not `$C0`, or it hangs in the drain loop at `$C92C`); SENSE is
+an attention line with three states per transaction (high for presence, low to
+acknowledge the command, high when the reply is ready); and the firmware
+leaves PH1 and LSTRB asserted across the whole exchange, so there is no edge to
+trigger the reply on — its read of `$C0nD` at `$C97A` is the cue.
+
 *WOZ (flux) images* (2026-08-18). A `.woz` holds bit CELLS, and POM2
 stores 3.5" media as a flat block array with no GCR *encoder* — so a flux
 dump has nothing to be mounted as unless it is decoded at LOAD time.
@@ -6238,9 +6346,11 @@ is invisible in practice.
   grows on demand; 128 MiB is enough for a IIe with RamWorks III
   + a few mounted HDV images.
 - `-lidbfs.js` + `-sFORCE_FILESYSTEM=1` — IndexedDB-backed filesystem
-  mountable at `/persistent` via `FS.mount(IDBFS, …)` in the shell
-  preRun hook (see `wasm/shell.html`). **Not yet wired to
-  `Settings.cpp`** — see TODO 🟡 [WASM] IDBFS settings persistence.
+  mounted at `/persistent` by the shell preRun hook
+  (`wasm/shell.html`), and **that is where `state.cfg` and `imgui.ini`
+  go** since 2026-09-01 (`pom2::userConfigDir()`). See
+  [§ Browser persistence](#browser-persistence-idbfs) for the three
+  parts, none of which is optional.
 - `--preload-file roms@/roms …` — `roms`, plus the default extras
   `fonts;pic;floppyemu` (`POM2_WASM_BUNDLE`), baked into `POM2.data`
   at build time. The 3.5" library is opt-in via
@@ -6258,6 +6368,50 @@ Emscripten now that Windows is a full host-socket target):
 |---|---|---|
 | Super Serial Card TCP listener (`SuperSerialCard.cpp:168`, `:225`, `:255`, `:270`, `:451`) | `startListening` returns false + logs; `acceptClient`/`pollRx`/`writeTx` no-op | ACIA still emulated — software inside the Apple II can still PR#2 / read $C0A9; just no host network bridge |
 | AiControlServer HTTP listener (`AiControlServer.cpp:305+`) | `start()` returns false; `stop()` no-op | None — entire feature is a host-side control plane |
+
+### Browser persistence (IDBFS)
+
+Three parts, and the build is broken in a different way if any one of them is
+missing. Landed 2026-09-01; the reasoning is in `CHANGELOG.md`.
+
+1. **Where** — `pom2::userConfigDir()` (`ResourcePaths.cpp`) returns
+   `/persistent` under `__EMSCRIPTEN__` and the platform config dir
+   elsewhere. `Settings::resolveStorePath()` and main.cpp's `imgui.ini`
+   both go through it; they used to be two copies of the platform dance,
+   and the copies had already drifted under Emscripten.
+2. **When it becomes durable** — `PersistentFs.h`. A write to IDBFS lands
+   in the mount's memory image and reaches IndexedDB only on
+   `FS.syncfs(false, …)`. Writers call `markPersistentStateDirty()`; the
+   frame loop calls `pumpPersistentState()`, which debounces to one flush
+   per 2 s and never overlaps two. `flushPersistentStateNow()` skips the
+   debounce for the page's `visibilitychange`/`pagehide`.
+3. **Who calls the writer** — nobody, without
+   `MainWindow::persistSession()` (`MainWindow_Session.cpp`). The browser
+   never destroys its MainWindow:
+   `emscripten_set_main_loop_arg(..., simulate_infinite_loop=1)` unwinds
+   `main()` without running the destructors of its locals, by design. The
+   desktop calls `persistSession()` from `~MainWindow()`; the browser calls
+   it on a 10 s heartbeat and from `pom2_persist_now()` (exported
+   `EMSCRIPTEN_KEEPALIVE`, wired to the page's lifecycle events). The
+   heartbeat is affordable because `Settings::save()` skips a save whose
+   content matches the last one it wrote.
+
+**The startup ordering, and why it carries a watchdog.** `FS.syncfs(true, …)`
+is asynchronous, so the shell holds `run()` back with `addRunDependency` until
+the populate finishes — otherwise `Settings::load()` can read an empty mount.
+The failure mode of that fix is worse than the bug: a callback that never
+fires means the dependency is never released and **the emulator never starts**
+(splash up, no frame). A 5 s watchdog releases it regardless. Seen for real
+during testing, not theorised.
+
+**Testing it.** Two traps, both cost time:
+
+- Headless Chrome reports the page as `hidden`, so `requestAnimationFrame`
+  never fires and POM2's frame loop — CPU, render, persistence — does not run
+  at all. CDP `Emulation.setFocusEmulationEnabled {enabled:true}` fixes it.
+- `wasm/shell.html` is **not** a link dependency. Editing it alone rebuilds
+  nothing and you keep serving the previous page. Touch a source file.
+
 
 The symbols stay declared so every caller still links — only the
 implementation degrades. **Rule for editors of these two files**

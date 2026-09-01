@@ -18,7 +18,9 @@
 //
 // Stored at `${HOME}/.config/POM2/state.cfg` (or `${HOME}/.pom2_state`
 // fallback when XDG dirs aren't available; or in `./pom2_state.cfg` when
-// HOME itself is unset). Plain `key=value` lines, one per setting.
+// HOME itself is unset) — the directory comes from `pom2::userConfigDir()`,
+// which is also where `imgui.ini` goes, and which is `/persistent` (the
+// IDBFS mount) under Emscripten. Plain `key=value` lines, one per setting.
 // Unknown keys are preserved on round-trip so a future binary that drops
 // a setting doesn't lose user data; unknown keys are simply ignored on
 // the get-side.
@@ -50,6 +52,13 @@ public:
 
     /// Persist the current key/value store. Atomic rename. Returns true
     /// on success; logs a warning on failure (no exceptions).
+    ///
+    /// A save whose content matches the last one this process wrote is
+    /// skipped — it would rewrite the file byte for byte. That is what lets
+    /// the browser build call the whole persist path on a heartbeat (its
+    /// MainWindow is never destroyed, so there is no "on exit" moment) at the
+    /// cost of a map comparison rather than a file write and an IndexedDB
+    /// round-trip per beat.
     bool save() const;
 
     /// Suppress ALL writes (kiosk). Set once when the session is or
@@ -71,12 +80,23 @@ public:
     void setInt   (const std::string& key, int    value);
     void setFloat (const std::string& key, float  value);
 
+    /// True when the store holds no keys — i.e. `load()` found no file, or
+    /// found an empty one. The honest test for "is this a first run?", used
+    /// by the browser build to decide whether a returning visitor's panel
+    /// layout should be honoured or replaced by the chrome-light default.
+    bool empty() const { return store.empty(); }
+
     /// Resolved file path (visible in About / log).
     std::string getStorePath() const;
 
 private:
     std::map<std::string, std::string> store;
     bool readOnly_ = false;   // see setReadOnly()
+    /// Snapshot of `store` as of the last successful write, and whether there
+    /// has been one. Mutable because save() is const — it does not change what
+    /// the store holds, only what is known about the file.
+    mutable std::map<std::string, std::string> lastWritten_;
+    mutable bool hasWritten_ = false;
 };
 
 } // namespace pom2

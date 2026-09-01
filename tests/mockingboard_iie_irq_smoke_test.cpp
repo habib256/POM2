@@ -44,7 +44,6 @@
 #include "Memory.h"
 #include "M6502.h"
 #include "Mockingboard.h"
-#include "RomLoader.h"
 
 #include <cassert>
 #include <cstdint>

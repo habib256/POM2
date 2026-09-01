@@ -495,10 +495,16 @@ void testFluxWriteBackRoundTrip()
     srcDrv.notifyMediaChange();
     const auto cells  = srcDrv.debugCellStream();
     const int  ncells = srcDrv.cellsPerRev();
-    const int64_t per = srcDrv.cyclesPerRev();
+    // IWM TICKS, not CPU cycles (2026-09-01). The drive's flux timeline moved
+    // to the controller's own 7.16 MHz clock because a 2 µs Sony cell is only
+    // 2.02 CPU cycles wide and the IWM's window walker could not place an
+    // edge inside one — see CpuClock.h and `sony35_iwm_read_path`. The write
+    // side has to speak the same unit as the read side or a write lands on a
+    // different cell than the read that verifies it.
+    const int64_t per = srcDrv.ticksPerRev();
     assert(static_cast<int>(cells.size()) == ncells);
 
-    // ── Build flux event list: every "1" cell → CPU-cycle timestamp ──
+    // ── Build flux event list: every "1" cell → tick timestamp ──
     std::vector<int64_t> flux;
     flux.reserve(static_cast<size_t>(ncells) / 4);
     for (int i = 0; i < ncells; ++i) {
@@ -522,11 +528,11 @@ void testFluxWriteBackRoundTrip()
     assert(std::memcmp(srcBlock0, before, pom2::Disk35Image::kBlockBytes) != 0);
 
     // ── Splice the source flux into the destination drive ──
-    dstDrv.writeFlux(/*startCpu*/ 0,
-                     /*endCpu  */ per,
+    dstDrv.writeFlux(/*startTick*/ 0,
+                     /*endTick  */ per,
                      flux.data(),
                      static_cast<int>(flux.size()),
-                     /*revStart*/ 0);
+                     /*revStartTick*/ 0);
 
     // ── Verify the destination image now mirrors the source on
     //    block 0 (and the rest of the encoded track too). The
@@ -570,7 +576,7 @@ void testFluxWriteBackWriteProtect()
     srcDrv.notifyMediaChange();
     const auto cells  = srcDrv.debugCellStream();
     const int  ncells = srcDrv.cellsPerRev();
-    const int64_t per = srcDrv.cyclesPerRev();
+    const int64_t per = srcDrv.ticksPerRev();   // ticks, like the read side
     std::vector<int64_t> flux;
     for (int i = 0; i < ncells; ++i) {
         if (cells[i]) flux.push_back((static_cast<int64_t>(i) * per) / ncells);

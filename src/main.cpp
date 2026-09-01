@@ -32,6 +32,7 @@
 #include "CassetteDevice.h"
 #include "ChildProcess.h"
 #include "Disk35Image.h"
+#include "PersistentFs.h"
 #include "ResourcePaths.h"
 #include "SystemProfile.h"
 
@@ -188,6 +189,31 @@ static void glfw_drop_callback(GLFWwindow* w, int count, const char** paths)
         mw->onFileDrop(count, paths);
     }
 }
+
+#ifdef __EMSCRIPTEN__
+namespace {
+/// The window the page's lifecycle events persist. Set once the frame loop is
+/// about to start; null before that, and never cleared — the browser build
+/// never tears its MainWindow down (see MainWindow_Session.cpp).
+MainWindow* gPersistTarget = nullptr;
+/// Seconds between two heartbeat persists. The desktop writes this state once,
+/// at exit; the browser has no exit, so it writes it on a clock. Long enough
+/// that an idle tab is doing nothing measurable, short enough that a visitor
+/// who changes something and closes the tab a moment later keeps it.
+constexpr double kBrowserPersistSeconds = 10.0;
+} // namespace
+
+/// Called from wasm/shell.html on `visibilitychange` → hidden and on
+/// `pagehide`: the last moments a browser reliably gives a page. Writes the
+/// session and asks for an immediate flush — both best-effort, which is why
+/// the heartbeat above exists rather than relying on this.
+extern "C" EMSCRIPTEN_KEEPALIVE void pom2_persist_now()
+{
+    if (!gPersistTarget) return;
+    gPersistTarget->persistSession();
+    pom2::flushPersistentStateNow();
+}
+#endif
 
 int main(int argc, char* argv[])
 {
@@ -348,30 +374,45 @@ int main(int argc, char* argv[])
     // right column). Subsequent launches restore whatever the user
     // dragged into place. Falls back to the cwd `imgui.ini` if $HOME
     // isn't set (matches Settings's fallback path).
-    bool disableImguiIni = plan->kiosk;
-#ifdef __EMSCRIPTEN__
-    disableImguiIni = true;
-#endif
-    if (disableImguiIni) {
-        // Kiosk and WASM use deterministic startup layouts and should not
-        // restore/overwrite the user's desktop GUI window placement.
+    // Kiosk keeps a deterministic startup layout and must not restore or
+    // overwrite the user's desktop window placement. WASM used to be lumped
+    // in with it for the same reason — but "deterministic" there meant "the
+    // browser build cannot remember anything", which is the bug, not the
+    // policy. It now persists like the desktop, into the IDBFS mount; a
+    // visitor who drags the panels into a mess still has View → Layout to
+    // get back to a curated one.
+    static std::string iniPath;
+    if (plan->kiosk) {
         io.IniFilename = nullptr;
     } else {
-        static std::string iniPath;
         namespace fs = std::filesystem;
-        if (const char* home = std::getenv("HOME"); home && *home) {
-            fs::path xdg = fs::path(home) / ".config" / "POM2";
-            std::error_code ec;
-            fs::create_directories(xdg, ec);
-            if (!ec && fs::is_directory(xdg, ec)) {
-                iniPath = (xdg / "imgui.ini").string();
-            } else {
-                iniPath = (fs::path(home) / ".pom2_imgui.ini").string();
-            }
+        // Same directory as state.cfg, from the same function — the copy of
+        // the platform dance that used to live here drifted from Settings's
+        // under Emscripten, which is how the browser build ended up writing
+        // its layout to a filesystem that does not survive a reload.
+        if (const fs::path dir = pom2::userConfigDir(); !dir.empty()) {
+            iniPath = (dir / "imgui.ini").string();
+        } else if (const char* home = std::getenv("HOME"); home && *home) {
+            iniPath = (fs::path(home) / ".pom2_imgui.ini").string();
         } else {
             iniPath = "imgui.ini";
         }
+#ifdef __EMSCRIPTEN__
+        // Manual ini handling in the browser. Not a style preference: with
+        // `IniFilename` set, ImGui writes the file from inside NewFrame and
+        // tells nobody, and a write to the IDBFS mount that nobody hears
+        // about is a write that never reaches IndexedDB (PersistentFs.h).
+        // Driving load and save ourselves gives us the one thing the
+        // automatic path withholds — the moment the file changed.
+        io.IniFilename = nullptr;
+        {
+            std::error_code ec;
+            if (std::filesystem::exists(iniPath, ec) && !ec)
+                ImGui::LoadIniSettingsFromDisk(iniPath.c_str());
+        }
+#else
         io.IniFilename = iniPath.c_str();
+#endif
     }
     // POM2's own style, replacing bare StyleColorsDark(). The headline change
     // is that every window background is opaque — the stock dark theme's 0.94
@@ -848,14 +889,28 @@ int main(int argc, char* argv[])
         std::atomic<bool>*  bootDiskSettled;
 #ifdef __EMSCRIPTEN__
         bool                firstFrameReadySignaled;
+        /// Where ImGui's layout is written, or null in kiosk mode. Held as
+        /// a raw pointer into the `iniPath` static above, which outlives the
+        /// loop (main() never returns under simulate_infinite_loop).
+        const char*         imguiIniPath;
+        double              lastPersistSeconds;
 #endif
     } frameCtx{
         window, &mainWindow, plan->bootDiskPath, plan->prodosFolderPath, cliBootCountdown,
         &autoBootRequested, &autoQuitRequested, &bootDiskSettled
 #ifdef __EMSCRIPTEN__
         , false
+        , plan->kiosk ? nullptr : iniPath.c_str()
+        , 0.0
 #endif
     };
+    #ifdef __EMSCRIPTEN__
+    // The browser's "the user is leaving" signals are JS events, and the only
+    // C++ that can answer them is a function with external linkage. main()
+    // never returns here (simulate_infinite_loop), so the pointer stays valid
+    // for the life of the tab.
+    gPersistTarget = &mainWindow;
+#endif
     auto iterate = [](void* userdata) {
         auto& c = *static_cast<FrameCtx*>(userdata);
         glfwPollEvents();
@@ -909,6 +964,30 @@ int main(int argc, char* argv[])
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(c.window);
 #ifdef __EMSCRIPTEN__
+        // The layout, then everything durable. ImGui raises the flag at most
+        // once every `IniSavingRate` seconds (5 by default), so this writes
+        // rarely; the pump then coalesces it with any settings write into one
+        // IndexedDB round-trip.
+        if (ImGui::GetIO().WantSaveIniSettings && c.imguiIniPath) {
+            ImGui::SaveIniSettingsToDisk(c.imguiIniPath);
+            ImGui::GetIO().WantSaveIniSettings = false;
+            pom2::markPersistentStateDirty();
+        }
+        // Heartbeat. Everything the desktop writes in ~MainWindow() has no
+        // moment to run in the browser, so it runs on a clock instead; a
+        // save whose content is unchanged costs a map comparison and stops
+        // there (Settings::save).
+        {
+            // The browser's own clock rather than glfwGetTime(): this loop is
+            // driven by requestAnimationFrame, and the wall-clock question
+            // "has it been ten seconds" has nothing to do with GLFW.
+            const double now = emscripten_get_now() / 1000.0;
+            if (now - c.lastPersistSeconds >= kBrowserPersistSeconds) {
+                c.lastPersistSeconds = now;
+                c.mainWindow->persistSession();
+            }
+        }
+        pom2::pumpPersistentState();
         if (!c.firstFrameReadySignaled) {
             c.firstFrameReadySignaled = true;
             emscripten_run_script(

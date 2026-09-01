@@ -134,7 +134,7 @@ paths mutation-checked.
 
 | # | Item | Why |
 | - | ---- | --- |
-| 2-5 | 🟡 **`RomLoader.cpp` and `CharRomCatalog.cpp` at 0 %** — every profile's ROM probe order and the character-ROM locale fallback, with no test at all. | The path every single boot takes, and the one that decides whether the machine you asked for is the machine you got. |
+| 2-5 | ✅ **`RomLoader.cpp` and `CharRomCatalog.cpp` at 0 %** — *landed 2026-09-01, and the premise was wrong a fourth time.* `RomLoader` was not untested, it was **dead**: zero call sites anywhere in the tree (cards keep their ROM in their own byte array and serve it from the slot bus; nobody has flashed a card ROM into `Memory` for a long time), yet it was compiled into the app and nine test binaries. Deleted. `CharRomCatalog` got the test it was actually missing (`char_rom_catalog`), both new assertions mutation-checked. | — |
 | 2-6 | 🟢 **The three host transports at 0 %** — `SlirpNetworkBackend`, `SpSerialTransport`, `SuperSerialTcpTransport`. | Seams exist for all three now (`ssc_transport_seam`, `fujinet_link_seam`), so these are testable in a way they were not before the 2026-08-27 seam work. |
 | 2-3b | 🟢 **Extend `-Werror` to the GCC leg** — it is on for macOS/AppleClang (2026-08-28). GCC's warning set is not clang's and nobody has cleaned it, so turning it on blind would red `main`. Build the Linux job once with it, fix what it names, then wire it. | The leg that catches what clang does not — transitive includes, and its own `-Wmaybe-uninitialized` family. |
 
@@ -207,7 +207,7 @@ closes a bug class.
 
 | # | Item                                    | Effort  | Why                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
-| 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
+| 1 | ~~WASM IDBFS settings persistence~~     | *done*  | landed 2026-09-01 — see [WASM](#wasm) |
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 
 ## MAME ↔ POM2 parity (dashboard)
@@ -239,7 +239,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 8  | SlotBus + IRQ wire-OR          | POM2-original    | MAME slot bus pattern                                                    | —                                                                                        |
 | 9  | DiskImage                      | Partial-verbatim | `woz_dsk.cpp`, `flopimg.cpp:2017-2106`                                   | 🟡 WOZ1 splice TRK+6650; 🟢 .nib2/.app, half-tracked NIB (88)                           |
 | 10 | DiskIICard                     | Partial-verbatim | `machine/wozfdc.cpp:264-291`, P6 PROM 341-0028-A                         | 🟢 sub-instruction RAII vs per-cycle                    |
-| 11 | IWMDevice                      | Verbatim         | `machine/iwm.cpp:1-543`                                                  | 🟢 Q3 fast clock (Mac/IIgs only); window-size rounding                                  |
+| 11 | IWMDevice                      | Verbatim         | `machine/iwm.cpp:1-543`                                                  | 🟢 **window sizes are MAME's own again** (2026-09-01): the state machine runs on the controller's 7.16 MHz clock (`POM2_IWM_TICKS_PER_CPU_CYCLE`), not whole CPU cycles, so 28/14/36/18 are used verbatim and a window edge lands inside a 14.17-tick Sony cell. That plus a flux-query off-by-one is what unblocked the 800K read path — pinned by `sony35_iwm_read_path`. 🟢 Q3 fast clock (Mac/IIgs only) still unmodelled, and no longer load-bearing |
 | 12 | SmartPortCard (//e Liron)      | POM2-original (real EPROM → L2) | SmartPort spec + Apple Tech Note; real Liron firmware `roms/liron.rom` (BMOW 4 KB) + real `$Cn0D` dispatch, pinned `liron_smartport_dispatch` | 🟢 multi-partition ProDOS (CFFA3000)                                                     |
 | 13 | SmartPortHub + Sony35Drive     | Verbatim         | `apple2e.cpp:638-679`, `mac_floppy.cpp`, `flopimg.cpp:512/967/2017-2106` | —                                                                                        |
 | 14 | CFFA (MAME-faithful IDE)       | Verbatim         | `bus/a2bus/a2cffa.cpp`                                                   | 🟢 CHD = phase 2; no media preservation on profile switch                         |
@@ -483,45 +483,127 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   still missing from `classifyDiskForSlot` / `accept525`.
 - 🟢 **Floppy Emu Dual-5.25" + Smartport-Unit-2 modes** — out of scope
   for v1 (4 main modes covered).
-- 🟠 **Real 3.5" boot through the IWM — //c, //c+ and a Liron card**
-  *(reopened 2026-08-28; no longer deferred to 1.0)* — one campaign, because
-  the three cases share a single unknown. Every piece is in the tree and
-  individually pinned:
-  `IWMDevice` is a verbatim MAME port (dashboard #11) including the bit-cell
-  read walker and the write windows; `Sony35Drive` + `Sony35Gcr` serve zoned
-  800 K GCR; `SmartPortHub` resolves the active drive
-  (`apple2e.cpp:638-679`); the //c+ alt firmware's MIG windows
-  (`$CC00-$CCFF` / `$CE00-$CEFF`) are decoded; and `roms/liron.rom` (the 4 KB
-  BMOW/Yellowstone dump) is in-repo, catalogued (`RomCatalog.h:75`), loaded by
-  `SmartPortCard` and pinned by `liron_smartport_dispatch`.
+- 🟡 **Real 3.5" boot through the IWM — the //c+ boots; the Liron card and
+  the plain //c remain** *(reopened 2026-08-28, read path + //c+ boot landed
+  2026-09-01)* — every piece was already in the tree and individually pinned;
+  what was missing was that no test crossed the seam between them.
 
-  What does **not** work is any real firmware's boot path *through* them: a
-  cold //c+ with only a 3.5" image mounted never reaches a bootable disk.
-  POM2 boots 3.5"/HDV on every //c-class profile via the host-served SmartPort
-  block device at built-in slot 5 (`iic_onboard_smartport_smoke`), so this is
-  a fidelity gap rather than a functional one — but it is the **largest
-  remaining fidelity gap in the storage stack**, and the reason to close it is
-  that three separate features are blocked behind one unanswered question.
+  **//c+ on-board: DONE and pinned** (`iicplus_boot35`). The //c+ ROM drives
+  the MIG, the MIG selects the drive, the IWM walks the cells, and ProDOS 8
+  boots off the internal Sony 3.5" — with nothing else mounted in the machine.
+  The same harness on the pre-fix build prints `UNABLE TO FIND A BOOTABLE DISK
+  ONLINE.` and leaves the head on track 0, so the causation is not inferred:
+  the difference is the controller and nothing else. Verified on four in-repo
+  800K images; Print Shop walks the head to track 22 and paints 7401 of 8192
+  hi-res bytes.
 
-  **Do this first, before writing any card**: find out where the GCR read path
-  diverges. Build a headless harness that drives `IWMDevice` + `Sony35Drive`
-  directly and dumps the bit-cell stream against a known-good 800 K image —
-  address-field sync, zone boundaries, the `$D5 $AA $96` prologue. Either the
-  firmware never gets a clean address field, or it does and the fault is
-  further up. That answer decides everything below, and building a card first
-  would only produce a card that does not boot. *~2-3 d.*
+  **What actually blocked it**, after the harness
+  (`tests/sony35_iwm_read_path_test.cpp`) isolated the fault away from the
+  format — the encoder→decoder control read 12/12 sectors throughout:
 
-  Then, in order:
-  1. **//c+ on-board** — the alt firmware already drives the IWM; if the read
-     path is right, this is the shortest path to a real boot. *~1 d after the
-     harness.*
-  2. **`LironCard : SlotPeripheral`** — the real IWM in a slot, driven by the
-     real `liron.rom`. `$Cn00` firmware, `$C0nX` → `IWMDevice::read/write`,
-     `advanceCycles` → `tick`, phases/devsel → `Sony35Drive`. The card is
-     small; the risk was never the card. *~8-12 h.*
-  3. **//c** — MAME has no 3.5"/SmartPort model for the plain //c at all, so
-     POM2 would be ahead of the oracle here and needs its own evidence: a real
-     UniDisk 3.5 boot disk read end to end.
+  1. The IWM state machine was clocked in whole CPU cycles. A Sony cell is
+     2.02 of them, so a window edge could not be placed inside one, and
+     MAME's window constants had been divided by 7 and rounded until two of
+     the four settings were identical. It runs on the controller's own clock
+     now (`POM2_IWM_TICKS_PER_CPU_CYCLE`, CpuClock.h — 7.159 MHz = A2BUS_7M
+     exactly), with 28/14/36/18 verbatim.
+  2. `nextTransition(lastSync_ + 1)` where MAME asks from `lastSync_`,
+     dropping any flux exactly one tick past the last sync point — a 1 bit
+     read as 0 about once every 35 bytes. Fatal to a 700-byte data field,
+     survivable for an 8-byte address field, which is the shape the numbers
+     had (17 of 24 address fields, 0 sectors).
+
+  **What is left is ONE subsystem, not two cards** *(established 2026-09-01 by
+  building the card and reading both dumps)*.
+
+  `LironCard` exists and is pinned (`liron_boot35`): the real 4 KB EPROM
+  executes, its per-slot page and ProDOS identity reach the bus, and the
+  firmware's device scan reaches the drive — motor enabled, SEL asserted,
+  phase lines delivered. It does not boot, and the reason is not the GCR path
+  the previous item fixed. Disassembled from the dump at `$C800`:
+
+  ```
+      JSR $CA05      ; LDA $C083,X — PH1 high
+                     ; LDA $C087,X — PH3/LSTRB high
+      LDA $C08B,X    ; SEL high
+      LDA $C089,X    ; motor on
+      LDY #$32
+    poll:
+      LDA $C08E,X    ; status, bit 7 = SENSE
+      BMI found
+      DEY / BNE poll ; fifty tries
+      SEC            ; → ProDOS $28 "no device connected"
+  ```
+
+  Holding **LSTRB high through a status read** is the tell: on a dumb Sony
+  that line is the write strobe. This is the SmartPort **bus** handshake, and
+  only an *intelligent* device — a UniDisk 3.5, which carries its own 65C02 —
+  answers it. The scan has no dumb-drive fallback: it decrements the device
+  count and ends.
+
+  **And the plain //c is the same code.** `roms/apple2c-32Kv0.rom` bank 1
+  `$C88C` is byte-identical to the Liron's `$C806`, and `$CA80` to its
+  `$CA05` — one Apple code base in two packages. So the //c item is not a
+  second port: it is the same missing responder. (The //c+ boots because its
+  ROM ALSO carries a GCR path for its on-board dumb drive, selected through
+  the MIG. The 16 KB //c dumps carry no 3.5" firmware at all.)
+
+  Left, therefore:
+
+  1. 🟡 **A SmartPort bus-level responder (HLE UniDisk 3.5)** — *the wire is
+     done and verified; the device's ANSWERS are not.*
+
+     `LironCard::setBusResponderEnabled(true)` (OFF by default) speaks the
+     protocol: it answers the presence handshake, decodes the command packet,
+     and builds a framed reply with the right encoding and checksum. The
+     enumeration accepts the device and stops scanning. Pinned by
+     `smartport_bus_handshake`; `POM2_TRACE_SMARTPORT_BUS=1` prints both
+     directions.
+
+     **The protocol, read out of `roms/liron.rom` with POM2's own
+     `disassemble6502`.** The //c's bank-1 firmware is the same code byte for
+     byte, so these addresses serve both machines:
+
+     | Address | Step |
+     | ------- | ---- |
+     | `$C800` | probe: PH1 + LSTRB high, SEL, motor, then poll status 50× for SENSE. Timeout → ProDOS `$28`. |
+     | `$C87D` | send: bytes to `$C0nD` with bit 7 set, write handshake at `$C0nC` between them. |
+     | `$C92C` | drain: poll `$C0nC` until bit 6 (underrun) clears. |
+     | `$C943` | ack: poll status until SENSE goes LOW. |
+     | `$C960` | receive: re-assert PH1 + LSTRB, read `$C0nD`, wait for SENSE HIGH, hunt `$C3`, take 7 header bytes into `$0051`..`$004B`. `$004C` = odd-byte count, `$004B` = count of seven-byte groups. |
+     | `$C52B` | bulk: marker byte + seven data bytes, `$004B` times. The marker carries the seven bytes' bit 7s, most significant first — the tables at `$CA27/$CA37/$CA47/$CA57` are just `$80`/`$00` masks keyed on its bits. |
+     | `$C5B8` | tail: two checksum bytes then `$C8`. Running XOR of the header WIRE bytes, the decoded group bytes and the decoded odd bytes; sent 4-and-4, recovered as `((chk2 << 1) | 1) & chk1`. |
+
+     Frame: `FF… $C3 | 7 header | odd section | groups | chk1 chk2 | $C8`,
+     every byte carrying bit 7. A command body decodes as
+     `05 02 00 08 00 00 00 FF 00` for the enumeration — command `$05`, and
+     the boot's parameter block at `$CF16` (`01 50 00 08 00 00 …`) is command
+     `$01`, read block 0 to `$0800`.
+
+     **What is left.** After the enumeration the firmware does not go on to
+     the boot's block read, so the gap is most likely the CONTENT of the
+     status reply — a device descriptor the scan stores and the boot then
+     consults (`$07F8,Y` holds the count; `$CCD1` checks the unit against it).
+     The wire itself is no longer in doubt: the checksum POM2 computes for a
+     header-only reply (`$81`) is exactly the byte the firmware's own `$40`
+     holds when it reaches its terminator check. Next step is to read the
+     enumeration's continuation at `$CE34`+ and see which reply fields it
+     stores. *~1 d.*
+
+     **When wiring it to the //c, remember what that machine is**: the
+     internal drive is a **5.25"**, owned by `DiskIICard`, and the 3.5" hangs
+     off the rear expansion port — the configuration people actually had. So
+     the responder must answer only for the EXTERNAL device, and
+     `IIcClassProfile::ioReadIWM`'s `isPlus_` gate must stay honoured for the
+     internal one: the 2026-07 bug hunt showed the IWM and DiskIICard fighting
+     over a single 5.25" drive corrupts the head position and sends DOS 3.3
+     RWTS into seek storms. The Liron has no such conflict — its port is
+     external only — which is why it is the right place to build this first.
+
+  2. 🟢 Only then: expose `LironCard` in the slot catalog. It is deliberately
+     NOT user-pluggable today — a card that enumerates nothing would be a
+     worse answer than `SmartPortCard`, which serves the same volumes at the
+     block level and works.
 
   Note the UniDisk 3.5 **drive-side** 65C02 firmware stays out of scope; this
   is the controller side only. → `CLAUDE.md` § System profiles, [WASM](#wasm).
@@ -937,10 +1019,15 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [WASM]
 
-- 🟡 **IDBFS settings persistence** — `/persistent` mounted via IDBFS
-  (`CMakeLists.txt:241`) but `Settings.cpp` writes to `$HOME`;
-  `state.cfg` + `imgui.ini` do not survive a reload. Route via
-  `ResourcePaths` under `__EMSCRIPTEN__`. *2-4 h.* ⭐ quick win
+- ✅ **IDBFS settings persistence** — *landed 2026-09-01.* `state.cfg` and
+  `imgui.ini` now live in `pom2::userConfigDir()`, which is `/persistent`
+  under Emscripten, and reach IndexedDB through a debounced `FS.syncfs`
+  (`PersistentFs.h`). Two things the estimate did not know: the browser
+  build has **no exit** (`simulate_infinite_loop` never runs `~MainWindow`),
+  so the whole persist block had to become `MainWindow::persistSession()` on
+  a heartbeat; and the shell's populate had to hold up `run()`, which is a
+  boot hang if its callback never fires — hence the watchdog. Verified in
+  headless Chrome over CDP, three visits. → `CHANGELOG.md`
 - 🟡 **File picker / drop-zone disks** — build-time bundling
   only. HTML5 drop-zone → `FS.writeFile('/uploads/…')` →
   `DiskIICard::insert`. *~1 d.*

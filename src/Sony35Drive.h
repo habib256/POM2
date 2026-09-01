@@ -182,11 +182,23 @@ public:
     /// `60 × POM2_CPU_CLOCK_HZ / RPM`.
     int64_t cyclesPerRev() const;
 
-    /// CPU cycle of the next flux transition strictly after
-    /// `fromCpuCycle`. `revStart` anchors the head position (zero =
-    /// cell 0 was under the head at cycle 0). Returns `INT64_MAX` if
-    /// no disk is inserted or the track is unformatted (no transitions).
-    int64_t nextTransition(int64_t fromCpuCycle, int64_t revStart) const;
+    /// The same period in IWM ticks (`POM2_IWM_TICKS_PER_CPU_CYCLE`), which
+    /// is the unit the flux timeline below speaks. A cell is ~14.2 ticks
+    /// here against ~2.02 CPU cycles; the whole reason for the finer unit is
+    /// that a window edge has to be placeable inside a cell. See CpuClock.h.
+    int64_t ticksPerRev() const;
+
+    /// IWM tick of the next flux transition strictly after `fromTick`.
+    /// `revStartTick` anchors the head position (zero = cell 0 was under the
+    /// head at tick 0). Returns `INT64_MAX` if no disk is inserted or the
+    /// track is unformatted (no transitions).
+    ///
+    /// Ticks, not CPU cycles: at CPU-cycle resolution consecutive Sony cells
+    /// land 2 or 3 cycles apart (they are 2.02 apart) and the IWM's walker
+    /// cannot hold alignment through a 700-byte data field — measured at ~4
+    /// address fields per revolution and zero sectors. Pinned by
+    /// `sony35_iwm_read_path` (POM2_GCR_IWM=1).
+    int64_t nextTransition(int64_t fromTick, int64_t revStartTick) const;
 
     /// Drop the cached bit-cell stream. Called on media swap / head
     /// step so the next access rebuilds.
@@ -266,15 +278,16 @@ public:
     // payload back into the attached `Disk35Image`. Port of MAME
     // `flopimg.cpp::extract_sectors_from_track_mac_gcr6` (line 2107).
     //
-    // `startCpu` / `endCpu` bracket the host-CPU-cycle window the IWM
-    // was writing for; `fluxes` is the sorted list of flux-transition
-    // timestamps (in CPU cycles) inside that window. `revStart` is
-    // the same anchor the IWM uses for `nextTransition` reads.
-    void writeFlux(int64_t startCpu,
-                   int64_t endCpu,
+    // `startTick` / `endTick` bracket the window the IWM was writing for;
+    // `fluxes` is the sorted list of flux-transition timestamps inside it.
+    // `revStartTick` is the same anchor `nextTransition` reads against. All
+    // in IWM ticks, like the read side — the two have to share one timeline
+    // or a write lands on a different cell than the read that verifies it.
+    void writeFlux(int64_t startTick,
+                   int64_t endTick,
                    const int64_t* fluxes,
                    int            count,
-                   int64_t        revStart);
+                   int64_t        revStartTick);
 
 private:
     /// Decode the current `cells_` stream for any complete sectors

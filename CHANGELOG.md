@@ -5,6 +5,420 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The SmartPort wire, decoded, encoded and checksummed
+
+Continuing the entry below: POM2 now speaks the SmartPort bus protocol
+properly rather than answering its handshake with canned bytes. The command
+packet is decoded, the reply is built with the real encoding and a real
+checksum, and the firmware's enumeration accepts the device and stops
+scanning. It still does not boot — but for the first time the remaining
+question is about the device's ANSWERS, not the wire.
+
+**All of it was read out of the ROM.** The frame is
+`FF… $C3 | 7 header | odd section | groups | chk1 chk2 | $C8`, every byte
+carrying bit 7 because that is what "byte ready" means to the IWM shifter.
+The header lands at `$0051` down to `$004B`, so `$004C` is the odd-byte count
+and `$004B` the count of seven-byte groups. Each group is a marker byte
+carrying the seven data bytes' bit 7s, most significant first — POM2 derives
+that from the ROM's own tables at `$CA27/$CA37/$CA47/$CA57`, which contain
+nothing but `$80`/`$00` masks keyed on the marker's bits. The checksum is a
+running XOR of the header WIRE bytes, the decoded group bytes and the decoded
+odd bytes, sent 4-and-4 and recovered as `((chk2 << 1) | 1) & chk1`.
+
+**The wire is not a guess any more.** The checksum POM2 computes for a
+header-only reply is `$81`, and `$81` is the byte the firmware's own `$40`
+holds when it reaches its terminator check. That number matching is the
+difference between "it seems to work" and "we know what it is".
+
+**The bug that cost the most, and reads like a checksum failure.** A first
+version answered every command with a 512-byte block. The enumeration's reply
+buffer is a few bytes of zero page — so the payload walked over `$004B` and
+`$004C`, the very fields that say how long the packet is, and the firmware
+rejected it. The fix is to look at the command: `$05` (enumerate) gets a
+header-only status answer, `$01` (read block) gets the 512 bytes. Two other
+mistakes worth the same warning: the phase pattern ADDRESSES the device but
+does not gate every byte — the firmware drops PH1 as soon as it starts reading
+the reply, so a per-access gate hands the rest of the packet to an empty IWM —
+and a write once a reply exists opens a NEW transaction, without which the
+command buffer accumulates the whole session and every answer is the first
+one.
+
+**Where it stops**: after the enumeration the firmware does not proceed to the
+boot's block read. The likely gap is the content of the status reply — a
+device descriptor the scan stores (`$07F8,Y` holds the count, `$CCD1` checks
+the unit against it) and the boot consults. The next step is the enumeration's
+continuation at `$CE34`. `smartport_bus_handshake` pins the water mark
+reached, including the decoded command (`$05`, nine body bytes) — a decoder
+that silently mis-framed would still hand back a reply and still look fine
+until block numbers mattered.
+
+## 2026-09-01 — Speaking the SmartPort bus, three steps of five
+
+The wall the entry below describes is a protocol, and a protocol can be
+answered. `LironCard` now carries an optional byte-level responder for the
+SmartPort **bus** — the exchange an intelligent UniDisk 3.5 has with the
+firmware — and the firmware now gets three steps further than "no device
+connected": it sees a device, sends its command packet, and reads back a
+header reply. Then it asks for the payload, and POM2 has nothing to say.
+
+**The protocol was read out of the ROM, not looked up.** POM2's own
+`disassemble6502` over `roms/liron.rom`: the probe at `$C800` (PH1 + LSTRB
+high, SEL, motor, then fifty polls of the status register for SENSE), the
+sender at `$C87D` (bytes to `$C0nD` with bit 7 set, write handshake at
+`$C0nC` between them, seven data bytes per group behind a byte of their
+gathered high bits), the drain at `$C92C`, the acknowledgement at `$C943`
+(SENSE must go LOW), and the receiver at `$C960` — which re-asserts the
+attention lines, reads `$C0nD`, waits for SENSE HIGH, hunts for `$C3` and
+takes seven header bytes into `$0051` down to `$004B`. `$004C` is the payload
+length and `$004D` must be non-zero or the enumeration throws the device away.
+The full map is in `TODO.md` § Storage, and the //c's bank-1 firmware is the
+same code byte for byte, so it serves both machines.
+
+**Three things the firmware taught, each of which cost a run to find:**
+
+- The write handshake's bit 6 is an underrun flag the firmware waits to see
+  **clear** after its last byte. Answering `$C0` (bit 6 set) parks it in the
+  drain loop at `$C92C` for ever. A device with nothing in flight says `$80`.
+- SENSE is not a write-protect line here, it is the device's attention line,
+  and it has three states in one transaction: HIGH for the presence poll, LOW
+  to acknowledge the command, HIGH again when the reply is ready. Holding it
+  high throughout stalls the acknowledgement; holding it low stalls the reply.
+- There is no usable edge on the handshake lines to trigger the reply on — the
+  firmware leaves PH1 and LSTRB up across the whole exchange. Its read of
+  `$C0nD` at `$C97A` is the only distinctive event, and nothing else in the
+  transaction touches that offset.
+
+**Off by default**, and the default is the honest one: with the responder off
+the card behaves like a Liron with an empty port, which is a shippable state;
+with it on the firmware advances and then waits, which is a workbench. Two
+tests pin the two states — `liron_boot35` and `smartport_bus_handshake` — and
+between them they say exactly where the boundary is.
+
+**For whoever wires this to the //c**: that machine's internal drive is a
+**5.25"** owned by `DiskIICard`, with the 3.5" on the rear expansion port.
+The responder must answer for the external device only;
+`IIcClassProfile::ioReadIWM`'s `isPlus_` gate exists because an IWM and a
+DiskIICard fighting over one 5.25" drive corrupt the head position badly
+enough to send DOS 3.3 RWTS into seek storms. The Liron has no internal drive
+to fight over, which is why the protocol work belongs there first.
+
+## 2026-09-01 — The Liron card, and the wall both it and the //c hit
+
+`LironCard` is the Apple II 3.5" Disk Controller as silicon: the real 4 KB
+EPROM (`roms/liron.rom`) executing on the 6502, a real `IWMDevice` behind
+$C0nX, real Sony mechanisms. Not to be confused with `SmartPortCard`, which
+wears the same hardware's name and answers ProDOS's block calls from the host
+— that one works and stays; this one was to be the same machine as the //c+,
+on the expansion bus.
+
+**It does not boot, and the reason is worth the card.** TODO § Storage
+estimated 8-12 hours on the grounds that "the risk was never the card". The
+card was indeed small. The risk was the DRIVE. Disassembled from the dump with
+POM2's own `disassemble6502`, the firmware's device scan at $C800 drives PH1
+and LSTRB high, asserts SEL and the motor, then polls the status register
+fifty times for the SENSE line — and on timeout reports ProDOS $28, "no device
+connected", with no fallback. Holding LSTRB high through a status read is the
+tell: on a dumb Sony mechanism that line is the write strobe. This is the
+SmartPort **bus** handshake, which only an *intelligent* device answers — a
+UniDisk 3.5, with its own 65C02 inside the drive. POM2's TODO has kept that
+processor out of scope from the start; it turns out to be the thing standing
+between this card and a boot, and it took building the card to learn that.
+
+**The plain //c is the same code, byte for byte.** `apple2c-32Kv0.rom` bank 1
+$C88C matches the Liron's $C806, and $CA80 matches $CA05 — one Apple code base
+in two packages. So the campaign's last two items were never two ports: they
+are one missing subsystem, a SmartPort bus-level responder. (The //c+ boots
+because its ROM *also* carries a GCR path for its on-board dumb drive,
+selected through the MIG. The 16 KB //c dumps carry no 3.5" firmware at all.)
+Two independent dumps and a running trace say so, which is why the backlog now
+says it in one item instead of two.
+
+**Two bugs found on the way, both in the card and both invisible without the
+real firmware:**
+
+- Phase lines were forwarded only to the *selected* drive. The firmware sets
+  the Sony register address up BEFORE it enables a drive, so every sense read
+  answered for register 0 and the probe never even strobed. CA0-CA2 and LSTRB
+  are wired straight to the connector on real hardware; they go to the whole
+  chain now.
+- `devsel` was mapped to the drive, as the //c+'s MIG-driven hub does it. A
+  Liron has no MIG: SEL is head select, and drive selection is the daisy
+  chain. Mapping SEL to a second (empty) bay meant every probe answered for a
+  drive with no disk in it.
+
+The card is deliberately **not** in the slot catalog yet: shipping a card that
+enumerates nothing would be a worse answer than `SmartPortCard`, which serves
+the same volumes and works. `liron_boot35` pins what is real today — the ROM
+identity, the per-slot page, and the probe reaching the drive — and
+`POM2_LIRON_BOOT_STRICT=1` is the acceptance test waiting for the responder.
+
+## 2026-09-01 — The //c+ boots a 3.5" disk with its own firmware
+
+Not through POM2's host-served SmartPort substitute at slot 5 — through the
+real path: the //c+ ROM drives the MIG gate array, the MIG selects the drive,
+the IWM walks the bit cells, the Sony drive turns its motor and steps its
+head, and **ProDOS 8 v2.4.3 boots off the internal 3.5" bay** with nothing
+else mounted in the machine. TODO § Storage called this "the largest
+remaining fidelity gap in the storage stack" and put three features behind it.
+
+**The evidence, because "it boots now" is a claim worth distrusting.** The
+same harness on the pre-fix build prints `UNABLE TO FIND A BOOTABLE DISK
+ONLINE.` and leaves the head parked on track 0 — it cannot read the boot block
+to learn where to go next. Post-fix, on four in-repo 800K images: A2DeskTop
+reaches ProDOS at 8.4 M cycles, The New Print Shop walks the head to **track
+22** across both sides and paints 7401 of 8192 hi-res bytes, DIX paints 4128.
+Same harness, same images, same cycle budget; the difference is the
+controller and nothing else. Pinned as `iicplus_boot35`, and
+mutation-checked: restoring either half of the controller fix turns the test
+red with the firmware's own message.
+
+**Nothing in the firmware, the MIG or the drive model had to change.** All of
+it was already there and individually pinned; what was missing was a test that
+crossed the seam between the encoder and the IWM's walker. Both faults are in
+the entry above.
+
+**A harness bug worth recording, because it cost an hour and pointed at
+innocent code.** The first version of this test plugged no card into slot 6.
+`IIcClassProfile::ioReadIWM` hands the CPU the IWM's byte only while a 3.5"
+Sony is selected and falls through to the slot-6 DiskIICard otherwise — with
+no card the fall-through returns the **floating bus**, and $FF has bit 5 set,
+which reads as "drive enabled". The firmware then sat in a loop at $E51D
+polling a status it thought it had already got, and every pass through its MIG
+routine reset the IWM. It looked exactly like a MIG decode bug. It was an
+empty slot: the //c+ has an on-board 5.25" drive, and modelling the machine
+without it is not modelling the machine.
+
+## 2026-09-01 — The 800K read path works: two faults, one clock
+
+The harness below said the fault was between the encoder and the decoder, in
+the flux → bit-cell-window path, and that granularity was the suspect. Acting
+on that took two fixes, and the second one only became visible after the
+first. The path now reads **every sector on all five speed zones, both heads,
+payloads exact**, through the real `IWMDevice`: 12/12, 11/11, 10/10, 9/9, 8/8.
+
+**1. The IWM does not run on the CPU clock, and now POM2 does not pretend it
+does.** On a //c the controller is wired to A2BUS_7M — 14.31818/2 = 7.159 MHz
+— which is exactly seven times the 6502's 14.31818/14. POM2 had collapsed the
+device onto the CPU clock and divided MAME's window constants by 7, so 28/14
+became 4/2 and 36/18 became 5/2: two of the four window settings ended up
+identical, and none could place an edge inside a 2.02-cycle Sony cell. The
+state machine now counts in IWM ticks (`POM2_IWM_TICKS_PER_CPU_CYCLE`,
+CpuClock.h) and MAME's 28/14/36/18, its 4/8-tick register delay and its 7- and
+14-tick write constants are used verbatim — several of which had been
+individually "corrected" over time in ways that were each wrong (the async
+stale-data timer went 14 → 2 to stop it firing 7× late; in ticks it is 14
+again, which is what the hardware always said). `Sony35Drive`'s flux timeline
+moved to the same unit, read and write side together.
+
+That alone took address-field recovery from 4 of 24 to 17 of 24 — and still
+zero complete sectors.
+
+**2. `nextTransition(lastSync_ + 1)` where MAME asks from `lastSync_`.** POM2
+queried the flux stream one tick late, so any transition landing exactly one
+tick past the last sync point was skipped — and `nextFluxChange` is a local
+reset on every `sync()` entry, so the transition was skipped for good rather
+than picked up on the next pass. That alignment is not rare: `lastSync_` parks
+on the caller's poll boundary every time a `sync()` runs out of time
+mid-window. The cost was one 1-bit read as 0 roughly every 35 bytes — enough
+for an 8-byte address field to survive and a 700-byte data field never to,
+which is exactly the shape the numbers had. Invisible under the old clock,
+where coarser errors swamped it.
+
+**Whether this is what a real //c+ needs is still unproven** — the firmware
+has to drive the MIG, the IWM and the drives itself, and that is the next
+item. What is proven is that the controller underneath it reads Sony GCR.
+
+Two consequences worth knowing:
+
+- **Snapshot blobs are `IWM2`.** The state-machine stamps in them are ticks,
+  a different number for the same instant; restoring a v1 blob verbatim would
+  park the walker seven times too early and freeze the device until emulated
+  time caught up — the exact hazard `iwm_mig_snapshot` exists to prevent. The
+  loader accepts both and scales v1.
+- **`Sony35Drive::writeFlux` and `nextTransition` take ticks now.** Read and
+  write have to share one timeline or a write lands on a different cell than
+  the read that verifies it.
+
+The harness's investigation half is a plain test as of this commit: it
+asserts what it used to merely report. `POM2_GCR_CONTROL_ONLY=1` still runs
+only the encoder→decoder control, which is what to reach for if it ever fails
+again — it says in one run whether the format or the controller broke.
+
+## 2026-09-01 — The 3.5" harness, and the answer it gave in five minutes
+
+TODO § Storage has asked, for months, that the 800K campaign start with a
+harness rather than a card: "find out where the GCR read path diverges …
+building a card first would only produce a card that does not boot." Three
+features sit behind that one question — the //c+ on-board boot, a Liron card,
+the plain //c. `tests/sony35_iwm_read_path_test.cpp` is that harness, and the
+answer is unambiguous:
+
+| Path | Address fields | Sectors |
+| ---- | -------------- | ------- |
+| blocks → Sony GCR encoder → decoder, no IWM | 12 of 12 | **12/12, payloads exact** |
+| the same track through `IWMDevice`'s window walker | ~4 per revolution | **0** |
+
+Same on all five speed zones and both heads. The encoder, the zone layout,
+`sony35::blockIndexFor` and the decoder are therefore exonerated, and that
+half of the harness is now a pinned regression test (`sony35_gcr_zones`)
+covering every zone on both heads — which nothing did before; the existing
+3.5" tests either stop at `debugCellStream()` or never leave track 0. It is
+mutation-checked: shifting `blockIndexFor`'s head term by one zone fails it on
+four tracks.
+
+**The finding.** The fault is in the flux → bit-cell-window path, and its
+shape says granularity. The drive clocks a cell every 155745 / 76950 = **2.02
+CPU cycles**; POM2 runs the IWM state machine on whole CPU cycles, so
+`windowSize()` is 2 and a resync can only ever land on a cycle boundary — half
+a cell of error is a coin flip. MAME runs the identical walker on the card's
+~7.16 MHz clock, where the same window is 14 ticks. The parity dashboard
+already carries this as an open item under `IWMDevice` ("Q3 fast clock
+(Mac/IIgs only)") without anyone having connected it to the 3.5" boot. So the
+next step in the campaign is a finer time base for the 3.5" read path, and
+**not** a Liron card: a card debugged against a controller that cannot read a
+sector produces two mysteries instead of one.
+
+**Three bugs in the harness itself, all worth writing down**, because each is
+a way to conclude something false about the hardware:
+
+- Stepping the head with side 1 selected does nothing at all. The drive's
+  register address is `{ HDSEL, CA2, CA1, CA0 }`, so "step" (1) becomes "MFM
+  mode on" (9) and a `while (track() < n)` loop never ends. The harness now
+  selects side 0 before seeking, and bounds the loop so a regression here
+  fails the test instead of hanging CI.
+- The mode register is written by an odd-offset write while **Q6 and Q7 are
+  both set**; `write(0xE, …)` clears Q7 rather than setting Q6. The first draft
+  swept four mode bytes and silently measured mode $00 four times. The harness
+  now reads the mode back and fails if it did not take — the sweep exists
+  precisely to compare modes, so a sweep that cannot change the mode is worse
+  than no sweep.
+- Restarting the harness clock at a fixed value for each track read froze the
+  device: the IWM keeps absolute cycle stamps and its `sync()` walker only
+  moves forward, so a timestamp older than the one it already reached reads
+  nothing at all. The first track worked and every later one came back empty.
+  `IWMDevice.h` documents exactly this hazard for the rewind path; it bites a
+  test the same way.
+
+## 2026-09-01 — The browser build can remember things now (IDBFS), and the two surprises
+
+`state.cfg` and `imgui.ini` survive a reload of the WASM build. The backlog
+called this a 2-4 hour quick win with a one-line diagnosis — "`/persistent` is
+mounted via IDBFS but `Settings.cpp` writes to `$HOME`" — and that diagnosis
+was right and nowhere near sufficient. Three things were wrong, and only the
+first was the one written down.
+
+**1. Nobody wrote to the mount.** `pom2::userConfigDir()` is now the single
+answer to "where does POM2's configuration live": `%APPDATA%`, `~/Library/
+Application Support`, `$XDG_CONFIG_HOME`, and `/persistent` under Emscripten.
+`Settings::resolveStorePath()` and main.cpp's `imgui.ini` path both call it.
+They used to be two hand-copied platform dances — main.cpp's even carried a
+comment saying it "mirrors `Settings::resolveStorePath`" — and a mirror is a
+thing that can stop matching. Under Emscripten it had: neither copy knew about
+the mount, so both wrote to MEMFS, which is a fresh empty filesystem on every
+visit.
+
+**2. A write to IDBFS is not durable until `FS.syncfs`.** That has no native
+analogue — the desktop write path is a rename plus an fsync and is durable when
+it returns. `PersistentFs.h` holds the browser half: writers mark the store
+dirty, the frame loop pumps, and at most one flush runs per two seconds and
+never while another is in flight. Without it every write succeeds, every read
+back within the session succeeds, and the lot evaporates on reload.
+
+**3. The browser build has no exit, so nothing ever called the writer.** This
+is the one that turned the quick win into an afternoon.
+`emscripten_set_main_loop_arg(..., simulate_infinite_loop=1)` unwinds `main()`
+*without* destroying its locals — deliberately, so the loop's captured state
+outlives the call — which means `~MainWindow()` never runs in a browser, and
+`~MainWindow()` was where POM2 wrote everything it remembers. Plumbing to a
+writer that is never called would have been indistinguishable from success
+until someone reloaded the page. The block is now
+`MainWindow::persistSession()` in its own translation unit
+(`MainWindow_Session.cpp`, -280 lines off `MainWindow.cpp`), called from the
+destructor on the desktop and from a 10-second heartbeat plus the page's
+`visibilitychange`/`pagehide` in the browser. A heartbeat is only affordable
+because `Settings::save()` now skips a save whose content matches the last one
+it wrote — pinned by deleting the file underneath a second save and asserting
+it stays deleted.
+
+**The bug the test found, which no amount of reading would have.** The shell's
+`preRun` hook fired `FS.syncfs(true, …)` and returned without waiting, so the
+runtime could start before IndexedDB had been read back. The fix is
+`addRunDependency`, and that fix introduces a failure mode strictly worse than
+the one it cures: if the callback never fires, the dependency is never
+released and **the emulator never starts** — the page sits on "downloading
+assets…" with the splash up, no frame ever drawn. Not hypothetical. It
+happened during testing, when a `deleteDatabase()` from a previous page left
+the open blocked, and it cost a good while to diagnose because every symptom
+pointed at the new heartbeat code. There is now a 5-second watchdog: a browser
+that will not answer costs the visitor their stored settings, never the
+emulator.
+
+**Two smaller things.** The browser's chrome-light startup (hide every panel,
+force the composite display mode) now runs only on a **first** visit —
+`settings->empty()`. It used to run on every launch, which was harmless while
+nothing persisted and actively wrong the moment something did: the store had
+just restored the visitor's panels three lines above, and this closed them all
+again. And the list-packing helpers (0x1F-separated paths) moved to
+`SettingsList.h`, because the reader and the writer are now in two translation
+units and a separator convention with two copies can disagree with itself.
+
+**Verified for real**, not by reading: headless Chrome driven over CDP, three
+consecutive visits on a virgin browser profile. Visit 1 boots with an empty
+store, writes 134 keys plus `imgui.ini`, and flushes; visit 2 logs `Loaded 134
+keys from /persistent/state.cfg`; a value changed between visits comes back
+changed and is not clobbered by the heartbeat's rewrite. Two notes for whoever
+tests this next: headless Chrome reports the page as **hidden**, which stops
+`requestAnimationFrame` dead and with it POM2's entire frame loop — CDP
+`Emulation.setFocusEmulationEnabled` is what makes the page consider itself
+visible. And `wasm/shell.html` is **not** a link dependency, so editing it
+alone rebuilds nothing: the page you serve is the one from the last actual
+relink. Touch a source file.
+
+## 2026-09-01 — The 0 % file that was dead, and the one that held a contract
+
+P2-5 said "`RomLoader.cpp` and `CharRomCatalog.cpp` are at 0 %, write tests".
+Half of that was the wrong instruction, in the same shape as the three other
+premises the 2026-08-28 pass got wrong: **`RomLoader` had no callers at all.**
+Not one, in `src/` or `tests/` — the single test that `#include`d the header
+never called a function from it. Its API flashes a ROM into `Memory` and
+restores the write-protect bitmap; cards stopped doing that when they started
+keeping their ROM in their own byte array and answering the slot bus from
+there (`GrapplerCard`, `SmartPortCard`, `ClockCard` each open their own
+`ifstream`). So the coverage number was not naming an untested boot path, it
+was naming 83 lines of code that had quietly fallen out of the machine while
+staying in six source lists in `CMakeLists.txt`, nine test targets, and every
+binary POM2 ships. Deleted rather than tested: a test would have pinned an
+API nothing calls, and made the file *look* alive to the next reader of the
+coverage table.
+
+Worth stating as a rule, because the coverage floor will keep producing this
+question: **a 0 % file is a fork, not a task.** Either something needs it and
+the test is missing, or nothing needs it and the test would be the only thing
+keeping it. Check the call sites before writing the test.
+
+`CharRomCatalog` was the other half and it was the real one — 0 % because it
+is reachable only from three UI translation units, while what it holds is a
+**persistence contract**: `state.cfg` stores the locale as a string key, and
+that mapping is written out three times over (the catalog vector, the enum→key
+`switch`, the key→enum `if` chain). The drift that costs the user something is
+silent by construction: a locale added to the first two and missed in the
+third reads back as `ProfileDefault`, so a French //e quietly reverts to the
+stock US font on the next launch with no error anywhere. `char_rom_catalog`
+pins the round-trip for all fourteen locales, the key strings **verbatim**
+(they are on disk in every user's settings; renaming one is a migration, not
+a refactor), the unknown-key and out-of-range fallbacks, the profile partition
+in both directions (a 2 KB part is never offered to a //e, a 4 KB one never
+to a II+, and every profile keeps exactly one reachable "Default"), and the
+two 342-0274-A entries selecting **different banks** of the one 8 KB dump —
+both on bank 0 would draw identical glyphs in the picker. Both of those last
+two were mutation-checked by breaking the source and watching the test fail.
+
+One incident from doing it, since it wastes an hour when it happens: restoring
+a mutated source with `cp` gave the file the **same mtime second** as its
+object, `make` declared the target up to date, and the full `ctest` run failed
+on a binary built from the mutation that no longer existed in the tree. `touch`
+the file after any such restore.
+
 ## 2026-09-01 — TransWarp: the accelerator POM2 could model as a clock, not a CPU
 
 Applied Engineering's **TransWarp** (catalog `transwarp`), ported from MAME
