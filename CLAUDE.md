@@ -8,6 +8,7 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 - `docs/test_corpus.md` — edge-case integration corpus; **[DIX](https://github.com/Fr3nchT0uch/DIX/)** (French Touch anthology) is the priority gold-standard benchmark.
 - `docs/lle_vs_hle.md` — abstraction level per subsystem (silicon vs contract), the HLE seams, and the rule POM2 follows when picking a level.
 - `docs/printer_plan.md` — dot-matrix printer gap analysis vs `web-a2e` + phased plan (character ROMs, screen dump, more heads).
+- `docs/chatmauve_plan.md` — Le Chat Mauve at the silicon: what the RVB Graph / Eve / Féline / //c adapter really do (manuals, the Video-7 patent, the Eve's PLA fuse map, real-hardware measurements), what POM2 models today, and the phased plan to a dot-level model — mixed DHGR (Extasie) first.
 - `docs/printer_plan_2.md` — round two: the Epson generations, the C. Itoh cousins, and the LaserWriter (Diablo 630, then PostScript by delegation). § 5 is the Apple II Workstation Card: the dump's memory map, and what the card still needs.
 - `tools/coverage.sh` — line coverage over the code the tests link, with a
   floor that may rise and may not fall (`tools/coverage_floor.txt`). Run it
