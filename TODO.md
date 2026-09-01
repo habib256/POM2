@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-Status as of 2026-08-28 (v0.8.5). This file lists **open work only**: an item
+Status as of 2026-09-01 (v0.8.5). This file lists **open work only**: an item
 that ships is deleted here and its "why" is written up in `CHANGELOG.md`. MAME
 refs → `DEV.md`.
 
@@ -9,19 +9,22 @@ effort in *italics*. File/line in `backticks`.
 
 **Read in this order**:
 
-1. [Priority order](#priority-order) — the 2026-08-28 architecture plan, P0→P3.
-   This is what to do next.
-2. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
+1. [Next up](#next-up) — the ordered list of what to do next (2026-09-01):
+   Le Chat Mauve, the raster offset, the Best1a.nib write-back.
+2. [Priority order](#priority-order) — the 2026-08-28 architecture plan, P0→P3
+   (P0-P2 landed; P3 are rulings).
+3. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
    currently gets wrong *on purpose*, with the reason.
-3. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
-4. [Backlog](#backlog) — everything else, by subsystem.
+4. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
+5. [Backlog](#backlog) — everything else, by subsystem.
 
-The item with the most leverage right now is
-[real 3.5" boot through the IWM](#storage-disks--images) for //c, //c+ and a
-Liron card — no longer deferred past 1.0. The
-[hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family), the
-other one, closed on 2026-08-28 when the last of the six pages moved onto the
-assembler.
+**What to do next, in order (2026-09-01):** the three items under
+[Next up](#next-up) — Le Chat Mauve at the silicon, the mid-scanline raster
+offset French Touch's DIX exposes, and the Best1a.nib finding. The 3.5"
+campaign that used to sit here (//c+, Liron card, plain //c over the SmartPort
+bus) closed on 2026-09-01; the
+[hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
+closed on 2026-08-28.
 
 **A note on what the 2026-08-28 P0 pass actually found.** Three of the four
 items landed, and every one of them turned up something the plan had not
@@ -33,6 +36,139 @@ bash 3.2 **with exit status 0**. `POM2_FOUNDATION_SOURCES` was written down,
 commented, and never read. None of these fail loudly; all three were found by
 running the guard rather than by reading it. Worth remembering the next time a
 guard is added: write the test that makes it FAIL.
+
+## Next up
+
+Ordered on 2026-09-01. These come before everything in
+[Priority order](#priority-order) and [Backlog](#backlog); each is written so
+that whoever picks it up can start without re-deriving the finding.
+
+### 1 · 🟠 Le Chat Mauve at the silicon — `docs/chatmauve_plan.md`
+
+The plan is the document; this entry only says why it is first and where to
+start. POM2 models one Chat Mauve — a Féline-class 2-bit mode latch with
+Video-7's four DHGR interpretations, a Video-7 fg/bg text and two toggles at
+`$C0B8-$C0BB` — and that is a byte-level Féline and a wrong Eve. The research
+pass found the primary sources: the Eve reference manual (sixteen write-only
+switches at `$C0B0-$C0BF`, the CPREG register the card writes into aux memory
+behind the CPU, table IX-1's ten graphics modes, colour text with the nibbles
+the *other* way round from Video-7's), the Eve's PLS100 PLA fuse map (public,
+decoded to 48 terms), the Video-7 patent for the mode latch, the *Manuel
+Arlequin*'s statement of the mixed mode Extasie was written for, and
+fenarinarsa's measurements on a real //c adapter and Eve. Two of today's
+labels are simply wrong (`$C0BA/B` is TXTGREEN, not "HGR Duochrome"; the
+fg/bg HGR POM2 renders is the Eve's CP280 with its nibbles swapped).
+
+Order of work, from the plan: **P0** corpus + per-dot golden harness (½ d);
+**P1** Féline / //c adapter dot-exact — mode latch per patent, mixed mode as a
+per-byte 560/140 mux over a free-running 4-dot cell latch, LCM HGR rule
+(2-bit cell, 3-bit window), AN3-off mono (1½ d); **P2** the Eve's switches,
+CPREG auto-write hook in `Memory`, TXT16 / TXTGREEN / LOCKRES, table IX-1,
+card *variant* in the catalog (1½ d); **P3** Eve pixel rules from the PLA
+(2-3 d); P4 RVB Graph (gated on its manual); P5 //c adapter quirk; P6 the
+dot-clock video tap; P7 docs. P1 + P2 ≈ 3 d deliver Extasie, Arlequin and
+Purplesoft. Corpus (all downloaded, to register in `docs/test_corpus.md`):
+the two Chat Mauve demo sides, Purplesoft DOS 3.3 / Purple Pascal, Arlequin,
+Extasie + slideshow + `DSP.IMG`, Eve Leonard.
+
+One fact found after the plan was written, to fold into P3: the Eve
+addendum's colour-table program (`DATA 0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15`)
+says the **rev A COL140 palette is the rev B one with the 4-bit code rotated
+right by one** — the same rotation AppleWin applies to DHGR nibbles. No
+capture needed for rev A.
+
+### 2 · 🟠 Mid-scanline switch lands one character cell off — DIX's rays
+
+**Symptom** (2026-09-01, `DIX-fix.po`, `Apple //e Enhanced PAL`, composite
+OE): the French Touch raster part where horizontal purple/white bars pass
+*behind* the TV frame. Where a bar is hidden by the frame, the hidden span
+starts about **7 dots too early on the left and ends about 7 dots too late on
+the right** — one character cell each side, in the direction that widens the
+hidden span. Vertically the effect is exact, so this is the horizontal
+placement of a mid-line soft-switch, not the scanline.
+
+**Where the placement is decided**: `Memory::pushVideoEventLocked` stamps the
+switch with `cycleCounter + cpu->getCurrentInstructionCycles()`, and
+`Apple2Display::frameCycleToPos` maps it to `byteCol = clamp((emuCycle % 65)
+− 25, 0, 40)` — "visually correct at the column boundary; the exact transition
+cycle within a character clock is a later refinement" (`Apple2Display.cpp`
+next to `frameCycleToPos`). Both replays (RGBA `renderInternalSegment`,
+composite `paintSignalBand`) consume that column through
+`forEachBeamSegment`, so the fix is in one place.
+
+**Why one cell, and why both ways**: two candidate causes, not exclusive.
+(a) The stamp is taken *inside* the instruction — the write of an `STA $C0xx`
+happens in its **last** cycle, and the exact cycle the switch is honoured is
+the one that decides the column; being a cycle early or late at a 65-cycle
+line is at most one cell. (b) The hardware pipeline: the byte fetched during
+cycle *n* is **displayed during the following cycle** (the video latch, UtA2e
+ch. 8 / Sather's timing diagrams), and a mode switch reaches the display side
+one character after the fetch side — a fetch-side switch (page flip) and a
+display-side one (TEXT/HGR, 80COL) do **not** land on the same column for the
+same cycle. A hidden span that opens with one kind of switch and closes with
+the other would widen by one cell on each side — exactly the symptom. DIX's
+MODPAGE trick mixes both kinds on one line.
+
+**How to settle it, then fix it** (*1-2 d*): (1) a synthetic test that throws
+each kind of switch (`$C050/51`, `$C054/55`, `$C00C/0D`, `$C05E/5F`) at a
+known cycle on a known scanline and asserts the dot column of the change,
+with the expected column derived from the hardware timing rather than from
+POM2's current mapping; (2) AppleWin as oracle — its `NTSC_VideoUpdateCycles`
+path is per-cycle and documented, so the same DIX screen in AppleWin
+(RGB or NTSC) gives the reference frame; MAME is **not** an oracle here (its
+Apple II video is per-scanline and does not model mid-line switches);
+(3) `frameCycleToPos` then gains the per-kind one-cell offset (or the stamp
+moves to the write cycle), the existing `horizontal_split*` goldens are
+re-derived, and DIX's raster screen becomes a golden. Related, and closed
+by the same work: the residual "mid-scanline split — exact transition cycle at
+character-clock" line under [Display](#display-hgr--dhgr--80-col).
+
+### 3 · 🟡 `Best1a.nib` did not boot — a write-back had eaten 20 bytes (fixed 2026-09-01, cause open)
+
+**What was wrong.** `disks_5.4/gist/Best1a.nib` had, at track 0, physical
+sector 7 (DOS logical 4 — the `$BA00` page of DOS itself), the 8 sync bytes,
+the `D5 AA AD` prologue and the first 12 nibbles of the data field replaced by
+`F0 FF FF FF BF FC FD F9 FC FB E7 CF BF BF FF FF FF FF FF FF FC FF F7`: 20
+bytes, offsets 2915-2937 of the track, *nothing else on the whole disk*.
+DOS 3.3's boot 1 reads track-0 sectors 0-9 through the PROM's read loop, which
+has no timeout, so the machine sat in the `$C65E` prologue hunt for ever,
+motor on. **Not a bad dump**: git has the file before and after commit
+`06f8d62` (2026-07-30, "Update gist disk images from emulator write-back"),
+and the earlier version is clean — POM2's own write-back did this. Restored
+from `f1e6bb6`; the disk boots to its menu (Montezuma's Revenge, Mario Bros,
+Shamus, H.E.R.O.), waiting for a key in the //e firmware's KEYIN loop at
+`$C27F` — which is also what `Best4a`, `Best5a` and `Best3b` do (earlier notes
+took that `$C2xx` loop for an empty-slot jump; it is the internal ROM).
+`Best1b`, `Best3a` are the data sides: "NOT A STARTUP DISK." / no boot sector,
+by design. The damaged copy is kept off-repo for the investigation below.
+
+**What is open — the cause.** Twenty bytes of almost-all-ones with a stray
+zero every 6-9 bits is what the LSS's *write* of a handful of self-sync `$FF`
+bytes looks like once re-serialised into a byte-aligned `.nib`: a write pulse
+of about 740 cycles at a random spot on track 0, then nothing — no data field
+followed, so it was not a sector write, and DOS never rewrites that sector
+anyway. Two candidates. (a) A **soft-switch write reaching the Disk II that
+was not meant for it** — the same class as the bus-traffic corruption fixed on
+2026-09-01 (`iic_external_smartport` case A, 8/31 flushes before the fix): on
+a //c the SmartPort firmware's probe drives `$C0ED/$C0EF` (Q6/Q7) behind the
+IWM decode, and on a 5.25" card those are "load" and "write". Case C now
+pins that an *empty* port leaves the 5.25" untouched (0 flushes today), but
+that is today's code: 2026-07-30 was the day of "Remove two per-instruction
+hotspots" + "Cache the plugged slot cards to shorten the per-instruction
+fan-out" (`6e9e0f2`, `d16d1bd`), i.e. the slot dispatch was being rewritten
+under the session that wrote the file. (b) A **write-back splice** landing at
+the wrong offset: `saveDirty` splices dirty quarter-tracks back into the
+stream (CHANGELOG 2026-08-22, "three ways a disk write could vanish"), and a
+splice of a *correct* rewrite at a 20-byte offset would look exactly like
+this — but nothing legitimately wrote that sector. To settle it (*½ d*): boot
+every `.nib` in `disks_5.4/gist` headless on the //e PAL, //c and //c PAL
+profiles with write-back on and diff the images after 60 M cycles plus a
+reset; then the same on a `6e9e0f2` worktree. Until then, a `.nib` that stops
+booting is to be diffed against git before anything else — `cmp -l` by
+track (6656 bytes) says in one line whether it is the disk or the emulator.
+`nibwalk.py` (address/data-field walk + 6&2 decode) and the `nibboot`
+harness (PC histogram + text page) live in the 2026-09-01 session scratchpad;
+worth landing as `tools/nibcheck.py` the next time one is needed.
 
 ## Priority order
 
@@ -317,8 +453,9 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   block-row (4 lines), like the RGBA path.
 - 🟢 **Mid-scanline split residuals** — 40-col (280) + 80-col (560) mixed on
   the same line is undefined (separate `frame`/`frame80` buffers, scoped
-  out); the exact transition cycle at character-clock is a later
-  refinement. **Back-port to POM1** next (gated: LORES+TEXT rendering on
+  out). The exact transition cycle at character-clock is no longer a "later
+  refinement": DIX shows it as a one-cell error each side —
+  [Next up § 2](#2--mid-scanline-switch-lands-one-character-cell-off--dixs-rays). **Back-port to POM1** next (gated: LORES+TEXT rendering on
   GEN2 — HGR-only today — + HBLANK flag Phase 2 per Bernie's spec).
 - 🟢 **PAL residuals** — device generator clocks (AY/IWM/SSI263) stay at the
   NTSC nominal (0.7 % delta = inaudible pitch, deliberately not retimed;
@@ -345,8 +482,11 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   - **F6** row-dim mask ×0.7 ⚠ (make luminance-neutral, don't drop hard).
   - *(Non-items, documented: F1 clamp double > AppleWin float; F8/F9 amber/green
     tints assumed — optional "AppleWin-faithful" preset.)*
-- 🟢 **Le Chat Mauve EVE** (64 KB ext RAM + SPEC1/SPEC2/DASH/COL280),
-  **Video-7 AppleColor RGB**, **Color killer Rev 1**,
+- 🟠 **Le Chat Mauve EVE / Féline / RVB Graph / //c adapter** — now
+  [Next up § 1](#1--le-chat-mauve-at-the-silicon--docschatmauve_planmd),
+  planned in `docs/chatmauve_plan.md`. Still parked alongside: **Video-7
+  AppleColor RGB** (its 160×192 chunky mode and F/B text are the only things
+  the plan's Féline decoder does not cover), **Color killer Rev 1**,
   **Strapping RAM 4K→48K**.
 
 ### [Audio]

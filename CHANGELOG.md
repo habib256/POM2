@@ -5,6 +5,39 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — Best1a.nib was not a bad dump, and the Chat Mauve gets a plan
+
+**Twenty bytes.** `disks_5.4/gist/Best1a.nib` hung every boot in the Disk II
+PROM's prologue hunt at `$C65E`, motor on: track 0, physical sector 7 had no
+readable data field. The first reading — a bad dump, a real machine would
+hang the same way — was wrong, and git said so: the folder is tracked, and
+commit `06f8d62` (2026-07-30, "Update gist disk images from emulator
+write-back") had changed exactly 20 bytes of the file, the sync run, the
+`D5 AA AD` and the first nibbles of that one data field, for a burst of
+almost-all-ones that is what a handful of LSS-written self-sync `$FF` look
+like once re-serialised into a byte-aligned `.nib`. POM2 did it. Restored
+from `f1e6bb6`; the disk boots to its menu. The lesson goes in TODO with the
+disk: a `.nib` that stops booting is diffed against git *first* — `cmp -l`
+by 6656-byte track tells the disk from the emulator in one line. What wrote
+~740 cycles of sync onto track 0 that day is open (that was the day the
+slot dispatch was being rewritten for speed); `iic_external_smartport`
+case C now pins the rule it broke — an empty external port leaves the 5.25"
+with zero flushes and nothing dirty — which passed silently before because
+nobody had asserted it.
+
+**`docs/chatmauve_plan.md`.** The research pass on the Chat Mauve family
+(the Eve reference manual and its erratum, the Eve's PLS100 fuse map, the
+Video-7 patent, the *Manuel Arlequin*, fenarinarsa's real-hardware
+measurements) written up as the phased plan to a dot-level model, mixed
+DHGR first. Two of today's labels are wrong and are named there:
+`$C0BA/B` is TXTGREEN, not "HGR Duochrome", and the fg/bg HGR POM2 renders is
+the Eve's CP280 with the nibbles swapped. Table IX-1 read off the scan
+(BW560 is HR3 alone; the "blanked" row keeps CPREG working), and the
+addendum's colour-table program turned out to *be* the rev A palette: rev B
+with the 4-bit code rotated right by one. `TODO.md` opens with a "Next up"
+section — the plan, then the one-character-cell mid-scanline offset DIX's
+rays expose, then the Best1a finding.
+
 ## 2026-09-01 — The bus survives a rewind, and the DIB says what it is
 
 Two notes bug hunt 3 had left in TODO as "small and honest", closed.
