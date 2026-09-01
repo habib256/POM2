@@ -5,6 +5,153 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The SmartPort wire, decoded, encoded and checksummed
+
+Continuing the entry below: POM2 now speaks the SmartPort bus protocol
+properly rather than answering its handshake with canned bytes. The command
+packet is decoded, the reply is built with the real encoding and a real
+checksum, and the firmware's enumeration accepts the device and stops
+scanning. It still does not boot — but for the first time the remaining
+question is about the device's ANSWERS, not the wire.
+
+**All of it was read out of the ROM.** The frame is
+`FF… $C3 | 7 header | odd section | groups | chk1 chk2 | $C8`, every byte
+carrying bit 7 because that is what "byte ready" means to the IWM shifter.
+The header lands at `$0051` down to `$004B`, so `$004C` is the odd-byte count
+and `$004B` the count of seven-byte groups. Each group is a marker byte
+carrying the seven data bytes' bit 7s, most significant first — POM2 derives
+that from the ROM's own tables at `$CA27/$CA37/$CA47/$CA57`, which contain
+nothing but `$80`/`$00` masks keyed on the marker's bits. The checksum is a
+running XOR of the header WIRE bytes, the decoded group bytes and the decoded
+odd bytes, sent 4-and-4 and recovered as `((chk2 << 1) | 1) & chk1`.
+
+**The wire is not a guess any more.** The checksum POM2 computes for a
+header-only reply is `$81`, and `$81` is the byte the firmware's own `$40`
+holds when it reaches its terminator check. That number matching is the
+difference between "it seems to work" and "we know what it is".
+
+**The bug that cost the most, and reads like a checksum failure.** A first
+version answered every command with a 512-byte block. The enumeration's reply
+buffer is a few bytes of zero page — so the payload walked over `$004B` and
+`$004C`, the very fields that say how long the packet is, and the firmware
+rejected it. The fix is to look at the command: `$05` (enumerate) gets a
+header-only status answer, `$01` (read block) gets the 512 bytes. Two other
+mistakes worth the same warning: the phase pattern ADDRESSES the device but
+does not gate every byte — the firmware drops PH1 as soon as it starts reading
+the reply, so a per-access gate hands the rest of the packet to an empty IWM —
+and a write once a reply exists opens a NEW transaction, without which the
+command buffer accumulates the whole session and every answer is the first
+one.
+
+**Where it stops**: after the enumeration the firmware does not proceed to the
+boot's block read. The likely gap is the content of the status reply — a
+device descriptor the scan stores (`$07F8,Y` holds the count, `$CCD1` checks
+the unit against it) and the boot consults. The next step is the enumeration's
+continuation at `$CE34`. `smartport_bus_handshake` pins the water mark
+reached, including the decoded command (`$05`, nine body bytes) — a decoder
+that silently mis-framed would still hand back a reply and still look fine
+until block numbers mattered.
+
+## 2026-09-01 — Speaking the SmartPort bus, three steps of five
+
+The wall the entry below describes is a protocol, and a protocol can be
+answered. `LironCard` now carries an optional byte-level responder for the
+SmartPort **bus** — the exchange an intelligent UniDisk 3.5 has with the
+firmware — and the firmware now gets three steps further than "no device
+connected": it sees a device, sends its command packet, and reads back a
+header reply. Then it asks for the payload, and POM2 has nothing to say.
+
+**The protocol was read out of the ROM, not looked up.** POM2's own
+`disassemble6502` over `roms/liron.rom`: the probe at `$C800` (PH1 + LSTRB
+high, SEL, motor, then fifty polls of the status register for SENSE), the
+sender at `$C87D` (bytes to `$C0nD` with bit 7 set, write handshake at
+`$C0nC` between them, seven data bytes per group behind a byte of their
+gathered high bits), the drain at `$C92C`, the acknowledgement at `$C943`
+(SENSE must go LOW), and the receiver at `$C960` — which re-asserts the
+attention lines, reads `$C0nD`, waits for SENSE HIGH, hunts for `$C3` and
+takes seven header bytes into `$0051` down to `$004B`. `$004C` is the payload
+length and `$004D` must be non-zero or the enumeration throws the device away.
+The full map is in `TODO.md` § Storage, and the //c's bank-1 firmware is the
+same code byte for byte, so it serves both machines.
+
+**Three things the firmware taught, each of which cost a run to find:**
+
+- The write handshake's bit 6 is an underrun flag the firmware waits to see
+  **clear** after its last byte. Answering `$C0` (bit 6 set) parks it in the
+  drain loop at `$C92C` for ever. A device with nothing in flight says `$80`.
+- SENSE is not a write-protect line here, it is the device's attention line,
+  and it has three states in one transaction: HIGH for the presence poll, LOW
+  to acknowledge the command, HIGH again when the reply is ready. Holding it
+  high throughout stalls the acknowledgement; holding it low stalls the reply.
+- There is no usable edge on the handshake lines to trigger the reply on — the
+  firmware leaves PH1 and LSTRB up across the whole exchange. Its read of
+  `$C0nD` at `$C97A` is the only distinctive event, and nothing else in the
+  transaction touches that offset.
+
+**Off by default**, and the default is the honest one: with the responder off
+the card behaves like a Liron with an empty port, which is a shippable state;
+with it on the firmware advances and then waits, which is a workbench. Two
+tests pin the two states — `liron_boot35` and `smartport_bus_handshake` — and
+between them they say exactly where the boundary is.
+
+**For whoever wires this to the //c**: that machine's internal drive is a
+**5.25"** owned by `DiskIICard`, with the 3.5" on the rear expansion port.
+The responder must answer for the external device only;
+`IIcClassProfile::ioReadIWM`'s `isPlus_` gate exists because an IWM and a
+DiskIICard fighting over one 5.25" drive corrupt the head position badly
+enough to send DOS 3.3 RWTS into seek storms. The Liron has no internal drive
+to fight over, which is why the protocol work belongs there first.
+
+## 2026-09-01 — The Liron card, and the wall both it and the //c hit
+
+`LironCard` is the Apple II 3.5" Disk Controller as silicon: the real 4 KB
+EPROM (`roms/liron.rom`) executing on the 6502, a real `IWMDevice` behind
+$C0nX, real Sony mechanisms. Not to be confused with `SmartPortCard`, which
+wears the same hardware's name and answers ProDOS's block calls from the host
+— that one works and stays; this one was to be the same machine as the //c+,
+on the expansion bus.
+
+**It does not boot, and the reason is worth the card.** TODO § Storage
+estimated 8-12 hours on the grounds that "the risk was never the card". The
+card was indeed small. The risk was the DRIVE. Disassembled from the dump with
+POM2's own `disassemble6502`, the firmware's device scan at $C800 drives PH1
+and LSTRB high, asserts SEL and the motor, then polls the status register
+fifty times for the SENSE line — and on timeout reports ProDOS $28, "no device
+connected", with no fallback. Holding LSTRB high through a status read is the
+tell: on a dumb Sony mechanism that line is the write strobe. This is the
+SmartPort **bus** handshake, which only an *intelligent* device answers — a
+UniDisk 3.5, with its own 65C02 inside the drive. POM2's TODO has kept that
+processor out of scope from the start; it turns out to be the thing standing
+between this card and a boot, and it took building the card to learn that.
+
+**The plain //c is the same code, byte for byte.** `apple2c-32Kv0.rom` bank 1
+$C88C matches the Liron's $C806, and $CA80 matches $CA05 — one Apple code base
+in two packages. So the campaign's last two items were never two ports: they
+are one missing subsystem, a SmartPort bus-level responder. (The //c+ boots
+because its ROM *also* carries a GCR path for its on-board dumb drive,
+selected through the MIG. The 16 KB //c dumps carry no 3.5" firmware at all.)
+Two independent dumps and a running trace say so, which is why the backlog now
+says it in one item instead of two.
+
+**Two bugs found on the way, both in the card and both invisible without the
+real firmware:**
+
+- Phase lines were forwarded only to the *selected* drive. The firmware sets
+  the Sony register address up BEFORE it enables a drive, so every sense read
+  answered for register 0 and the probe never even strobed. CA0-CA2 and LSTRB
+  are wired straight to the connector on real hardware; they go to the whole
+  chain now.
+- `devsel` was mapped to the drive, as the //c+'s MIG-driven hub does it. A
+  Liron has no MIG: SEL is head select, and drive selection is the daisy
+  chain. Mapping SEL to a second (empty) bay meant every probe answered for a
+  drive with no disk in it.
+
+The card is deliberately **not** in the slot catalog yet: shipping a card that
+enumerates nothing would be a worse answer than `SmartPortCard`, which serves
+the same volumes and works. `liron_boot35` pins what is real today — the ROM
+identity, the per-slot page, and the probe reaching the drive — and
+`POM2_LIRON_BOOT_STRICT=1` is the acceptance test waiting for the responder.
+
 ## 2026-09-01 — The //c+ boots a 3.5" disk with its own firmware
 
 Not through POM2's host-served SmartPort substitute at slot 5 — through the

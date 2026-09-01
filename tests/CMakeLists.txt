@@ -509,6 +509,69 @@ add_test(NAME smartport_35_smoke COMMAND test_smartport_35)
 set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
 
 
+# ─── The SmartPort BUS protocol, as far as POM2 speaks it ────────────────
+# `liron_boot35` below pins the card with its bus responder OFF (a Liron with
+# an empty port, which is what ships). This one pins it ON: the firmware sees
+# a device, sends its command packet, and reads back a decoded, checksummed
+# reply. Every step of the frame was read out of `roms/liron.rom` with POM2's
+# own disassembler, and every one of them is easy to break silently — a
+# mis-framed decoder still hands back a reply and still looks fine until
+# block numbers matter, so the decoded command is asserted too.
+
+add_executable(test_smartport_bus_handshake
+    smartport_bus_handshake_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LironCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_smartport_bus_handshake
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_smartport_bus_handshake PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_smartport_bus_handshake PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_smartport_bus_handshake PRIVATE winmm)
+endif()
+add_test(NAME smartport_bus_handshake
+         COMMAND test_smartport_bus_handshake
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(smartport_bus_handshake PROPERTIES TIMEOUT 30)
+
+
+# ─── The Liron card, and the wall it hits ─────────────────────────────────
+# The real 4 KB EPROM on a real 6502 over a real IWM. It does NOT boot, and
+# the test pins exactly what IS real — ROM identity, the per-slot page, the
+# probe reaching the drive — because the missing piece is a SmartPort BUS
+# responder, not the card. `POM2_LIRON_BOOT_STRICT=1` is the acceptance test
+# waiting for it. ROM-gated: SKIPs cleanly without roms/liron.rom.
+
+add_executable(test_liron_boot35
+    liron_boot35_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/LironCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_liron_boot35 PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_liron_boot35 PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_liron_boot35 PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_liron_boot35 PRIVATE winmm)
+endif()
+add_test(NAME liron_boot35
+         COMMAND test_liron_boot35
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(liron_boot35 PROPERTIES TIMEOUT 60 LABELS slow)
+
+
 # ─── The //c+ boots an 800K disk with its OWN firmware ────────────────────
 # Not the host-served SmartPort substitute at slot 5 (`iic_onboard_smartport_
 # smoke` pins that): the ROM drives the MIG, the MIG selects the drive, the

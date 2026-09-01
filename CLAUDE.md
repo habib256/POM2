@@ -109,6 +109,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | IWM (//c, //c+, Mac, IIgs) | `IWMDevice.*` | [§ IWM](DEV.md#iwm-c-on-board) |
 | SmartPort 3.5" //c+ on-board (`.po`/`.2mg`/`.woz`) | `Disk35Image.*`, `Sony35Drive.*`, `Sony35Gcr.*`, `SmartPortHub.*` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | SmartPort slot card (Liron-class) | `SmartPortCard.*`, `SmartPort*Unit.*` | [§ SmartPortCard](DEV.md#smartportcard-e-liron-class) |
+| Liron card at silicon level — real EPROM + IWM, runs the firmware; blocked on a SmartPort **bus** responder (not in the slot catalog) | `LironCard.h/.cpp` | [§ SmartPort 3.5"](DEV.md#smartport-35-stack) |
 | Super Serial + telnet | `SuperSerialCard.h/.cpp` | [§ SSC](DEV.md#super-serial-card-slot-2--telnet-bridge) |
 | Zilog Z8530 SCC (Mac / IIgs / Workstation Card serial chip) | `Scc8530Device.h/.cpp` | [§ Z8530 SCC](DEV.md#zilog-z8530-scc-scc8530device) |
 | Apple II Workstation Card (LocalTalk coprocessor: own 65C02 + RAM + SCC) — catalog `workstation` | `WorkstationCard.h/.cpp` | [§ Workstation Card](DEV.md#apple-ii-workstation-card-workstationcard) |

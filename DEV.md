@@ -2823,6 +2823,56 @@ gets that wrong measures mode $00 every time; and the IWM's `sync()` walker
 only moves forward, so handing it a timestamp older than one it already
 reached returns an empty stream for the rest of the run.
 
+*`LironCard` — the same hardware as `SmartPortCard`, at the other level*
+(2026-09-01). `SmartPortCard` answers ProDOS's block calls from the host and
+borrows only the Liron dump's identity bytes; it works and is what a user
+should plug. `LironCard` is the card as silicon: the real 4 KB EPROM
+executing, an `IWMDevice` behind `$C0nX`, Sony mechanisms under the head.
+Wiring differs from the //c+ in exactly one place — a Liron has no MIG, so the
+IWM's SEL line is head select (and bit 3 of the Sony register address), where
+`SmartPortHub` uses the MIG's `$C240/$C260`.
+
+It runs the firmware and does **not** boot, for a reason that is not the GCR
+path: the scan at `$C800` drives PH1 + LSTRB high, asserts SEL and the motor,
+polls the status register 50× for SENSE, and reports ProDOS `$28` on timeout.
+That is the SmartPort **bus** handshake — only an intelligent device (UniDisk
+3.5, own 65C02) answers it, and the scan has no dumb-drive fallback. The plain
+//c's bank-1 firmware is the same code byte for byte (`$C88C` ≡ the Liron's
+`$C806`), so both remaining 3.5" items need one thing: a SmartPort bus-level
+responder. → `TODO.md` § Storage. Pinned by `liron_boot35`
+(`POM2_LIRON_BOOT_STRICT=1` demands the boot, for whoever writes it). The card
+is intentionally absent from the slot catalog until then.
+
+Two card-side bugs the real firmware exposed, both worth knowing when wiring
+any IWM card: the phase lines must reach EVERY drive on the chain, not only
+the selected one (the firmware sets the register address up before enabling a
+drive); and `devsel` must not pick the drive on a Liron, because SEL is head
+select there.
+
+*The bus responder* (`LironCard::setBusResponderEnabled`, **off** by default).
+The SmartPort bus exchange is a byte stream through the IWM's data register,
+so POM2 answers it at the byte level rather than modulating flux — the same
+seam `SmartPortCard` uses one layer up (docs/lle_vs_hle.md). Implemented and
+pinned (`smartport_bus_handshake`): the presence handshake, the command packet
+DECODED, and a framed reply with the real group encoding and checksum. The
+enumeration accepts the device and stops scanning. What is missing is the
+content of the status reply — the firmware does not go on to the boot's block
+read — not the wire, whose checksum POM2 computes to the same byte the
+firmware holds in `$40`. Protocol map with ROM addresses in `TODO.md` §
+Storage; `POM2_TRACE_SMARTPORT_BUS=1` prints every byte in both directions.
+
+Four behaviours worth knowing before touching it. First, the one that reads
+like a checksum failure and is not: the enumeration's reply buffer is a few
+bytes of ZERO PAGE, so answering its `$05` with a 512-byte block walks over
+`$004B`/`$004C` — the fields that say how long the packet is. Look at the
+command before choosing a payload. Then the three wire ones: the write
+handshake's bit 6 is an underrun flag the firmware waits to see **clear**
+(answer `$80`, not `$C0`, or it hangs in the drain loop at `$C92C`); SENSE is
+an attention line with three states per transaction (high for presence, low to
+acknowledge the command, high when the reply is ready); and the firmware
+leaves PH1 and LSTRB asserted across the whole exchange, so there is no edge to
+trigger the reply on — its read of `$C0nD` at `$C97A` is the cue.
+
 *WOZ (flux) images* (2026-08-18). A `.woz` holds bit CELLS, and POM2
 stores 3.5" media as a flat block array with no GCR *encoder* — so a flux
 dump has nothing to be mounted as unless it is decoded at LOAD time.

@@ -211,6 +211,7 @@ set(SOURCES
     src/JoystickPanel_ImGui.cpp
     src/LeChatMauveCard.cpp
     src/LeChatMauve_ImGui.cpp
+    src/LironCard.cpp
     src/M68705P3.cpp
     src/MainWindow.cpp
     src/MainWindow_MemoryMaps.cpp
@@ -375,6 +376,7 @@ set(POM2_DEVICES_SOURCES
     src/FujiNetCard.cpp
     src/GrapplerCard.cpp
     src/LeChatMauveCard.cpp
+    src/LironCard.cpp
     src/M68705P3.cpp
     src/MC6821.cpp
     src/Mockingboard.cpp
@@ -687,6 +689,7 @@ set(HEADERS
     src/JoystickPanel_ImGui.h
     src/IconsFontAwesome6.h
     src/LeChatMauveCard.h
+    src/LironCard.h
     src/LeChatMauve_ImGui.h
     src/M68705P3.h
     src/MainWindow.h
@@ -1150,6 +1153,7 @@ set(POM2_CORE_SOURCES
     src/CharRomCatalog.cpp
     src/CharRomDump.cpp
     src/LeChatMauveCard.cpp
+    src/LironCard.cpp
     src/M68705P3.cpp
     src/AudioCoordinator.cpp
     src/DevicePanelCoordinator.cpp
