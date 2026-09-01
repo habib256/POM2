@@ -136,8 +136,14 @@ bool SmartPortBusDevice::anyMedia() const
 
 SmartPortBusUnit* SmartPortBusDevice::unitFor(uint8_t chainNumber) const
 {
-    if (chainNumber < 1 || chainNumber > unitCount_) return nullptr;
-    return units_[static_cast<std::size_t>(chainNumber - 1)];
+    for (int i = 0; i < unitCount_; ++i)
+        if (ids_[static_cast<std::size_t>(i)] == chainNumber)
+            return units_[static_cast<std::size_t>(i)];
+    // No INIT seen (a host that skips the scan): count from 1, as a chain
+    // freshly powered next to a Liron would be numbered.
+    if (assigned_ == 0 && chainNumber >= 1 && chainNumber <= unitCount_)
+        return units_[static_cast<std::size_t>(chainNumber - 1)];
+    return nullptr;
 }
 
 void SmartPortBusDevice::reset()
@@ -148,6 +154,8 @@ void SmartPortBusDevice::reset()
 
 void SmartPortBusDevice::busReset()
 {
+    ids_.fill(0);
+    assigned_ = 0;
     rx_.clear();
     reply_.clear();
     replyPos_     = 0;
@@ -320,12 +328,15 @@ void SmartPortBusDevice::serveCommand(const std::array<uint8_t, 7>& header,
 
     switch (cmd) {
     case kCmdInit: {
-        // The scan assigns chain numbers in order: dest $81 is the first
-        // device. Status zero says "more behind me"; the last device answers
-        // non-zero and the scan stops ($CE30-$CE34). The device count it
-        // keeps is what it later checks every unit number against ($CCD1).
-        const uint8_t assigned = header[0];           // $01, $02, …
-        const uint8_t status   = (assigned >= unitCount_) ? 0xFF : 0x00;
+        // The scan names the devices in chain order: each INIT's destination
+        // is the number the next unit takes. Status zero says "more behind
+        // me"; the last unit answers non-zero and the scan stops ($CE30-
+        // $CE34 on a Liron). The count the host keeps is what it later
+        // checks every unit number against ($CCD1). The number itself is
+        // the host's: a //c+ starts at 2, its MIG drive being device 1.
+        if (assigned_ < unitCount_)
+            ids_[static_cast<std::size_t>(assigned_++)] = header[0];
+        const uint8_t status = (assigned_ >= unitCount_) ? 0xFF : 0x00;
         buildReply(status, nullptr, 0, false);
         break;
     }

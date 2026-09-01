@@ -188,7 +188,10 @@ const ProfileConfig& cfgAppleIIcPlus()
     // apple2cp() (`apple2e.cpp:5229-5249`) starts from apple2c() and
     // additionally removes sl4 + sl6 to instantiate the IWM directly.
     // The //c+ adds an on-board SmartPort 3.5" path at slot 5 (firmware
-    // bank 1 at $C500) on top of the //c's serial + mouse + Disk II.
+    // bank 1 at $C500) on top of the //c's serial + mouse + Disk II. Its
+    // rear connector takes an intelligent drive too: the firmware probes it
+    // over the SmartPort bus at boot, and IIcExternalSmartPort answers for
+    // the slot-5 card's units, numbered from 2 behind the internal drive.
     static const ProfileConfig cfg{
         SystemProfile::AppleIIcPlus,
         "iic+",

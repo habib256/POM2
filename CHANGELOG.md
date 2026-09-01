@@ -5,6 +5,41 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The rear connector on the //c+ too, and what the 16 KB //c cannot do
+
+"The external port exists on the //c+ and the 16 KB //c as well." It does,
+and the two answers are opposite.
+
+**The //c+ probes it.** A trace of the //c+ boot shows its firmware asserting
+PH1 + LSTRB with SEL on drive 2 and polling SENSE fifty times at `$F223`
+(bank 1) — the SmartPort presence scan, same protocol as the Liron's (its
+bank 1 carries the identical sync table at `$C88F`), a different
+implementation (trampolined through page 3, the send at `$C895`). Nothing
+answered, so an 800K on the slot-5 card was invisible to a //c+ exactly as
+it had been to a //c. The wiring differs from the //c's in one respect: the
+//c+'s shared IWM already owns the port for the MIG-routed Sony drives, so
+the port rides along on that chip — `SmartPortBusPort` grew a `shared*`
+half the profile calls around its own IWM access — instead of tracking
+registers of its own.
+
+**And it taught the responder something the //c had let it get wrong
+harmlessly: chain numbers belong to the host.** The first //c+ INIT arrived
+for device **2** — its internal MIG drive is device 1 — and a responder that
+mapped "destination 2" onto its second (empty) bay refused the boot's READ
+with `$2F`. A real drive does not know its number until the scan tells it.
+`SmartPortBusDevice` now takes the number each INIT carries, in chain order,
+and forgets them on bus reset. With that, an empty internal bay boots the
+external 3.5" (ProDOS 8 after 39 block reads) and a full one lists both
+slot-5 units; `iic_external_smartport` pins both as cases D and E.
+
+**The 16 KB //c cannot.** ROM 255 has no SmartPort firmware at all — its
+`$C500` reads `FF 20 4D CE …`, not a disk controller page — which is
+historically why Apple sold the ROM 0 upgrade with the UniDisk 3.5. On that
+machine the rear connector takes a second 5.25", which POM2 already has as
+`DiskIICard` drive 2, and a 3.5" stays reachable only through the host-served
+`$C500` substitute. Written down so nobody goes looking for a probe that is
+not there.
+
 ## 2026-09-01 — The //c gets its external 3.5" back: the SmartPort bus, finished and wired
 
 The request was plain: a //c with its internal 5.25" **and** a 3.5" on the

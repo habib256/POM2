@@ -28,10 +28,7 @@ IIcExternalSmartPort::IIcExternalSmartPort(SlotBus* slots, int slot)
     // INIT scan ($C9E5 in the Liron dump; the //c's bank 1 is the same
     // code). Nothing mechanical hangs off this IWM, so nothing else needs
     // the callback.
-    regs_.setPhasesCallback([this](uint8_t phases) {
-        if ((phases & 0x05) == 0x05) bus_.busReset();
-        bus_.reqChanged((phases & 0x01) != 0);
-    });
+    regs_.setPhasesCallback([this](uint8_t phases) { syncLines(phases); });
     regs_.setDevselCallback([](uint8_t) {});
     regs_.setSel35Callback([](bool) {});
 }
@@ -51,25 +48,25 @@ bool IIcExternalSmartPort::live()
     return enabled_ && bind() && bus_.anyMedia();
 }
 
-bool IIcExternalSmartPort::addressed() const
+bool IIcExternalSmartPort::addressed(uint8_t phases, uint8_t control)
 {
     // PH1 (CA1) and PH3 (LSTRB) both high with the port enabled: what the
     // firmware's scan asserts before it polls SENSE, and something no disk
     // transaction ever does.
-    const uint8_t ph = regs_.phases();
-    return (ph & 0x02) && (ph & 0x08) && (regs_.control() & 0x10);
+    return (phases & 0x02) && (phases & 0x08) && (control & 0x10);
 }
 
-bool IIcExternalSmartPort::read(uint8_t offset, uint64_t cycles, uint8_t& out)
+void IIcExternalSmartPort::syncLines(uint8_t phases)
 {
-    // Track unconditionally — the control state must be right the moment a
-    // device appears — answer only while live.
-    regs_.tick(cycles);
-    const uint8_t v = regs_.read(static_cast<uint8_t>(offset & 0xF));
-    if (!live()) return false;
-    if (!addressed() && !bus_.active()) return false;
+    if (phases == lastPhases_) return;
+    lastPhases_ = phases;
+    if ((phases & 0x05) == 0x05) bus_.busReset();
+    bus_.reqChanged((phases & 0x01) != 0);
+}
 
-    switch (regs_.control() & 0xC0) {
+bool IIcExternalSmartPort::answer(uint8_t control, uint8_t iwmValue, uint8_t& out)
+{
+    switch (control & 0xC0) {
     case 0x00: {
         // Data register, read mode: the device's next byte, or $00 for
         // "nothing yet". Every SmartPort byte on the wire carries bit 7,
@@ -83,13 +80,33 @@ bool IIcExternalSmartPort::read(uint8_t offset, uint64_t cycles, uint8_t& out)
         out = 0x80;
         return true;
     case 0x40:
-        // Status: the mode bits from the tracker, and SENSE — the device's
+        // Status: the mode bits from the chip, and SENSE — the device's
         // ACK — in bit 7.
-        out = static_cast<uint8_t>((v & 0x7F) | (bus_.sense() ? 0x80 : 0x00));
+        out = static_cast<uint8_t>((iwmValue & 0x7F) | (bus_.sense() ? 0x80 : 0x00));
         return true;
     default:
         return false;
     }
+}
+
+void IIcExternalSmartPort::takeByte(const IWMDevice& iwm, uint8_t offset,
+                                    uint8_t value)
+{
+    // The IWM's own test for a DATA write: Q6 + Q7 set, odd offset, drive
+    // enabled — the mode register otherwise.
+    if (!iwm.isIdle() && (iwm.control() & 0xC0) == 0xC0 && (offset & 1))
+        bus_.hostWrote(value);
+}
+
+bool IIcExternalSmartPort::read(uint8_t offset, uint64_t cycles, uint8_t& out)
+{
+    // Track unconditionally — the control state must be right the moment a
+    // device appears — answer only while live.
+    regs_.tick(cycles);
+    const uint8_t v = regs_.read(static_cast<uint8_t>(offset & 0xF));
+    if (!live()) return false;
+    if (!addressed(regs_.phases(), regs_.control()) && !bus_.active()) return false;
+    return answer(regs_.control(), v, out);
 }
 
 void IIcExternalSmartPort::write(uint8_t offset, uint8_t value, uint64_t cycles)
@@ -99,19 +116,39 @@ void IIcExternalSmartPort::write(uint8_t offset, uint8_t value, uint64_t cycles)
     // (`STA $C0EF,X` with the first sync byte) is itself the first byte
     // of the packet, and the state after it is what the IWM uses to tell a
     // data write from a mode write.
-    const bool isLive  = live();
-    const bool forBus  = isLive && (addressed() || bus_.active());
+    const bool forBus = live() &&
+        (addressed(regs_.phases(), regs_.control()) || bus_.active());
     regs_.setBusCapture(forBus);
     regs_.write(static_cast<uint8_t>(offset & 0xF), value);
-    if (forBus && !regs_.isIdle() &&
-        (regs_.control() & 0xC0) == 0xC0 && (offset & 1))
-        bus_.hostWrote(value);
+    if (forBus) takeByte(regs_, offset, value);
+}
+
+bool IIcExternalSmartPort::sharedWantsWrite(const IWMDevice& iwm)
+{
+    return live() && (addressed(iwm.phases(), iwm.control()) || bus_.active());
+}
+
+void IIcExternalSmartPort::sharedAfterWrite(const IWMDevice& iwm, uint8_t offset,
+                                            uint8_t value, bool forBus)
+{
+    syncLines(iwm.phases());
+    if (forBus) takeByte(iwm, offset, value);
+}
+
+bool IIcExternalSmartPort::sharedAfterRead(const IWMDevice& iwm, uint8_t iwmValue,
+                                           uint8_t& out)
+{
+    syncLines(iwm.phases());
+    if (!live()) return false;
+    if (!addressed(iwm.phases(), iwm.control()) && !bus_.active()) return false;
+    return answer(iwm.control(), iwmValue, out);
 }
 
 void IIcExternalSmartPort::reset()
 {
     regs_.reset();
     bus_.reset();
+    lastPhases_ = 0;
 }
 
 }  // namespace pom2

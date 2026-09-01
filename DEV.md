@@ -2938,6 +2938,27 @@ it to `Memory`, which forwards it to each //c-class profile it builds. The
 port's state is not in snapshots: a restore, like a reset, abandons any
 transaction in flight.
 
+**The //c+** has the same connector and its own SmartPort implementation
+(bank 1, trampolined through page 3; the bus send at `$C895` with the Liron's
+sync table, the presence scan at `$F223` — fifty SENSE polls with SEL on
+drive 2). There the shared IWM already owns the port for the MIG-routed Sony
+drives, so the port does not track registers of its own: `ioReadIWM /
+ioWriteIWM` perform the access on that IWM and call the contract's `shared*`
+hooks around it (`sharedWantsWrite` → `setBusCapture`, `sharedAfterWrite`,
+`sharedAfterRead`), same claim rule, same answers. One protocol fact only the
+//c+ exposed: **chain numbers are the host's**. Each INIT names the next
+device with whatever number the scan reached — 1 on a Liron or a //c, 2 on a
+//c+ whose internal drive is device 1 — and a responder that assumed 1 refused
+every //c+ READ with `$2F`. `SmartPortBusDevice` now assigns on INIT and
+forgets on bus reset. Pinned in `iic_external_smartport` (D: empty bay boots
+the external 3.5"; E: internal boot lists both units).
+
+**The 16 KB //c (ROM 255)** has no SmartPort firmware: its `$C500` is not a
+disk page (`FF 20 4D CE …`), so nothing on that machine can speak to an
+intelligent drive — historically the reason for the ROM 0 upgrade. Its rear
+connector takes a second 5.25", which is `DiskIICard` drive 2; a 3.5" there
+is reachable only through the host-served `$C500` substitute.
+
 *WOZ (flux) images* (2026-08-18). A `.woz` holds bit CELLS, and POM2
 stores 3.5" media as a flat block array with no GCR *encoder* — so a flux
 dump has nothing to be mounted as unless it is decoded at LOAD time.
