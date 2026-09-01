@@ -93,6 +93,12 @@ out as the maker drew them.
   fold § 3.4's corrected table back into § 3 prose (today it is a note under
   the table), and the README's Chat Mauve paragraph.
 
+**Slot Config now tags each card with its LLE/HLE level** from the
+abstraction catalog (2026-09-02). 🟢 Four cards have no row in
+`docs/lle_vs_hle.md` (hence no tag in the picker): **liron** (silicon-level
+card), **workstation**, **4play**, **transwarp**. Classify them in the doc
+AND `abstractionCatalog()` together — the two are kept in step by hand.
+
 **Found on the way — fixed the same day** (CHANGELOG 2026-09-01): headless
 DOS 3.3 paid RWTS's one-second motor-on wait on nearly every sector because
 the legacy nibble gate stopped the spindle instantly on `$C0E8`, freezing the

@@ -54,6 +54,7 @@
 #include "DiskIICard.h"
 #include "EchoPlusCard.h"
 #include "EmulationController.h"
+#include "AbstractionLevels_ImGui.h"
 #include "LeChatMauveCard.h"
 #include "Logger.h"
 #include "Memory.h"
@@ -295,9 +296,39 @@ void MainWindow::renderSlotConfigPanel()
             const bool dup = isDuplicate(s);
             if (dup) anyDuplicate = true;
 
-            const char* preview = "(empty)";
+            // Each card is tagged with its emulation level from the
+            // abstraction catalog (the LLE/HLE panel's source of truth —
+            // `docs/lle_vs_hle.md` made live), so the picker says whether
+            // you are choosing silicon or a service. Static classification;
+            // the Abstraction Levels panel is where live degradation shows.
+            auto absEntryFor = [](const std::string& key) -> const pom2::AbsEntry* {
+                if (key.empty()) return nullptr;
+                // Card keys that differ from the catalog's ids (the catalog
+                // predates some renames; the Sound II shares the A/C entry).
+                const char* id = key.c_str();
+                if (key == "smartport35")    id = "smartportcard";
+                else if (key == "printer")   id = "printercard";
+                else if (key == "mockingboard_c") id = "mockingboard";
+                else if (key == "phasor")    id = "mockingboard";  // doc row: "Mockingboard / Phasor", L1
+                else if (key == "echoplus")  id = "ssi263";        // the Cricket IS the SSI263 row
+                else if (key == "echoplus_tms") id = "tms5220";
+                // liron / workstation / 4play / transwarp have no row in
+                // docs/lle_vs_hle.md yet — no tag rather than an invented one
+                // (backlog item; the doc and the catalog move together).
+                for (const auto& e : pom2::abstractionCatalog())
+                    if (std::string(id) == e.id) return &e;
+                return nullptr;
+            };
+            auto levelTag = [&](const std::string& key) -> std::string {
+                const auto* e = absEntryFor(key);
+                if (!e) return {};
+                return std::string("  [") + pom2::levelBadge(e->level) + " · " +
+                       (pom2::levelIsLle(e->level) ? "LLE" : "HLE") + "]";
+            };
+
+            std::string preview = "(empty)";
             for (const auto& ct : kCardTypes) {
-                if (ct.key == draft[s]) { preview = ct.label; break; }
+                if (ct.key == draft[s]) { preview = ct.label + levelTag(ct.key); break; }
             }
 
             // A staged row is marked where the user is looking — on the row
@@ -320,7 +351,7 @@ void MainWindow::renderSlotConfigPanel()
             char comboId[24];
             std::snprintf(comboId, sizeof(comboId), "##slotcombo%d", s);
             if (dup) ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 96, 96, 255));
-            if (ImGui::BeginCombo(comboId, preview)) {
+            if (ImGui::BeginCombo(comboId, preview.c_str())) {
                 for (const auto& ct : kCardTypes) {
                     const bool selected = (ct.key == draft[s]);
                     const bool disabled =
@@ -328,9 +359,16 @@ void MainWindow::renderSlotConfigPanel()
                         ((std::string(ct.key) == "mouseaw") && !mouseAwAvailable) ||
                         ((std::string(ct.key) == "cffa")    && !cffaAvailable);
                     if (disabled) ImGui::BeginDisabled();
-                    if (ImGui::Selectable(ct.label, selected)) {
+                    const std::string itemLabel = ct.label + levelTag(ct.key);
+                    if (ImGui::Selectable(itemLabel.c_str(), selected)) {
                         draft[s] = ct.key;
                     }
+                    if (const auto* ae = absEntryFor(ct.key);
+                        ae && ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s — %s\n%s",
+                                          pom2::levelBadge(ae->level),
+                                          pom2::levelName(ae->level),
+                                          ae->modelled);
                     if (disabled) {
                         ImGui::EndDisabled();
                         ImGui::SameLine();

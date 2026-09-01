@@ -5,6 +5,19 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — The slot picker says silicon or service
+
+Every card in Slot Configuration's combo now carries its emulation level —
+`[L1 · LLE]`, `[H1 · HLE]`, … — straight from the abstraction catalog (the
+LLE/HLE panel's source of truth, `docs/lle_vs_hle.md` made live), with the
+catalog's one-line "what is modelled" as the item tooltip. Three key
+renames are aliased (smartport35→smartportcard, printer→printercard, the
+Sound II shares the Mockingboard entry) and three family rows reused
+(Phasor→Mockingboard, Cricket→SSI263, Echo+ TMS→TMS5220). Four cards have
+no row in the doc yet — liron, workstation, 4play, transwarp — and show no
+tag rather than an invented one; TODO records that the doc and the catalog
+move together.
+
 ## 2026-09-02 — "Extasie is wrong on the Eve": yes — the real Eve too, and now POM2 says so
 
 Reported as a colour/B&W mixing problem with the Eve model where the
