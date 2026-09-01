@@ -364,6 +364,13 @@ void MainWindow::renderSlotConfigPanel()
                     }
                     ImGui::EndCombo();
                 }
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip(
+                        "Which registers exist and which modes fall back.\n"
+                        "Feline / Adaptateur //c: mixed DHGR (Extasie, Arlequin).\n"
+                        "Eve: $C0B0-$C0BF, TXT16/CP280/COL280 — NO mixed mode.\n"
+                        "Video-7: 160-wide chunky, F/B text.\n"
+                        "RVB Graph (II/II+, partial): $C0F0-$C0F3 only.");
             }
 
             // Slot 3 on a //e-class machine is where the built-in 80-column

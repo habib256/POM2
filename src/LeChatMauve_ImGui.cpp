@@ -139,6 +139,16 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
     ImGui::Text("FIFO bits  : [%d][%d]",
                 (snap.fifoBits >> 1) & 1, snap.fifoBits & 1);
     ImGui::Text("DHGR decode: %s", dhgrLabel(snap.dhgrMode));
+    // The classic trap: Extasie/Arlequin clock the Féline mixed mode, which
+    // the Eve and the RVB Graph never had (Manuel Arlequin) — say so where
+    // the user is looking instead of silently showing the COL140 fallback.
+    if (snap.mode == LeChatMauveCard::RenderMode::Mixed &&
+        (snap.variant == LeChatMauveCard::Variant::Eve ||
+         snap.variant == LeChatMauveCard::Variant::RvbGraph)) {
+        ImGui::TextColored(ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+            "latch = MIXED, but this model has no mixed mode\n"
+            "(COL140 fallback) — Extasie/Arlequin need the Feline");
+    }
 
     // Soft-switch line indicators (data + clock). Useful when debugging
     // an Arlequin-style setup sequence — you can step the CPU and watch

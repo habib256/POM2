@@ -277,6 +277,7 @@ private:
     // Rolling latch history for beam-raced replay (latchBefore). 512 edges
     // is > one PAL frame of per-scanline clocking.
     struct LatchEdge { uint64_t cycle; uint8_t before; uint8_t after; };
+    bool       mixedWarned_ = false;   // one log per plug/variant change
     static constexpr int kLatchRing = 512;
     LatchEdge  latchRing_[kLatchRing] {};
     int        latchRingHead_ = 0;          // next write slot

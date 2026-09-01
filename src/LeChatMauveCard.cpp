@@ -16,6 +16,7 @@
 
 #include "LeChatMauveCard.h"
 
+#include "Logger.h"
 #include "Memory.h"
 
 #include <cstring>
@@ -64,6 +65,7 @@ void LeChatMauveCard::setVariant(Variant v)
     eveSwitches_ = 0;
     cpreg_       = 0;
     rvbMode_     = 0;
+    mixedWarned_ = false;
     syncAuxShadow();
 }
 
@@ -202,6 +204,20 @@ void LeChatMauveCard::clockFifo(bool dataBit)
     const uint8_t before = fifo;
     fifo = static_cast<uint8_t>(((fifo << 1) | (dataBit ? 1u : 0u)) & 0b11);
     mode = static_cast<RenderMode>(fifo);
+    // A program clocking the FÉLINE mixed mode on a card that does not have
+    // it (Manuel Arlequin: "la carte Eve n'est pas compatible avec ce
+    // mode") gets the hardware's fallback — and one loud line saying why
+    // the picture looks wrong and what to switch to. Extasie and Arlequin
+    // are the canonical cases.
+    if (mode == RenderMode::Mixed && !mixedWarned_ &&
+        (variant_ == Variant::Eve || variant_ == Variant::RvbGraph)) {
+        mixedWarned_ = true;
+        pom2::log().info("Chat Mauve",
+            std::string("this program uses the Féline/IIc MIXED DHGR mode; the ") +
+            variantLabel(variant_) +
+            " does not have it (falls back to COL140). Extasie/Arlequin need"
+            " the Féline — Slot Config → model.");
+    }
     // Timestamped history for the beam-raced replay. Without a Memory
     // there is no clock to stamp with — the ring stays empty and
     // latchBefore() degrades to the current value.

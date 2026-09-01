@@ -5,6 +5,19 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — "Extasie is wrong on the Eve": yes — the real Eve too, and now POM2 says so
+
+Reported as a colour/B&W mixing problem with the Eve model where the
+Féline is fine. That is the hardware: *"la carte Eve n'est pas compatible
+avec ce mode"* (Manuel Arlequin, about the mixed DHGR mode Extasie is
+built on) — POM2 folds the mixed latch to COL140 on the Eve and the RVB
+Graph, so fine 560-mono linework renders as colour fringes, exactly as on
+the real board. What was missing is the explanation: the card now logs one
+line when a program clocks the mixed mode on a model that lacks it
+("Extasie/Arlequin need the Féline — Slot Config → model"), the Chat Mauve
+panel shows the same warning next to the DHGR decode, and the Slot Config
+"model" combo grew a tooltip mapping models to their modes.
+
 ## 2026-09-02 — Extasie's SCHEMA: the disk was lying, and POM2 could prove it
 
 **Reported: "the circuit file doesn't display correctly in Extasie's

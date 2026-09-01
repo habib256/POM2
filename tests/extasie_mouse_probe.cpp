@@ -140,8 +140,12 @@ int main()
     if (!disk->loadBootRom(boot) || !disk->insertDisk(dsk)) return 1;
     mem.slotBus().plug(6, std::move(disk));
 
-    auto chat = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Feline);
+    LeChatMauveCard::Variant cmVariant = LeChatMauveCard::Variant::Feline;
+    if (const char* v = std::getenv("POM2_PROBE_CM_VARIANT"))
+        LeChatMauveCard::parseVariant(v, cmVariant);
+    auto chat = std::make_unique<LeChatMauveCard>(7, cmVariant);
     LeChatMauveCard* chatRaw = chat.get();
+    std::printf("chat mauve variant: %s\n", LeChatMauveCard::variantKey(cmVariant));
     mem.slotBus().plug(7, std::move(chat));
 
     // POM2_PROBE_MOUSE_LLE=1 plugs the MAME-LLE MouseCard (the user's card
