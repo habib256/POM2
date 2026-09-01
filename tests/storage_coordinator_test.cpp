@@ -23,6 +23,7 @@
 #include "Disk35Image.h"
 #include "DiskIICard.h"
 #include "EmulationController.h"
+#include "LironCard.h"
 #include "ProDOSHardDiskCard.h"
 #include "Settings.h"
 #include "SlotBus.h"
@@ -434,6 +435,57 @@ int main()
         // Eject-all visits both Disk II drives and every block/SmartPort
         // image. One command saves the cleared settings after releasing the
         // machine lock.
+        // A card with bays but no keyspace of its own — the Liron — goes
+        // through the generic media_slotN_bayK_* keys, so what the user
+        // mounted is back on the next launch (bug hunt 3 left this open).
+        {
+            const std::string lironPath =
+                writeImage("pom2_storage_liron.po", 1600u * 512u, 0x00);
+            bool lironPresent = false;
+            {
+                auto state = mediaController.lockState();
+                auto& bus = state.memory().slotBus();
+                (void)bus.unplug(1);
+                auto liron = std::make_unique<pom2::LironCard>(1);
+                lironPresent = liron->romLoaded();
+                if (lironPresent) bus.plug(1, std::move(liron));
+            }
+            if (lironPresent) {
+                command = mediaStorage.mountMediaBay(
+                    mediaController, commandSettings, 1, 0, lironPath);
+                assert(command.ok);
+                assert(commandSettings.getString("media_slot1_bay0_path") ==
+                       lironPath);
+                command = mediaStorage.setMediaBayWriteBack(
+                    mediaController, commandSettings, 1, 0, true);
+                assert(command.ok);
+                assert(commandSettings.getBool("media_slot1_bay0_writeback"));
+                command = mediaStorage.ejectMediaBay(
+                    mediaController, commandSettings, 1, 0);
+                assert(command.ok);
+                assert(commandSettings.getString("media_slot1_bay0_path").empty());
+
+                commandSettings.setString("media_slot1_bay0_path", lironPath);
+                {
+                    auto state = mediaController.lockState();
+                    auto& bus = state.memory().slotBus();
+                    assert(mediaStorage.restoreMediaFromSettings(
+                        bus, commandSettings).ok());
+                    auto* card = dynamic_cast<pom2::LironCard*>(bus.peripheral(1));
+                    assert(card);
+                    const auto info = card->bayInfo(0);
+                    assert(info.loaded && "the Liron's bay came back from settings");
+                    assert(info.path == lironPath);
+                    assert(info.writeBackEnabled);
+                    assert(card->ejectBay(0));
+                    (void)bus.unplug(1);
+                }
+                commandSettings.setString("media_slot1_bay0_path", "");
+            } else {
+                std::cout << "  (no roms/liron.rom — Liron persistence case skipped)\n";
+            }
+        }
+
         assert(mediaStorage.mountDiskII(
             mediaController, commandSettings, 4, 0, diskPath).ok);
         assert(mediaStorage.mountDiskII(
