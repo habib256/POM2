@@ -227,6 +227,7 @@ set(SOURCES
     src/MainWindow_Screen.cpp
     src/MainWindow_Input.cpp
     src/MainWindow_SlotConfig.cpp
+    src/MainWindow_Session.cpp
     src/PanelRegistry.cpp
     # Host-policy coordinators ported from refactor/core-boundaries-and-coordinators.
     # Renderer-free value/command boundaries over SlotBus + EmulationController;
@@ -424,9 +425,11 @@ set(POM2_FOUNDATION_HEADERS
     src/Logger.h
     src/NetworkBackend.h
     src/NetworkValues.h
+    src/PersistentFs.h
     src/Pom2Build.h
     src/PrinterSoundSink.h
     src/SerialPort.h
+    src/SettingsList.h
 )
 
 set(POM2_FRONTEND_HEADERS
@@ -501,6 +504,7 @@ set(POM2_FRONTEND_SOURCES
     src/MainWindow_Screen.cpp
     src/MainWindow_Input.cpp
     src/MainWindow_SlotConfig.cpp
+    src/MainWindow_Session.cpp
     src/MemoryViewer_ImGui.cpp
     src/NtscPostProcessor.cpp
     src/CrtEffectStack.cpp
@@ -714,9 +718,10 @@ set(HEADERS
     src/ProDOSVolume.h
     src/Logger.h
     src/Settings.h
+    src/SettingsList.h
+    src/PersistentFs.h
     src/CpuClock.h
     src/ResourcePaths.h
-    src/RomLoader.h
     src/FloppyEmuDevice.h
     src/FloppyEmu_ImGui.h
     src/SlotBus.h

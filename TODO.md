@@ -207,7 +207,7 @@ closes a bug class.
 
 | # | Item                                    | Effort  | Why                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
-| 1 | WASM IDBFS settings persistence         | 2-4 h   | web user has no state        |
+| 1 | ~~WASM IDBFS settings persistence~~     | *done*  | landed 2026-09-01 — see [WASM](#wasm) |
 | 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
 
 ## MAME ↔ POM2 parity (dashboard)
@@ -937,10 +937,15 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 ### [WASM]
 
-- 🟡 **IDBFS settings persistence** — `/persistent` mounted via IDBFS
-  (`CMakeLists.txt:241`) but `Settings.cpp` writes to `$HOME`;
-  `state.cfg` + `imgui.ini` do not survive a reload. Route via
-  `ResourcePaths` under `__EMSCRIPTEN__`. *2-4 h.* ⭐ quick win
+- ✅ **IDBFS settings persistence** — *landed 2026-09-01.* `state.cfg` and
+  `imgui.ini` now live in `pom2::userConfigDir()`, which is `/persistent`
+  under Emscripten, and reach IndexedDB through a debounced `FS.syncfs`
+  (`PersistentFs.h`). Two things the estimate did not know: the browser
+  build has **no exit** (`simulate_infinite_loop` never runs `~MainWindow`),
+  so the whole persist block had to become `MainWindow::persistSession()` on
+  a heartbeat; and the shell's populate had to hold up `run()`, which is a
+  boot hang if its callback never fires — hence the watchdog. Verified in
+  headless Chrome over CDP, three visits. → `CHANGELOG.md`
 - 🟡 **File picker / drop-zone disks** — build-time bundling
   only. HTML5 drop-zone → `FS.writeFile('/uploads/…')` →
   `DiskIICard::insert`. *~1 d.*

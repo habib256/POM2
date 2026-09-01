@@ -17,6 +17,8 @@
 #include "Settings.h"
 #include "AtomicFileReplace.h"
 #include "Logger.h"
+#include "PersistentFs.h"
+#include "ResourcePaths.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -32,44 +34,27 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// Resolve the per-user POM2 state directory.
+// Resolve the per-user POM2 state file.
+//
+// The directory itself is `pom2::userConfigDir()` — shared with the ImGui
+// layout file so ONE function decides where POM2's configuration lives.
+// This used to be a private copy of the platform dance, and main.cpp held a
+// third one for `imgui.ini` with a comment saying it "mirrors
+// Settings::resolveStorePath"; a mirror is a thing that can stop matching,
+// and under Emscripten it had — neither copy knew about the IDBFS mount, so
+// both wrote to MEMFS and the browser build lost every setting on reload.
+//
+// The fallbacks stay here rather than in ResourcePaths because they are
+// this store's: an empty config dir means "put the file somewhere the user
+// can still find it", and for a settings store that is a dotfile in $HOME.
 fs::path resolveStorePath()
 {
-#ifdef _WIN32
-    if (const char* appData = std::getenv("APPDATA"); appData && *appData) {
-        fs::path dir = fs::path(appData) / "POM2";
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        if (!ec) return dir / "state.cfg";
-    }
-    if (const char* local = std::getenv("LOCALAPPDATA"); local && *local) {
-        fs::path dir = fs::path(local) / "POM2";
-        std::error_code ec;
-        fs::create_directories(dir, ec);
-        if (!ec) return dir / "state.cfg";
-    }
-#endif
-    const char* home = std::getenv("HOME");
-    if (!home || !*home) {
-        // Fall back to the working directory.
-        return fs::path("pom2_state.cfg");
-    }
-    fs::path xdg;
-#if defined(__APPLE__)
-    xdg = fs::path(home) / "Library" / "Application Support" / "POM2";
-#else
-    if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config)
-        xdg = fs::path(config) / "POM2";
-    else
-        xdg = fs::path(home) / ".config" / "POM2";
-#endif
-    std::error_code ec;
-    fs::create_directories(xdg, ec);
-    if (!ec && fs::is_directory(xdg, ec)) {
-        return xdg / "state.cfg";
-    }
-    // create_directories failed — last resort, dotfile in $HOME.
-    return fs::path(home) / ".pom2_state";
+    if (const fs::path dir = pom2::userConfigDir(); !dir.empty())
+        return dir / "state.cfg";
+    if (const char* home = std::getenv("HOME"); home && *home)
+        return fs::path(home) / ".pom2_state";
+    // No writable home either — the working directory is the last resort.
+    return fs::path("pom2_state.cfg");
 }
 
 std::string trim(const std::string& s)
@@ -180,6 +165,12 @@ bool Settings::save() const
     // success: callers treat `false` as an I/O error worth warning about,
     // and suppression is not an error.
     if (readOnly_) return true;
+    // Nothing changed since this process last wrote the file: skip. The check
+    // is against what we wrote, not against the file (which would mean reading
+    // it back), so an external edit is not clobbered any more or less than
+    // before — the next real change still overwrites it, exactly as it did
+    // when every save wrote unconditionally.
+    if (hasWritten_ && store == lastWritten_) return true;
     const fs::path path = resolveStorePath();
     const fs::path tmp  = path.string() + ".tmp";
     std::error_code tmpEc;
@@ -217,6 +208,12 @@ bool Settings::save() const
             "Rename " + tmp.string() + " → " + path.string() + " failed: " + ec.message());
         return false;
     }
+    // Native: the rename above is already durable. Browser: the file now
+    // exists in the IDBFS mount's memory image and nowhere else until the
+    // frame loop's pump flushes it to IndexedDB. No-op off Emscripten.
+    markPersistentStateDirty();
+    lastWritten_ = store;
+    hasWritten_  = true;
     return true;
 }
 

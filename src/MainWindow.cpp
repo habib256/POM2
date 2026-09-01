@@ -70,6 +70,7 @@
 #include "ProDOSHardDiskCard.h"
 #include "ResourcePaths.h"
 #include "Settings.h"
+#include "SettingsList.h"
 #include "IconsFontAwesome6.h"
 #include "FloppyEmuDevice.h"
 #include "FloppyEmu_ImGui.h"
@@ -99,37 +100,9 @@
 
 namespace {
 
-// state.cfg is a flat `key=value` file with one entry per line, so a list has
-// to be packed into a single value. Disk paths can contain spaces, commas,
-// semicolons and colons, so the separator must be a byte a path cannot hold:
-// 0x1F (ASCII unit separator).
-constexpr char kListSep = '\x1f';
-
-std::string joinPaths(const std::vector<std::string>& v)
-{
-    std::string out;
-    for (size_t i = 0; i < v.size(); ++i) {
-        if (i) out += kListSep;
-        out += v[i];
-    }
-    return out;
-}
-
-std::vector<std::string> splitPaths(const std::string& s)
-{
-    std::vector<std::string> out;
-    size_t start = 0;
-    while (start <= s.size()) {
-        const size_t end = s.find(kListSep, start);
-        const std::string piece = (end == std::string::npos)
-                                ? s.substr(start)
-                                : s.substr(start, end - start);
-        if (!piece.empty()) out.push_back(piece);
-        if (end == std::string::npos) break;
-        start = end + 1;
-    }
-    return out;
-}
+// The list-packing helpers moved to SettingsList.h when the persist half of
+// this file became MainWindow_Session.cpp: both sides must agree on the
+// separator, and agreement is not something two copies can promise.
 
 } // anon namespace
 
@@ -684,8 +657,8 @@ MainWindow::MainWindow(bool forceIIPlus)
         // this the default layout would be rebuilt on every launch, throwing
         // away whatever the user had docked.
         dockSeeded_ = settings->getBool("ui_dock_seeded", false);
-        libraryFavourites_ = splitPaths(settings->getString("library_favourites", ""));
-        libraryRecents_    = splitPaths(settings->getString("library_recents", ""));
+        libraryFavourites_ = pom2::splitSettingList(settings->getString("library_favourites", ""));
+        libraryRecents_    = pom2::splitSettingList(settings->getString("library_recents", ""));
         libraryHideSizeDate_ = settings->getBool("library_hide_sizedate", false);
         if (libraryRecents_.size() > kMaxLibraryRecents)
             libraryRecents_.resize(kMaxLibraryRecents);
@@ -693,15 +666,28 @@ MainWindow::MainWindow(bool forceIIPlus)
         // Browser startup is intentionally chrome-light: keep only the menu,
         // toolbar, Apple II Screen window, and bottom status bar. Users can
         // still open panels from the menus after boot.
-        display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
-        lastColorHiResMode_ = Apple2Display::HiResMode::ColorCompMedium;
-        // Was 28 assignments naming 28 panels, which meant every panel added
-        // after it was written stayed open on the browser build — the list
-        // could only rot in one direction. The registry knows all of them.
-        hideAllPanels();
-        // …except the greeting a browser user with no ROM still needs: the
-        // constructor opened it above, and chrome-light is about chrome.
-        if (!romLoaded_) show(pom2::PanelId::Welcome) = true;
+        //
+        // FIRST VISIT ONLY, since 2026-09-01. This block used to run on every
+        // browser launch, which was harmless while the browser build had no
+        // persistence at all and actively wrong once it did: the settings
+        // store had just restored the visitor's panels three lines above
+        // (loadPanelVisibility), and this closed every one of them again. A
+        // returning visitor gets what they left; a new one gets the curated
+        // opening. `empty()` is the honest test — no state.cfg in IDBFS, or
+        // an IDBFS that could not be read.
+        if (settings->empty()) {
+            display->setHiResMode(Apple2Display::HiResMode::ColorCompMedium);
+            lastColorHiResMode_ = Apple2Display::HiResMode::ColorCompMedium;
+            // Was 28 assignments naming 28 panels, which meant every panel
+            // added after it was written stayed open on the browser build —
+            // the list could only rot in one direction. The registry knows
+            // all of them.
+            hideAllPanels();
+            // …except the greeting a browser user with no ROM still needs:
+            // the constructor opened it above, and chrome-light is about
+            // chrome.
+            if (!romLoaded_) show(pom2::PanelId::Welcome) = true;
+        }
 #endif
     }
 
@@ -886,290 +872,10 @@ MainWindow::~MainWindow()
     if (hgrSpriteEditor) hgrSpriteEditor->releaseGL();
     if (imageWriterPanel) imageWriterPanel->shutdown();
 
-    // Persist the current state so the next launch restores the same
-    // mounted disks, video mode, panels, and audio levels.
-    // Skip persisting an HDV card that ensureHdvCardForBoot auto-plugged for
-    // a one-shot `POM2 <image.hdv>` boot — it's session-local by contract.
-    const bool hdvIsAutoProvisioned =
-        primaryHdvCard() && primaryHdvCard()->getSlot() == storageCoordinator_->autoProvisionedHdvSlot();
-    if (!hdvIsAutoProvisioned && primaryHdvCard() && primaryHdvCard()->isImageLoaded()) {
-        // Don't persist the synthesised host-folder volume — the path is
-        // a sentinel, not a real file. Re-synthesis happens on click.
-        const std::string& p = primaryHdvCard()->getImagePath();
-        if (p.rfind("[host folder] ", 0) == std::string::npos) {
-            settings->setString("hdv_path", p);
-        } else {
-            settings->setString("hdv_path", "");
-        }
-    } else {
-        settings->setString("hdv_path", "");
-    }
-
-    // Persist per-slot DiskII state. The primary (lowest-slot) card ALSO
-    // writes to the legacy unsuffixed `disk_path` / `disk_writeback` so
-    // an older POM2 build reading this settings.ini still sees the disk.
-    //
-    // Flush the 5.25" media FIRST — the 3.5" block below has always done
-    // this, and its comment claimed to "mirror the Disk II save-on-shutdown
-    // hook", but no such hook existed: quitting with write-back on threw
-    // away every sector DOS had written since the last eject. The card's
-    // destructor now flushes too (covering profile switches, which rebuild
-    // the slot cards without ejecting), but doing it here keeps it ordered
-    // before the settings write and inside the same teardown the user can
-    // see in the log.
-    {
-        std::string flushError;
-        SlotBus& bus = controller->memory().slotBus();
-        if (!storageCoordinator_->flushAll(bus, flushError))
-            pom2::log().warn("Storage", "shutdown flush: " + flushError);
-
-        // Both drives, and the legacy unsuffixed aliases from the lowest-slot
-        // card so an older POM2 build reading this settings.ini still finds
-        // the disk. The loop this replaces called isDiskLoaded()/getDiskPath()
-        // with their default arguments, so drive 2's path was never written on
-        // exit — the last of the five places that mistake was made.
-        const auto snapshot = storageCoordinator_->captureRebuildSnapshot(bus);
-        storageCoordinator_->persistSessionSettings(*settings, snapshot);
-    }
-
-    // Persist mounted 3.5" disks across restarts AND flush any firmware-
-    // driven write-backs (format / save / etc.) that arrived after the
-    // user opted in to write-back. Mirrors the Disk II save-on-shutdown
-    // hook so changes survive a hard quit.
-    for (pom2::Disk35Image* img :
-            { &controller->disk35Internal(), &controller->disk35External() }) {
-        if (img->isLoaded() && img->hasUnsavedChanges() &&
-            !img->isWriteProtected()) {
-            img->saveDirty();
-        }
-    }
-    settings->setString("disk35_path_1",
-        controller->disk35Internal().isLoaded()
-            ? controller->disk35Internal().path() : std::string());
-    settings->setString("disk35_path_2",
-        controller->disk35External().isLoaded()
-            ? controller->disk35External().path() : std::string());
-
-    // Same auto-provision guard as `hdv_path` above: a card that
-    // ensureHdvCardForBoot plugged for a one-shot drag-drop / CLI boot is
-    // session-local, so its write-back flag must not overwrite the one the
-    // user configured for their real HDV card. Without the guard, a single
-    // dropped .hdv persisted `hdv_writeback = false` and silently disarmed
-    // write-back for unrelated media on the next launch.
-    if (primaryHdvCard() && !hdvIsAutoProvisioned) {
-        settings->setBool("hdv_writeback", primaryHdvCard()->isWriteBackEnabled());
-    }
-
-    // CFFA per-slot image + write-back for EVERY plugged CFFA card. `cffa`
-    // is multi-instance, so persist each (not just the primary `primaryCffaCard()`),
-    // mirroring the DiskII loop above. (blockCards() also returns synthetic
-    // HDV cards — those persist via hdv_path; skip them here.)
-    for (auto* blk : blockCards()) {
-        auto* cffa = dynamic_cast<pom2::CffaCard*>(blk);
-        if (!cffa) continue;
-        const std::string key = "cffa_slot" + std::to_string(cffa->getSlot());
-        settings->setString(key + "_path",
-                            cffa->isImageLoaded() ? cffa->getImagePath()
-                                                  : std::string());
-        settings->setBool(key + "_writeback", cffa->isWriteBackEnabled());
-    }
-
-    // Per-slot persistence so the //c's two SSC ports (printer sl1 +
-    // modem sl2) each keep their own port / listener / raw-mode state.
-    // Legacy global keys (`ssc_listening`, `ssc_port`, `ssc_raw_mode`)
-    // are mirrored to the primary SSC for backwards-compat with older
-    // settings files and the AI control path.
-    for (auto* ssc : serialCards()) {
-        if (!ssc) continue;
-        const std::string sk = "_slot" + std::to_string(ssc->getSlot());
-        settings->setBool("ssc_listening" + sk, ssc->isListening());
-        settings->setInt ("ssc_port"      + sk, ssc->getPort());
-        settings->setBool("ssc_raw_mode"  + sk, ssc->rawMode());
-        settings->setBool("ssc_printer_tap" + sk, ssc->printerTap());
-    }
-    if (primarySerialCard()) {
-        settings->setBool("ssc_listening", primarySerialCard()->isListening());
-        settings->setInt ("ssc_port",      primarySerialCard()->getPort());
-        settings->setBool("ssc_raw_mode",  primarySerialCard()->rawMode());
-    }
-
-    // FujiNet relay — transport choice and its parameters, per slot.
-    // Resolved from the live bus rather than an alias: the destructor runs
-    // after controller->stop(), so this is a UI-thread topology read.
-    pom2::FujiNetCard* fujiNet = nullptr;
-    for (int s = 1; s < SlotBus::kSlotCount && !fujiNet; ++s)
-        fujiNet = dynamic_cast<pom2::FujiNetCard*>(
-            controller->memory().slotBus().peripheral(s));
-    if (fujiNet) {
-        const std::string sk = "_slot" + std::to_string(fujiNet->getSlot());
-        const auto& link = fujiNet->transportLink();
-        settings->setBool("fujinet_enabled" + sk, link.isRunning());
-        settings->setInt ("fujinet_timeout_ms" + sk, link.timeoutMs());
-        settings->setString("fujinet_transport" + sk,
-                            link.mode() == pom2::FujiNetTransport::Mode::Serial
-                                ? "serial" : "tcp");
-        settings->setInt   ("fujinet_port" + sk, link.tcpPort());
-        settings->setString("fujinet_serial_path" + sk, link.serialPath());
-        settings->setInt   ("fujinet_serial_baud" + sk, link.serialBaud());
-        settings->setString("fujinet_helper_path" + sk,
-                            networkCoordinator_->helperPath());
-    }
-
-    // AI control listener — persist enable, port, token, and the panel
-    // visibility flag. Re-armed on next launch by the constructor.
-    settings->setBool  ("ai_control_enable", aiServer->isRunning());
-    settings->setInt   ("ai_control_port",   aiServer->getPort());
-    settings->setString("ai_control_token",  aiTokenInput);
-    // Persist the per-slot card mapping so changes via the Slot
-    // Configuration panel survive a restart. Slots the ACTIVE profile forces
-    // (//c/+ on-board SSC/Mouse/SmartPort/Disk II, and the empty virtual slots
-    // on a no-physical-slots model) are NOT persisted — `slotCards` holds the
-    // forced built-in there, and writing it would clobber the user's real
-    // choice (e.g. quitting on //c would overwrite slot_4_card=mockingboard
-    // with the //c's on-board "mouseaw", losing it when they go back to //e).
-    // The Le Chat Mauve rear-connector adapter IS user-controllable on //c, so
-    // it persists. (Mirrors the "saved key left untouched" contract in
-    // plugSlotsFromSettings.)
-    {
-        const auto& cfg = pom2::profileConfig(activeProfile);
-        for (int s = 1; s <= 7; ++s) {
-            if (s == storageCoordinator_->autoProvisionedHdvSlot()) continue;   // session-local auto-plug
-            if (s == storageCoordinator_->autoProvisionedSmartPortSlot()) continue;   // idem (Floppy Emu)
-            // Profile-forced slots (built-ins / noPhysicalSlots) hold the
-            // profile's value, not the user's — shared guard with the Slot
-            // Config Apply button (pom2::slotKeyIsUserChoice).
-            const std::string key = "slot_" + std::to_string(s) + "_card";
-            if (!pom2::slotKeyIsUserChoice(cfg, s, slotCards[s],
-                                           settings->getString(key, "")))
-                continue;
-            settings->setString(key, slotCards[s]);
-        }
-    }
-
-    auto modeName = [](Apple2Display::HiResMode m) -> const char* {
-        switch (m) {
-            case Apple2Display::HiResMode::ColorNTSC:        return "ColorNTSC";
-            case Apple2Display::HiResMode::ColorCompMedium:  return "ColorCompMedium";
-            case Apple2Display::HiResMode::ColorComp4Bit:    return "ColorComp4Bit";
-            case Apple2Display::HiResMode::ChatMauveRGB:     return "ChatMauveRGB";
-            case Apple2Display::HiResMode::ColorCompositeOE: return "ColorCompositeOE";
-            case Apple2Display::HiResMode::ColorCompositeOECpu: return "ColorCompositeOECpu";
-            case Apple2Display::HiResMode::MonoWhite:        return "MonoWhite";
-            case Apple2Display::HiResMode::MonoGreen:        return "MonoGreen";
-            case Apple2Display::HiResMode::MonoAmber:        return "MonoAmber";
-            case Apple2Display::HiResMode::ColorAppleWin:    return "ColorAppleWin";
-        }
-        return "ColorNTSC";
-    };
-    settings->setString("hi_res_mode", modeName(display->getHiResMode()));
-    {
-        const char* sub = "monitor";
-        switch (display->getAppleWinSubMode()) {
-            case Apple2Display::AppleWinSubMode::Monitor:   sub = "monitor";   break;
-            case Apple2Display::AppleWinSubMode::Tv:        sub = "tv";        break;
-            case Apple2Display::AppleWinSubMode::Idealized: sub = "idealized"; break;
-        }
-        settings->setString("applewin_submode", sub);
-    }
-    savePanelVisibility();
-    settings->setString("floppyemu_mode",
-                        pom2::FloppyEmuDevice::modeKey(floppyEmu->mode()));
-    settings->setString("floppyemu_sd_root", floppyEmu->sdRoot());
-    {
-        const auto hs = hgrPaintEditor->session();
-        settings->setInt   ("hgr_paint_mode",  hs.mode);
-        settings->setBool  ("hgr_paint_page2", hs.page2);
-        settings->setInt   ("hgr_paint_zoom",  hs.zoomIdx);
-        settings->setBool  ("hgr_paint_ntsc",  hs.ntscColor);
-        settings->setBool  ("hgr_paint_43",    hs.aspect43);
-        settings->setInt   ("hgr_paint_pipe",  hs.canvasPipeline);
-        settings->setString("hgr_paint_dir",   hs.browserDir);
-    }
-    settings->setBool  ("rewind_enabled",  controller->rewind().enabled());
-    settings->setInt   ("imagewriter_paper",
-                        static_cast<int>(imageWriter->paperSize()));
-    settings->setInt   ("imagewriter_dpi",    imageWriter->dpi());
-    settings->setInt   ("imagewriter_model",
-                        static_cast<int>(imageWriter->model()));
-    settings->setBool  ("imagewriter_backpressure", printerBackPressure);
-    settings->setInt   ("imagewriter_ribbon",
-                        static_cast<int>(imageWriter->ribbon()));
-    settings->setInt   ("imagewriter_autolf_mode",
-                        static_cast<int>(imageWriter->autoFeedMode()));
-    settings->setInt   ("imagewriter_speed",
-                        static_cast<int>(imageWriter->speed()));
-    // No-ops when no Grappler+ is plugged, so the keys keep their previous
-    // values rather than being overwritten with a default.
-    printerCoordinator_->persistGrappler(*settings, *controller);
-    settings->setBool  ("nsclock_enable",  controller->noSlotClock().isEnabled());
-    if (ntscFx) {
-        const auto& p = ntscFx->getParams();
-        settings->setFloat("ntsc_brightness",  p.brightness);
-        settings->setFloat("ntsc_contrast",    p.contrast);
-        settings->setFloat("ntsc_saturation",  p.saturation);
-        settings->setFloat("ntsc_hue",         p.hue);
-        settings->setFloat("ntsc_sharpness",   p.sharpness);
-        settings->setFloat("ntsc_persistence", p.persistence);
-        settings->setFloat("ntsc_scanlines",   p.scanlines);
-        settings->setFloat("ntsc_barrel",      p.barrel);
-        settings->setFloat("ntsc_shadow_strength", p.shadowMaskStrength);
-        settings->setFloat("ntsc_luminance_gain", p.luminanceGain);
-        settings->setFloat("ntsc_center_lighting", p.centerLighting);
-        settings->setFloat("ntsc_phosphor_gamma", p.phosphorGamma);
-        settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
-        settings->setBool ("ntsc_pal",         p.palMode);
-        settings->setBool ("ntsc_text_sharp",  p.textSharp);
-    }
-    settings->setBool  ("crt_effects_enabled", crtEffectsEnabled);
-    if (voxel3d_) {
-        settings->setFloat("voxel_depth",       voxel3d_->voxelDepth);
-        settings->setFloat("voxel_colorshift",  voxel3d_->colorShift);
-        settings->setFloat("voxel_fill",        voxel3d_->cubeFill);
-        settings->setFloat("voxel_ambient",     voxel3d_->ambient);
-        settings->setInt  ("voxel_supersample", voxel3d_->superSample);
-        settings->setBool ("voxel_mono",           voxel3d_->mono);
-        settings->setBool ("voxel_percolor_depth", voxel3d_->perColorDepth);
-    }
-    settings->setString("aspect_mode",
-        aspectMode == AspectMode::Crt43   ? "crt43" :
-        aspectMode == AspectMode::Integer ? "integer" : "square");
-    settings->setString("ui_accent", pom2::accentKey(uiAccent_));
-    settings->setFloat ("ui_scale",  uiScale_);
-    settings->setBool  ("ui_dock_seeded", dockSeeded_);
-    settings->setString("library_favourites", joinPaths(libraryFavourites_));
-    settings->setString("library_recents",    joinPaths(libraryRecents_));
-    settings->setBool  ("library_hide_sizedate", libraryHideSizeDate_);
-    settings->setBool  ("disk_turbo",      diskTurboWhileMotor);
-    // One call for the whole audio block, host controls and slot cards alike.
-    // The slot-card half is why it matters: the old code persisted a single
-    // `mockingboard_volume` read through the last-plugged alias, so with two
-    // Mockingboard variants on the bus one of them silently inherited the
-    // other's level on the next launch. Each live card now gets its own
-    // per-slot key, and the highest slot of each type still writes the legacy
-    // type-wide key so existing state.cfg files keep working.
-    audioCoordinator_->persist(*settings,
-                               controller->speaker(),
-                               controller->cassette(),
-                               controller->floppySound525(),
-                               controller->floppySound35(),
-                               *printerSound);
-    settings->setString("char_rom_locale",        pom2::charRomLocaleKey(charRomLocale));
-
-    // Kiosk is a read-only launcher: don't write state.cfg, so the disk it
-    // booted (and any HDV card auto-plugged for it by ensureHdvCardForBoot)
-    // never leak into the user's saved GUI config. The setString calls
-    // above are in-memory only and discarded with `settings` here.
-    // Record where the window ended up so the next launch (and any later
-    // kiosk round-trip) reopens at the same size and place. Skipped while
-    // in kiosk — the live geometry is full-screen, not what we want to
-    // restore; the value captured on the way INTO kiosk still stands.
-    // NB the geometry itself was captured by main() via
-    // captureWindowGeometryNow() while GLFW was still up — measuring here
-    // would be too late (see that function).
-    if (!settingsReadOnly()) {
-        saveWindowGeometryToSettings();
-        settings->save();
-    }
+    // Everything the next launch needs to look like this one. Extracted to
+    // MainWindow_Session.cpp so the browser build — whose MainWindow is never
+    // destroyed, see that file — can call it on a heartbeat.
+    persistSession();
 
     if (aboutImageTex_) {
         GLuint t = aboutImageTex_;

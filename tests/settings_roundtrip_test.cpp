@@ -39,6 +39,8 @@
 // Drives save()→load() through a real file by pointing HOME at a temp dir.
 
 #include "Settings.h"
+#include "ResourcePaths.h"
+#include "SettingsList.h"
 
 #include <cassert>
 #include <cstdio>
@@ -167,8 +169,96 @@ int main()
         assert(!rejected.load());
     }
 
+    // ── Where the file goes is ONE decision ──────────────────────────────
+    // Settings and the ImGui layout used to resolve their directory with two
+    // hand-copied platform dances, and under Emscripten they had drifted:
+    // neither knew about the IDBFS mount, so the browser build wrote both to
+    // a filesystem that does not survive a reload. Both now call
+    // pom2::userConfigDir(); this pins that the store still lands under it.
+    {
+        pom2::Settings probe;
+        const fs::path dir  = pom2::userConfigDir();
+        const fs::path file = fs::path(probe.getStorePath());
+        assert(!dir.empty() && "a writable HOME must yield a config dir");
+        assert(fs::is_directory(dir) && "userConfigDir creates its directory");
+        assert(file.parent_path() == dir &&
+               "state.cfg lives in userConfigDir()");
+        assert(file.filename() == "state.cfg");
+        // And it follows the environment rather than a cached first answer —
+        // the ImGui ini path is resolved from a different call site at a
+        // different moment in startup.
+        const fs::path other = home / "elsewhere";
+        fs::create_directories(other);
+#if defined(__APPLE__)
+        ::setenv("HOME", other.string().c_str(), 1);
+#elif !defined(_WIN32)
+        ::setenv("XDG_CONFIG_HOME", (other / "config").string().c_str(), 1);
+#endif
+#ifndef _WIN32
+        assert(pom2::userConfigDir() != dir &&
+               "userConfigDir must not cache its first answer");
+        ::setenv("HOME", home.string().c_str(), 1);
+        ::unsetenv("XDG_CONFIG_HOME");
+        assert(pom2::userConfigDir() == dir);
+#endif
+    }
+
+    // ── An unchanged save writes nothing ─────────────────────────────────
+    // The browser build has no "on exit" moment (main() never returns under
+    // simulate_infinite_loop), so it persists the whole session on a 10 s
+    // heartbeat. That is only affordable because a save whose content matches
+    // the last one is skipped. Proven by deleting the file underneath: a save
+    // that still writes would recreate it.
+    {
+        pom2::Settings s;
+        s.setString("alpha", "one");
+        assert(s.save());
+        const fs::path file(s.getStorePath());
+        assert(fs::exists(file));
+        fs::remove(file);
+        assert(s.save() && "an unchanged save reports success");
+        assert(!fs::exists(file) && "an unchanged save does not write");
+        // A real change writes again.
+        s.setString("alpha", "two");
+        assert(s.save());
+        assert(fs::exists(file));
+        // Including a change that only REMOVES nothing and adds a key —
+        // equality is over the whole store, not over one value.
+        fs::remove(file);
+        s.setBool("beta", true);
+        assert(s.save());
+        assert(fs::exists(file) && "a new key counts as a change");
+    }
+
+    // ── The list encoding, now that two translation units share it ───────
+    // MainWindow.cpp reads these values and MainWindow_Session.cpp writes
+    // them; before SettingsList.h they were two copies of one separator.
+    {
+        const std::vector<std::string> paths = {
+            "/home/u/My Disks/game one.dsk",     // spaces
+            "/home/u/a,b;c:d.dsk",               // every punctuation a naive
+                                                 // separator would have used
+            "/home/u/My#Disks/x.dsk",            // '#'
+        };
+        const std::string packed = pom2::joinSettingList(paths);
+        assert(pom2::splitSettingList(packed) == paths);
+        // Through the store, where escaping also applies.
+        pom2::Settings s;
+        s.setString("library_recents", packed);
+        assert(s.save());
+        pom2::Settings back;
+        assert(back.load());
+        assert(pom2::splitSettingList(back.getString("library_recents")) == paths);
+        // Empty list, and a trailing separator from a hand-edited file.
+        assert(pom2::joinSettingList({}).empty());
+        assert(pom2::splitSettingList("").empty());
+        assert(pom2::splitSettingList(std::string("a") + pom2::kSettingListSep)
+               == std::vector<std::string>{"a"});
+    }
+
     fs::remove_all(home);
     std::printf("OK settings_roundtrip (#-in-value, newline, backslash, "
-                "boundary whitespace, int/float/bool round-trip)\n");
+                "boundary whitespace, int/float/bool round-trip, config dir, "
+                "unchanged-save skip, list encoding)\n");
     return 0;
 }

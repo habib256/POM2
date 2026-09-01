@@ -145,18 +145,83 @@
     errEl.textContent = "POM2 failed while loading or initializing:\n" +
       (event.reason && (event.reason.stack || event.reason.message || event.reason));
   });
-  // Persistent settings: mount IndexedDB at /persistent so a future
-  // ResourcePaths/Settings tweak can write state.cfg / imgui.ini there.
-  // Not consumed yet — left in so the FS hierarchy is ready.
+  // Persistent settings: mount IndexedDB at /persistent, where the emulator
+  // keeps state.cfg and imgui.ini (pom2::userConfigDir()).
+  //
+  // The populate MUST hold up the runtime. FS.syncfs is asynchronous, and
+  // this hook used to fire it and return: main() then ran Settings::load()
+  // against a mount that was still empty, so every visit looked like a first
+  // visit no matter what had been stored — and the empty settings were saved
+  // back over the good ones a moment later. addRunDependency is Emscripten's
+  // supported way to say "not yet"; the matching remove is what lets run()
+  // proceed, so it has to happen on EVERY path out of the callback.
+  // The last moments the browser reliably gives a page. Neither event can
+  // wait for an async write, so this is the belt to the heartbeat's braces:
+  // the emulator also persists every 10 s while the tab is visible.
+  const pom2PersistNow = function() {
+    try {
+      if (Module._pom2_persist_now) Module._pom2_persist_now();
+    } catch (e) { /* runtime not up yet, or already torn down */ }
+  };
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'hidden') pom2PersistNow();
+  });
+  window.addEventListener('pagehide', pom2PersistNow);
+
   Module.preRun = (Module.preRun || []);
   Module.preRun.push(function() {
+    // Reach the runtime through `Module` rather than the bare globals: the
+    // shell's <script> is a different scope from the generated glue, and
+    // which names leak into the page has changed across Emscripten releases.
+    // These four are in EXPORTED_RUNTIME_METHODS (see CMakeLists.txt).
+    const fs   = Module.FS   || (typeof FS   !== 'undefined' ? FS   : null);
+    const idb  = Module.IDBFS|| (typeof IDBFS!== 'undefined' ? IDBFS: null);
+    const addDep = Module.addRunDependency ||
+                   (typeof addRunDependency !== 'undefined' ? addRunDependency : null);
+    const delDep = Module.removeRunDependency ||
+                   (typeof removeRunDependency !== 'undefined' ? removeRunDependency : null);
+    if (!fs || !idb) {
+      console.warn('POM2: no IDBFS in this build — settings will not persist.');
+      return;
+    }
+    // Every path out of here MUST release the dependency exactly once —
+    // holding it forever does not degrade the browser build, it stops the
+    // emulator from ever starting: the page sits on "downloading assets…"
+    // with the splash up and no frame ever drawn. Observed for real while
+    // testing this code, when a deleteDatabase() from a previous page left
+    // the open blocked and the syncfs callback simply never fired.
+    let released = false;
+    const release = function(why) {
+      if (released) return;
+      released = true;
+      if (why) console.warn('POM2: ' + why);
+      if (delDep) delDep('pom2-idbfs');
+    };
     try {
-      FS.mkdir('/persistent');
-      FS.mount(IDBFS, {}, '/persistent');
-      FS.syncfs(true, function (err) {
-        if (err) console.warn('IDBFS load:', err);
+      fs.mkdir('/persistent');
+      fs.mount(idb, {}, '/persistent');
+      if (addDep) addDep('pom2-idbfs');
+      // The watchdog is the whole point of the previous paragraph: a browser
+      // that never answers must cost the visitor their stored settings, not
+      // the emulator. Five seconds is far past a healthy IndexedDB open
+      // (milliseconds) and far short of a visitor giving up on the page.
+      const watchdog = setTimeout(function() {
+        release('IndexedDB did not answer in 5 s — starting without stored ' +
+                'settings. Anything you change now may not be remembered.');
+      }, 5000);
+      fs.syncfs(true, function (err) {
+        clearTimeout(watchdog);
+        if (err) {
+          // IndexedDB disabled (private mode, blocked storage). The
+          // emulator runs; it just starts fresh every time.
+          console.warn('POM2: settings could not be restored:', err);
+        }
+        release();
       });
-    } catch (e) { console.warn('IDBFS mount failed:', e); }
+    } catch (e) {
+      console.warn('POM2: IDBFS mount failed, settings will not persist:', e);
+      release();
+    }
   });
 </script>
 {{{ SCRIPT }}}

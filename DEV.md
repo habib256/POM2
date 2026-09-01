@@ -6238,9 +6238,11 @@ is invisible in practice.
   grows on demand; 128 MiB is enough for a IIe with RamWorks III
   + a few mounted HDV images.
 - `-lidbfs.js` + `-sFORCE_FILESYSTEM=1` — IndexedDB-backed filesystem
-  mountable at `/persistent` via `FS.mount(IDBFS, …)` in the shell
-  preRun hook (see `wasm/shell.html`). **Not yet wired to
-  `Settings.cpp`** — see TODO 🟡 [WASM] IDBFS settings persistence.
+  mounted at `/persistent` by the shell preRun hook
+  (`wasm/shell.html`), and **that is where `state.cfg` and `imgui.ini`
+  go** since 2026-09-01 (`pom2::userConfigDir()`). See
+  [§ Browser persistence](#browser-persistence-idbfs) for the three
+  parts, none of which is optional.
 - `--preload-file roms@/roms …` — `roms`, plus the default extras
   `fonts;pic;floppyemu` (`POM2_WASM_BUNDLE`), baked into `POM2.data`
   at build time. The 3.5" library is opt-in via
@@ -6258,6 +6260,50 @@ Emscripten now that Windows is a full host-socket target):
 |---|---|---|
 | Super Serial Card TCP listener (`SuperSerialCard.cpp:168`, `:225`, `:255`, `:270`, `:451`) | `startListening` returns false + logs; `acceptClient`/`pollRx`/`writeTx` no-op | ACIA still emulated — software inside the Apple II can still PR#2 / read $C0A9; just no host network bridge |
 | AiControlServer HTTP listener (`AiControlServer.cpp:305+`) | `start()` returns false; `stop()` no-op | None — entire feature is a host-side control plane |
+
+### Browser persistence (IDBFS)
+
+Three parts, and the build is broken in a different way if any one of them is
+missing. Landed 2026-09-01; the reasoning is in `CHANGELOG.md`.
+
+1. **Where** — `pom2::userConfigDir()` (`ResourcePaths.cpp`) returns
+   `/persistent` under `__EMSCRIPTEN__` and the platform config dir
+   elsewhere. `Settings::resolveStorePath()` and main.cpp's `imgui.ini`
+   both go through it; they used to be two copies of the platform dance,
+   and the copies had already drifted under Emscripten.
+2. **When it becomes durable** — `PersistentFs.h`. A write to IDBFS lands
+   in the mount's memory image and reaches IndexedDB only on
+   `FS.syncfs(false, …)`. Writers call `markPersistentStateDirty()`; the
+   frame loop calls `pumpPersistentState()`, which debounces to one flush
+   per 2 s and never overlaps two. `flushPersistentStateNow()` skips the
+   debounce for the page's `visibilitychange`/`pagehide`.
+3. **Who calls the writer** — nobody, without
+   `MainWindow::persistSession()` (`MainWindow_Session.cpp`). The browser
+   never destroys its MainWindow:
+   `emscripten_set_main_loop_arg(..., simulate_infinite_loop=1)` unwinds
+   `main()` without running the destructors of its locals, by design. The
+   desktop calls `persistSession()` from `~MainWindow()`; the browser calls
+   it on a 10 s heartbeat and from `pom2_persist_now()` (exported
+   `EMSCRIPTEN_KEEPALIVE`, wired to the page's lifecycle events). The
+   heartbeat is affordable because `Settings::save()` skips a save whose
+   content matches the last one it wrote.
+
+**The startup ordering, and why it carries a watchdog.** `FS.syncfs(true, …)`
+is asynchronous, so the shell holds `run()` back with `addRunDependency` until
+the populate finishes — otherwise `Settings::load()` can read an empty mount.
+The failure mode of that fix is worse than the bug: a callback that never
+fires means the dependency is never released and **the emulator never starts**
+(splash up, no frame). A 5 s watchdog releases it regardless. Seen for real
+during testing, not theorised.
+
+**Testing it.** Two traps, both cost time:
+
+- Headless Chrome reports the page as `hidden`, so `requestAnimationFrame`
+  never fires and POM2's frame loop — CPU, render, persistence — does not run
+  at all. CDP `Emulation.setFocusEmulationEnabled {enabled:true}` fixes it.
+- `wasm/shell.html` is **not** a link dependency. Editing it alone rebuilds
+  nothing and you keep serving the previous page. Touch a source file.
+
 
 The symbols stay declared so every caller still links — only the
 implementation degrades. **Rule for editors of these two files**

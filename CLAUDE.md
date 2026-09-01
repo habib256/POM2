@@ -148,6 +148,7 @@ Detail lives in `DEV.md`. This map is the index — file pair + one-line note + 
 | System profiles | `SystemProfile.h/.cpp` | [§ Profiles](DEV.md#profile-switching-internals) |
 | CLI | `CliDispatcher.h/.cpp` | [§ CLI](DEV.md#cli-clidispatcher) |
 | WebAssembly build | `build_wasm.sh`, `wasm/shell.html` | [§ WASM](DEV.md#webassembly-browser-build) |
+| Browser persistence (IDBFS: where, when durable, who writes) | `PersistentFs.h`, `ResourcePaths.*` (`userConfigDir`), `MainWindow_Session.cpp` | [§ Browser persistence](DEV.md#browser-persistence-idbfs) |
 
 ## Memory map
 

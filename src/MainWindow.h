@@ -218,6 +218,14 @@ public:
     /// internally between frames).
     bool insertAndBootImage(const std::string& path, std::string& errOut);
 
+    /// Write everything the next launch needs into the settings store and
+    /// commit it (MainWindow_Session.cpp). Called from the destructor on the
+    /// desktop; public because the browser build has no destructor moment —
+    /// main() never returns there — and drives this from the frame loop's
+    /// heartbeat and the page's own lifecycle events instead. Idempotent, and
+    /// a no-op on disk when nothing changed since the last call.
+    void persistSession();
+
     /// Build and mount a read-only ProDOS /HOST/ volume from `path` on an
     /// HDV card, auto-provisioning the card when necessary. Does not boot it:
     /// the synthetic volume deliberately has no boot blocks.

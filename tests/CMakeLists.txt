@@ -1166,6 +1166,7 @@ set_tests_properties(prodos_volume_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_settings_roundtrip
     settings_roundtrip_test.cpp
     ${CMAKE_SOURCE_DIR}/src/Settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_settings_roundtrip PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME settings_roundtrip COMMAND test_settings_roundtrip)

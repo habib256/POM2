@@ -5,6 +5,81 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The browser build can remember things now (IDBFS), and the two surprises
+
+`state.cfg` and `imgui.ini` survive a reload of the WASM build. The backlog
+called this a 2-4 hour quick win with a one-line diagnosis — "`/persistent` is
+mounted via IDBFS but `Settings.cpp` writes to `$HOME`" — and that diagnosis
+was right and nowhere near sufficient. Three things were wrong, and only the
+first was the one written down.
+
+**1. Nobody wrote to the mount.** `pom2::userConfigDir()` is now the single
+answer to "where does POM2's configuration live": `%APPDATA%`, `~/Library/
+Application Support`, `$XDG_CONFIG_HOME`, and `/persistent` under Emscripten.
+`Settings::resolveStorePath()` and main.cpp's `imgui.ini` path both call it.
+They used to be two hand-copied platform dances — main.cpp's even carried a
+comment saying it "mirrors `Settings::resolveStorePath`" — and a mirror is a
+thing that can stop matching. Under Emscripten it had: neither copy knew about
+the mount, so both wrote to MEMFS, which is a fresh empty filesystem on every
+visit.
+
+**2. A write to IDBFS is not durable until `FS.syncfs`.** That has no native
+analogue — the desktop write path is a rename plus an fsync and is durable when
+it returns. `PersistentFs.h` holds the browser half: writers mark the store
+dirty, the frame loop pumps, and at most one flush runs per two seconds and
+never while another is in flight. Without it every write succeeds, every read
+back within the session succeeds, and the lot evaporates on reload.
+
+**3. The browser build has no exit, so nothing ever called the writer.** This
+is the one that turned the quick win into an afternoon.
+`emscripten_set_main_loop_arg(..., simulate_infinite_loop=1)` unwinds `main()`
+*without* destroying its locals — deliberately, so the loop's captured state
+outlives the call — which means `~MainWindow()` never runs in a browser, and
+`~MainWindow()` was where POM2 wrote everything it remembers. Plumbing to a
+writer that is never called would have been indistinguishable from success
+until someone reloaded the page. The block is now
+`MainWindow::persistSession()` in its own translation unit
+(`MainWindow_Session.cpp`, -280 lines off `MainWindow.cpp`), called from the
+destructor on the desktop and from a 10-second heartbeat plus the page's
+`visibilitychange`/`pagehide` in the browser. A heartbeat is only affordable
+because `Settings::save()` now skips a save whose content matches the last one
+it wrote — pinned by deleting the file underneath a second save and asserting
+it stays deleted.
+
+**The bug the test found, which no amount of reading would have.** The shell's
+`preRun` hook fired `FS.syncfs(true, …)` and returned without waiting, so the
+runtime could start before IndexedDB had been read back. The fix is
+`addRunDependency`, and that fix introduces a failure mode strictly worse than
+the one it cures: if the callback never fires, the dependency is never
+released and **the emulator never starts** — the page sits on "downloading
+assets…" with the splash up, no frame ever drawn. Not hypothetical. It
+happened during testing, when a `deleteDatabase()` from a previous page left
+the open blocked, and it cost a good while to diagnose because every symptom
+pointed at the new heartbeat code. There is now a 5-second watchdog: a browser
+that will not answer costs the visitor their stored settings, never the
+emulator.
+
+**Two smaller things.** The browser's chrome-light startup (hide every panel,
+force the composite display mode) now runs only on a **first** visit —
+`settings->empty()`. It used to run on every launch, which was harmless while
+nothing persisted and actively wrong the moment something did: the store had
+just restored the visitor's panels three lines above, and this closed them all
+again. And the list-packing helpers (0x1F-separated paths) moved to
+`SettingsList.h`, because the reader and the writer are now in two translation
+units and a separator convention with two copies can disagree with itself.
+
+**Verified for real**, not by reading: headless Chrome driven over CDP, three
+consecutive visits on a virgin browser profile. Visit 1 boots with an empty
+store, writes 134 keys plus `imgui.ini`, and flushes; visit 2 logs `Loaded 134
+keys from /persistent/state.cfg`; a value changed between visits comes back
+changed and is not clobbered by the heartbeat's rewrite. Two notes for whoever
+tests this next: headless Chrome reports the page as **hidden**, which stops
+`requestAnimationFrame` dead and with it POM2's entire frame loop — CDP
+`Emulation.setFocusEmulationEnabled` is what makes the page consider itself
+visible. And `wasm/shell.html` is **not** a link dependency, so editing it
+alone rebuilds nothing: the page you serve is the one from the last actual
+relink. Touch a source file.
+
 ## 2026-09-01 — The 0 % file that was dead, and the one that held a contract
 
 P2-5 said "`RomLoader.cpp` and `CharRomCatalog.cpp` are at 0 %, write tests".

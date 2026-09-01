@@ -110,6 +110,46 @@ fs::path userDataDir()
     return cached;
 }
 
+fs::path userConfigDir()
+{
+    // Emscripten: the IDBFS mount from wasm/shell.html's preRun hook. Not a
+    // guess — the mount is a hard prerequisite, and if it failed the shell
+    // logged it and this directory behaves like any other MEMFS path (writes
+    // succeed, nothing survives the reload).
+#if defined(__EMSCRIPTEN__)
+    return fs::path("/persistent");
+#else
+    // Candidates in preference order. Windows lists both roaming and local
+    // because the second is a real fallback, not a duplicate: a locked-down
+    // profile can have %APPDATA% pointing at an unwritable network share
+    // while %LOCALAPPDATA% is fine.
+    std::vector<fs::path> candidates;
+#  if defined(_WIN32)
+    if (const char* appData = std::getenv("APPDATA"); appData && *appData)
+        candidates.emplace_back(fs::path(appData) / "POM2");
+    if (const char* local = std::getenv("LOCALAPPDATA"); local && *local)
+        candidates.emplace_back(fs::path(local) / "POM2");
+#  elif defined(__APPLE__)
+    if (const char* home = std::getenv("HOME"); home && *home)
+        candidates.emplace_back(fs::path(home) / "Library" / "Application Support" / "POM2");
+#  else
+    if (const char* config = std::getenv("XDG_CONFIG_HOME"); config && *config)
+        candidates.emplace_back(fs::path(config) / "POM2");
+    else if (const char* home = std::getenv("HOME"); home && *home)
+        candidates.emplace_back(fs::path(home) / ".config" / "POM2");
+#  endif
+    for (const fs::path& dir : candidates) {
+        std::error_code ec;
+        fs::create_directories(dir, ec);
+        if (fs::is_directory(dir, ec)) return dir;
+    }
+    // Nothing usable. Empty is a meaningful answer: the caller has its own
+    // last-resort location, and writing into a path that is not a directory
+    // would fail on every save with a message about the wrong thing.
+    return {};
+#endif
+}
+
 const std::vector<fs::path>& resourceSearchDirs()
 {
     static const std::vector<fs::path> cached = [] {
