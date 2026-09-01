@@ -2318,19 +2318,28 @@ Pinned: `smartport_card_smoke_test`, `smartport_mixed_units_smoke_test`.
 > carries in code comments (`SmartPortCard`, `Memory`, `MainWindow`) and in
 > `TODO.md`. It refers to this section; there is no tracker behind it.
 
-//c / //c rev0/3/4 / //c+ all boot 3.5" **and** HDV through a
-host-served SmartPort block device — the **same `SmartPortCard`** as
-//e, but built into slot 5. Why not faithful IWM/Sony:
+Two paths, by ROM:
 
-- Real //c-class masks all slot ROM (forced INTCXROM) → normal slot
-  card's `$Cn00` invisible → `bootFromSlot` reads internal ROM, never
-  the card.
-- MAME doesn't model 3.5"/SmartPort on plain //c (`A2BUS_IWM` is
-  5.25"-only; "WANTED: no Liron ROM dumps"). Only //c+ models 3.5"
-  via the on-board IWM/MIG/Sony — but that boot path doesn't reach a
-  bootable disk (full IWM bit shifter unmodelled).
+- **32 KB //c (rev 0/3/4) — the machine's own firmware, since 2026-09-01.**
+  Its bank-0 `$C500` page is the disk controller firmware (the Liron's, byte
+  for byte: `$C88C` in bank 1 ≡ the Liron's `$C806`), and it talks to the
+  rear-port drive as an intelligent SmartPort device over the disk port.
+  `IIcExternalSmartPort` answers that bus for the units of the built-in
+  slot-5 card — see [§ The //c external 3.5" port](#the-c-external-35-port-iicexternalsmartport).
+  Nothing is punched over `$C500` while a unit holds media
+  (`IIcClassProfile::servesExternalSmartPort`): the firmware enumerates the
+  drive, ProDOS lists `S5,D1/D2` next to the internal `S6`, and
+  `bootFromSlot(5)` jumps into the real page and boots through it. Pinned
+  `iic_external_smartport`.
+- **16 KB //c (rev 255) and the //c+'s HDV/2mg — the host-served stub.** The
+  16 KB dump has no 3.5" firmware at all; the //c+ boots its internal Sony
+  through the MIG but reaches an HDV only this way. The **same
+  `SmartPortCard`** as //e is built into slot 5 and its `$Cn00` page is
+  punched through the forced INTCXROM. Why not faithful IWM/Sony there:
+  the real //c-class masks all slot ROM → a normal card's `$Cn00` is
+  invisible; and MAME models no 3.5"/SmartPort on the plain //c.
 
-**Mechanism**:
+**Mechanism** (the stub path):
 
 - **ROM hole** (`Memory::memRead`, //c-class INTCXROM branch):
   `$C500-$C5FF` (bank 0) returns `slots.slotRomRead(addr)` instead of
@@ -2824,24 +2833,26 @@ only moves forward, so handing it a timestamp older than one it already
 reached returns an empty stream for the rest of the run.
 
 *`LironCard` — the same hardware as `SmartPortCard`, at the other level*
-(2026-09-01). `SmartPortCard` answers ProDOS's block calls from the host and
-borrows only the Liron dump's identity bytes; it works and is what a user
-should plug. `LironCard` is the card as silicon: the real 4 KB EPROM
-executing, an `IWMDevice` behind `$C0nX`, Sony mechanisms under the head.
-Wiring differs from the //c+ in exactly one place — a Liron has no MIG, so the
-IWM's SEL line is head select (and bit 3 of the Sony register address), where
-`SmartPortHub` uses the MIG's `$C240/$C260`.
+(2026-09-01, catalog `liron`). `SmartPortCard` answers ProDOS's block calls
+from the host and borrows only the Liron dump's identity bytes; it works and
+is the quick choice. `LironCard` is the card as silicon: the real 4 KB EPROM
+executing, an `IWMDevice` behind `$C0nX`, and — this is the part that took a
+day to find — an intelligent drive on the other end of the port, because that
+is what the firmware talks to. Wiring differs from the //c+ in exactly one
+place — a Liron has no MIG, so the IWM's SEL line is head select (and bit 3
+of the Sony register address), where `SmartPortHub` uses the MIG's
+`$C240/$C260`.
 
-It runs the firmware and does **not** boot, for a reason that is not the GCR
-path: the scan at `$C800` drives PH1 + LSTRB high, asserts SEL and the motor,
-polls the status register 50× for SENSE, and reports ProDOS `$28` on timeout.
-That is the SmartPort **bus** handshake — only an intelligent device (UniDisk
-3.5, own 65C02) answers it, and the scan has no dumb-drive fallback. The plain
-//c's bank-1 firmware is the same code byte for byte (`$C88C` ≡ the Liron's
-`$C806`), so both remaining 3.5" items need one thing: a SmartPort bus-level
-responder. → `TODO.md` § Storage. Pinned by `liron_boot35`
-(`POM2_LIRON_BOOT_STRICT=1` demands the boot, for whoever writes it). The card
-is intentionally absent from the slot catalog until then.
+It boots, over the SmartPort **bus**. The scan at `$C800` drives PH1 + LSTRB
+high, asserts SEL and the motor, polls the status register 50× for SENSE, and
+reports ProDOS `$28` on timeout; that handshake is answered only by an
+intelligent device (UniDisk 3.5, own 65C02), and the scan has no dumb-drive
+fallback. `SmartPortBusDevice` is that device, at the byte level — see the
+next section. Pinned by `liron_boot35` (ProDOS 8 on the text page, blocks
+read over the bus) and `smartport_bus_handshake` (the exchange itself). The
+Sony mechanisms under the IWM are bypassed while the responder is live
+(`busLive()`: enabled and a bay holds media); with it off, or nothing
+mounted, the card is a Liron with an empty port and the firmware says so.
 
 Two card-side bugs the real firmware exposed, both worth knowing when wiring
 any IWM card: the phase lines must reach EVERY drive on the chain, not only
@@ -2849,29 +2860,83 @@ the selected one (the firmware sets the register address up before enabling a
 drive); and `devsel` must not pick the drive on a Liron, because SEL is head
 select there.
 
-*The bus responder* (`LironCard::setBusResponderEnabled`, **off** by default).
-The SmartPort bus exchange is a byte stream through the IWM's data register,
-so POM2 answers it at the byte level rather than modulating flux — the same
-seam `SmartPortCard` uses one layer up (docs/lle_vs_hle.md). Implemented and
-pinned (`smartport_bus_handshake`): the presence handshake, the command packet
-DECODED, and a framed reply with the real group encoding and checksum. The
-enumeration accepts the device and stops scanning. What is missing is the
-content of the status reply — the firmware does not go on to the boot's block
-read — not the wire, whose checksum POM2 computes to the same byte the
-firmware holds in `$40`. Protocol map with ROM addresses in `TODO.md` §
-Storage; `POM2_TRACE_SMARTPORT_BUS=1` prints every byte in both directions.
+### The SmartPort bus (SmartPortBusDevice)
 
-Four behaviours worth knowing before touching it. First, the one that reads
-like a checksum failure and is not: the enumeration's reply buffer is a few
-bytes of ZERO PAGE, so answering its `$05` with a 512-byte block walks over
-`$004B`/`$004C` — the fields that say how long the packet is. Look at the
-command before choosing a payload. Then the three wire ones: the write
-handshake's bit 6 is an underrun flag the firmware waits to see **clear**
-(answer `$80`, not `$C0`, or it hangs in the drain loop at `$C92C`); SENSE is
-an attention line with three states per transaction (high for presence, low to
-acknowledge the command, high when the reply is ready); and the firmware
-leaves PH1 and LSTRB asserted across the whole exchange, so there is no edge to
-trigger the reply on — its read of `$C0nD` at `$C97A` is the cue.
+The exchange between a Liron-class controller and a UniDisk 3.5 is a byte
+stream through the IWM's data register, so POM2 answers it at the byte level
+rather than emulating the drive's processor — the same seam `SmartPortCard`
+uses one layer up (docs/lle_vs_hle.md). Everything below was read out of
+`roms/liron.rom` with POM2's own `disassemble6502`; the //c's bank 1 is the
+same code, so the addresses serve both machines.
+
+| Address | Step |
+| ------- | ---- |
+| `$C800` | send: PH1 + LSTRB up, mode `$07`, SEL, motor; poll status 50× for SENSE HIGH (timeout → `$28`); REQ (PH0) up; sync `3F CF F3 FC FF C3`; seven header bytes; odd section; groups; two checksum bytes; `$C8`. Then wait for SENSE LOW within ten polls (`$C943`, else `$01`) and drop REQ (`$C949`). |
+| `$C960` | receive: PH1 + LSTRB up; wait SENSE HIGH; REQ up; hunt `$C3` in thirty reads; header into `$0051`..`$004B` (dest, src, type, aux, **status**, odd count, group count — each `AND #$7F`); odd bytes; groups via the slot page's reader at `$Cn21`; checksum; `$C8`; wait SENSE LOW (`$C5E8`); drop REQ (`$C5ED`). |
+| `$CE00` | INIT scan: one INIT per device, dest `$81`, `$82`…; reply status zero = "more devices follow", non-zero ends the scan; the count lands in `$07F8,n` and every later unit number is checked against it (`$CCD1`). |
+| `$CBE6` | calls: command contents = `$42..$4A` — command, **parameter count** (the table at `$CDE3`), buffer, 24-bit block; the **unit is the packet's destination** (`$CD02` swaps the chain number into `$5A`, `$C837` puts it on the wire). WRITE is followed by a `$82` data packet of 512. The reply's status byte is the ProDOS result — `$00` for a good READ, and for STATUS the four status bytes land at `$45` (bit 4 of the first must be set or the firmware returns `$2F`). |
+
+Frame: `FF… $C3 | 7 header | odd section | groups | chk1 chk2 | $C8`, every
+byte carrying bit 7. Contents travel as an odd section (marker + up to six
+bytes) and seven-byte groups behind their own marker, most significant first
+— the ROM's tables at `$CA27/$CA37/$CA47/$CA57` are just `$80`/`$00` masks
+keyed on the marker's bits. Checksum = XOR of the header WIRE bytes and the
+decoded contents, sent 4-and-4, recovered as `((chk2 << 1) | 1) & chk1`.
+`SmartPortBusDevice` decides packet completion from the header's counts, not
+by hunting `$C8` (a data byte `$48` is `$C8` on the wire).
+
+**The ACK line is a handshake, not a presence flag** — the bug that kept the
+first responder at one transaction per session. SENSE is HIGH whenever REQ is
+low (device ready); it goes LOW when a packet has been taken or a reply fully
+read, the host waits for that edge before it releases REQ, and the release is
+what makes the device ready again — and what puts a prepared reply on the
+wire. Modelling it as "high while no command is pending" made the second
+probe of every session find a device that had gone away, and the firmware's
+3000-retry loop looked exactly like a hang.
+
+Three more, each of which cost a run: the write handshake's bit 6 is an
+underrun flag the firmware waits to see **clear** (answer `$80`, not `$C0`, or
+it parks in the drain loop at `$C92C`); the byte the sender stores after the
+terminator (`$C933`) is not part of the packet and must not kill the reply
+just armed for it; and the enumeration's reply buffer is a few bytes of ZERO
+PAGE, so answering an INIT with 512 bytes walks over `$004B/$004C`, the very
+fields that say how long the packet is, which reads like a checksum failure.
+`POM2_TRACE_SMARTPORT_BUS=1` prints every byte in both directions;
+`IWMDevice::setBusCapture` keeps the bytes out of the IWM's shifter so the
+traffic raises no "write underrun".
+
+Backing is a `SmartPortBusUnit` (media / block count / write-protect /
+read / write) — `LironCard` adapts its `Disk35Image`s, `SmartPortCard` its
+`SmartPortUnit`s. Two units per chain by default; INIT answers "last device"
+on the second.
+
+### The //c external 3.5" port (IIcExternalSmartPort)
+
+On a //c one IWM drives the internal 5.25" and the rear connector; the enable
+line picks the drive. POM2 keeps the 5.25" on `DiskIICard` (its LSS is the
+write authority everywhere, and a second controller on those soft switches
+once sent DOS 3.3 into seek storms — `iic_diskii_no_iwm_conflict` pins that
+the machine's shared IWM stays out of it). So the external port carries its
+**own** `IWMDevice`, used as nothing more than a register tracker — Q6/Q7,
+enable, SEL, the phases — with no mechanism attached, and a
+`SmartPortBusDevice` that answers the bytes. `IIcClassProfile::ioReadIWM /
+ioWriteIWM` route `$C0E0-$C0EF` to it on the plain 32 KB //c; it tracks every
+access and **claims** one only while the firmware is addressing the bus
+(PH1 + LSTRB high with the port enabled) or a transaction is in flight, and
+only while a unit holds media (`live()`). Everything else falls through to
+the Disk II exactly as before — and a claimed access is not forwarded to the
+Disk II as a side effect either: on the real machine the internal drive is
+not enabled during that traffic, and forwarding it left the card's empty
+second bay spinning for ever after a 3.5" session.
+
+The units come from whatever sits in slot 5 through
+`SlotPeripheral::smartPortBusUnit` — the built-in `smartport35` the //c
+profiles plug there — so the media panel is unchanged: what the user mounts
+on "slot 5" is what the firmware finds on the port. `SmartPortBusPort.h` is
+the MACHINE↔DEVICES contract; `EmulationController` owns the port and hands
+it to `Memory`, which forwards it to each //c-class profile it builds. The
+port's state is not in snapshots: a restore, like a reset, abandons any
+transaction in flight.
 
 *WOZ (flux) images* (2026-08-18). A `.woz` holds bit CELLS, and POM2
 stores 3.5" media as a flat block array with no GCR *encoder* — so a flux

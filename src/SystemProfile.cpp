@@ -132,10 +132,11 @@ const ProfileConfig& cfgAppleIIc()
         // `3420033a.256` is MAME's `apple2c0` part — the "//c (UniDisk 3.5)"
         // revision, i.e. the ROM whose firmware knows the external UniDisk
         // 3.5. It sits LAST on purpose: it is a fallback for users who own
-        // only that dump, not an upgrade. POM2 still serves 3.5"/HDV on //c
-        // through the host-side SmartPort at built-in slot 5 (the real IWM
-        // bit-shift path is deliberately unmodelled — see CLAUDE.md), so
-        // this ROM does not by itself unlock a hardware-accurate 3.5 boot.
+        // only that dump, not an upgrade. On any 32 KB //c ROM the machine's
+        // own firmware drives the external 3.5" as a SmartPort bus device;
+        // POM2 answers that bus (IIcExternalSmartPort) for the units of the
+        // built-in slot-5 card. The 16 KB rev-255 dump has no 3.5" firmware
+        // and keeps the host-served $C500 substitute.
         { "roms/apple2c-32Kv0.rom", "roms/apple2c-16K.rom",
           "roms/3420033a.256" },
         { "roms/apple2e_char.rom", "roms/apple2_char.rom" },
@@ -147,10 +148,12 @@ const ProfileConfig& cfgAppleIIc()
         // as `ssc` ("printer port" / "modem port" — see the detailed
         // comment on the sl1 entry below).
         // sl5 = built-in SmartPort (the 32 KB ROM 0/3/4 //c shipped with
-        // SmartPort firmware here for an external 3.5"/hard disk). POM2
-        // serves it as a host-backed block device so 3.5" + HDV boot via
-        // SmartPort — the real IWM/Sony GCR boot path is unmodelled (see
-        // project_iic_smartport_boot). sl7 left free for power users;
+        // SmartPort firmware here for an external 3.5"/hard disk). The
+        // card holds the units the user mounts; on a 32 KB ROM the //c's
+        // own firmware finds them over the SmartPort bus
+        // (IIcExternalSmartPort) and boots them itself, on the 16 KB ROM the
+        // card's $C500 page stands in for firmware that dump does not have
+        // (project_iic_smartport_boot). sl7 left free for power users;
         // sl3 is the internal 80-col firmware area covered by the AUX label.
         {
             std::nullopt,                                // sl0 reserved

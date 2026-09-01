@@ -27,7 +27,7 @@
 #include <array>
 #include <cstddef>
 
-namespace pom2 { class IWMDevice; class SmartPortHub; }
+namespace pom2 { class IWMDevice; class SmartPortHub; class SmartPortBusPort; }
 
 class IIcClassProfile final : public MemoryProfile {
 public:
@@ -42,7 +42,7 @@ public:
                     bool iwmAuthoritative);
 
     bool forcesIntCxRom() const override { return true; }
-    void onResetSoftSwitches() override  { romBank_ = false; }
+    void onResetSoftSwitches() override;
     bool romBankToggle() override;
 
     bool ioReadIWM (uint16_t addr, uint64_t cyc, uint8_t& out) override;
@@ -55,6 +55,8 @@ public:
     void setIwm(pom2::IWMDevice* iwm) override            { iwm_ = iwm; }
     void setSmartPortHub(pom2::SmartPortHub* hub) override { hub_ = hub; }
     void setIwmAuthoritative(bool on) override            { iwmAuthoritative_ = on; }
+    void setExternalSmartPort(pom2::SmartPortBusPort* port) override { extPort_ = port; }
+    bool servesExternalSmartPort() override;
 
     /// //c+ MIG state (page pointer + 2 KB RAM) for snapshot / rewind.
     /// Without these the MIG falls out of a rewind and the IWM freezes
@@ -82,5 +84,6 @@ private:
 
     pom2::IWMDevice*    iwm_ = nullptr;
     pom2::SmartPortHub* hub_ = nullptr;
+    pom2::SmartPortBusPort* extPort_ = nullptr;   // plain //c external drive
     bool               iwmAuthoritative_ = true;
 };

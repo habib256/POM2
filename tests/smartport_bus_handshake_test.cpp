@@ -14,7 +14,7 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// The SmartPort BUS protocol, as far as POM2 speaks it.
+// The SmartPort BUS protocol, end to end: a Liron card boots a 3.5" disk.
 //
 // `liron_boot35` pins the card with its bus responder OFF: the firmware finds
 // nothing on the port and reports ProDOS $28, which is what a Liron with no
@@ -112,53 +112,72 @@ int main()
     cpu.setCpuMode(M6502::CpuMode::CMOS);
     cpu.hardReset();
     cpu.setProgramCounter(static_cast<uint16_t>(0xC000 + kSlot * 256));
-    for (long total = 0; total < 8'000'000; ) total += cpu.run(4096);
+    bool prodosSeen = false;
+    for (long total = 0; total < 40'000'000; ) {
+        total += cpu.run(4096);
+        if (!prodosSeen && (total % (1 << 20)) < 4096) {
+            for (int i = 0; i < 0x400 && !prodosSeen; ++i) {
+                // "ProDOS" in Apple high-ASCII, anywhere on text page 1.
+                static const uint8_t kProDOS[6] = {0xD0,0xF2,0xEF,0xC4,0xCF,0xD3};
+                bool hit = true;
+                for (int k = 0; k < 6 && hit; ++k)
+                    hit = mem.memRead(static_cast<uint16_t>(0x400 + i + k)) == kProDOS[k];
+                if (hit) prodosSeen = true;
+            }
+        }
+    }
 
     const auto p = liron->busProgress();
     int failures = 0;
+    auto fail = [&](const char* msg) { std::printf("FAIL: %s\n", msg); ++failures; };
 
-    if (!p.probeAnswered) {
-        std::printf("FAIL: the firmware's presence poll never saw SENSE — the "
-                    "handshake pattern (PH1 + LSTRB + enabled) is not being "
-                    "recognised\n");
-        ++failures;
+    // The presence poll: fifty status reads at $C813 waiting for SENSE.
+    if (!p.probeAnswered)
+        fail("the firmware's presence poll never saw SENSE — the card is not "
+             "recognising PH1 + LSTRB + enable as \"the bus\"");
+    // The INIT scan, then the boot's block reads — every one a full
+    // command/reply round trip through $C800 and $C960.
+    if (!p.commandTaken)   fail("no command packet arrived");
+    if (!p.packetParsed)   fail("the command bytes did not decode as a packet");
+    if (p.transactions < 3)
+        fail("fewer than three transactions: the two INITs and the first "
+             "READ are the minimum for a boot to have started");
+    if (p.blocksRead == 0)
+        fail("no block was read over the bus — the enumeration was accepted "
+             "but the boot's READ never came or was refused (its unit is the "
+             "packet's DESTINATION, not contents[1])");
+    if (!p.replyDelivered) fail("the last reply was never read to its end");
+    // And the machine actually got somewhere with the bytes: ProDOS's
+    // banner on the text page (A2DeskTop boots ProDOS 8 first).
+    std::string screen;
+    static const int rowBase[24] = {
+        0x400,0x480,0x500,0x580,0x600,0x680,0x700,0x780,
+        0x428,0x4A8,0x528,0x5A8,0x628,0x6A8,0x728,0x7A8,
+        0x450,0x4D0,0x550,0x5D0,0x650,0x6D0,0x750,0x7D0 };
+    for (int r = 0; r < 24; ++r) {
+        for (int c = 0; c < 40; ++c) {
+            const uint8_t ch = mem.memRead(static_cast<uint16_t>(rowBase[r] + c)) & 0x7F;
+            screen += (ch >= 0x20 && ch < 0x7F) ? static_cast<char>(ch) : ' ';
+        }
+        screen += '\n';
     }
-    if (!p.commandTaken) {
-        std::printf("FAIL: no command packet arrived. The firmware writes it "
-                    "to $C0nD with Q6+Q7 set; check the write handshake at "
-                    "$C0nC — leaving its underrun bit set parks the firmware "
-                    "in the drain loop at $C92C forever\n");
-        ++failures;
-    }
-    if (!p.packetParsed) {
-        std::printf("FAIL: the command bytes did not decode as a packet. The "
-                    "frame is FF… $C3 | 7 header | odd section | groups | "
-                    "chk1 chk2 | $C8, every byte carrying bit 7\n");
-        ++failures;
-    }
-    // The enumeration's call, decoded: nine body bytes and command $05. Pinned
-    // exactly, because it is the evidence that POM2 reads the SAME packet the
-    // firmware built — a decoder that silently mis-frames would still hand
-    // back a reply and still "work" until the block numbers mattered.
-    if (p.commandByte != 0x05 || p.bodyBytes != 9) {
-        std::printf("FAIL: decoded command $%02X with a %zu-byte body; the "
-                    "enumeration sends $05 with 9\n",
-                    p.commandByte, p.bodyBytes);
-        ++failures;
-    }
-    if (!p.replyDelivered) {
-        std::printf("FAIL: the firmware never read the header reply back. It "
-                    "waits for SENSE to go HIGH again after the command "
-                    "($C97D), and reads $C0nD first — that read is POM2's cue "
-                    "to arm the reply\n");
-        ++failures;
-    }
+    if (!prodosSeen && screen.find("ProDOS") == std::string::npos)
+        fail("ProDOS never reached the text page: blocks were served, but "
+             "not the right bytes (payload order, or the odd byte before "
+             "the groups)");
 
-    if (failures) return 1;
-    std::printf("smartport_bus_handshake: OK — probe answered, command $%02X "
-                "decoded (%zu-byte body), reply read back over %d "
-                "transaction(s). The enumeration accepts the device; the boot "
-                "read does not follow yet — see the header.\n",
-                p.commandByte, p.bodyBytes, p.transactions);
+    if (failures) {
+        std::printf("progress: probe=%d command=%d parsed=%d delivered=%d "
+                    "bytes=%zu body=%zu cmd=$%02X transactions=%d read=%d\n",
+                    p.probeAnswered ? 1 : 0, p.commandTaken ? 1 : 0,
+                    p.packetParsed ? 1 : 0, p.replyDelivered ? 1 : 0,
+                    p.commandBytes, p.bodyBytes, p.commandByte,
+                    p.transactions, p.blocksRead);
+        std::printf("%s", screen.c_str());
+        return 1;
+    }
+    std::printf("smartport_bus_handshake: OK — probe answered, %d transactions, "
+                "%d blocks read over the bus, ProDOS 8 on the text page\n",
+                p.transactions, p.blocksRead);
     return 0;
 }

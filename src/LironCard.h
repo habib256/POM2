@@ -54,6 +54,7 @@
 #include "IWMDevice.h"
 #include "MountableMediaCard.h"
 #include "SlotPeripheral.h"
+#include "SmartPortBusDevice.h"
 #include "Sony35Drive.h"
 
 #include <array>
@@ -115,35 +116,22 @@ public:
     bool romLoaded() const { return romLoaded_; }
     const std::string& lastError() const { return lastError_; }
 
-    /// Enable the byte-level SmartPort **bus** responder.
+    /// The byte-level SmartPort **bus** responder (`SmartPortBusDevice`).
     ///
-    /// OFF by default, and that default is the honest one: the responder is
-    /// unfinished. It answers the presence handshake and completes one
-    /// command/header exchange with the firmware — real, hard-won, and
-    /// traced — but it cannot yet decode a command or serve a block payload,
-    /// so the firmware advances one step further and then waits. With it off,
-    /// the card behaves like a Liron with nothing on its port: the scan
-    /// reports ProDOS $28 and the machine carries on, which is a defensible
-    /// state to ship. With it on, you can watch the protocol
-    /// (`POM2_TRACE_SMARTPORT_BUS=1`) and pick the work up where it stopped.
-    ///
-    /// When the //c needs this too — its bank-1 firmware is the same code —
-    /// this belongs in its own translation unit rather than in a card.
+    /// ON by default: with it, the real firmware finds an intelligent device
+    /// on its port, enumerates it, and boots from it — which is what a Liron
+    /// with a UniDisk 3.5 attached does. It only answers while a bay holds
+    /// media; an empty chain is silence on the wire, the scan reports $28
+    /// and a //c-class autostart falls through to its internal drive. Off,
+    /// the card is a Liron with nothing plugged in, and the dumb Sony models
+    /// behind the IWM see the phase lines instead (`POM2_TRACE_SMARTPORT_BUS
+    /// =1` prints every byte in both directions either way).
     void setBusResponderEnabled(bool on) { busEnabled_ = on; }
     bool busResponderEnabled() const { return busEnabled_; }
 
     /// How far the last bus exchange got, for tests and diagnostics.
-    struct BusProgress {
-        bool     probeAnswered  = false;  // SENSE went high for the scan
-        bool     commandTaken   = false;  // the host sent a command packet
-        bool     packetParsed   = false;  // …and it decoded as a packet
-        bool     replyDelivered = false;  // the reply was read back in full
-        std::size_t commandBytes = 0;
-        std::size_t bodyBytes    = 0;
-        uint8_t     commandByte  = 0xFF;  // body[0]
-        int         transactions = 0;
-    };
-    BusProgress busProgress() const { return busProgress_; }
+    using BusProgress = SmartPortBusDevice::Progress;
+    BusProgress busProgress() const { return bus_.progress(); }
 
     /// Mechanical sound sink, shared with the rest of the 3.5" stack.
     void setFloppySound(FloppySoundSink* fs);
@@ -164,33 +152,39 @@ private:
     std::array<Disk35Image, kDrives>   images_;
     std::array<Sony35Drive, kDrives>   drives_;
 
-    // ── The SmartPort bus, at the byte level ─────────────────────────────
+    // ── The SmartPort bus ────────────────────────────────────────────────
     // The firmware's device scan is not talking to a disk: it drives PH1 and
     // LSTRB high, then exchanges BYTES through the IWM's data register with
     // an intelligent device (a UniDisk 3.5 carries its own 65C02). POM2 has
-    // no such drive and will not emulate that processor — but the bus
-    // protocol itself is a byte stream, so it can be answered at the byte
-    // level, which is the same seam `SmartPortCard` already uses one layer
-    // up. See docs/lle_vs_hle.md.
-    //
-    // `busAddressed_` is the handshake POM2 answers: PH1 + LSTRB high with
-    // the drive enabled. While it holds, this card substitutes its own bytes
-    // for the IWM's on the data register — the IWM still sees every access,
-    // so its control/mode state stays live and the disk path is untouched.
-    bool busEnabled_   = false;
-    bool busAddressed_ = false;
-    BusProgress busProgress_;
-    /// Bytes the host has written since the last packet terminator ($C8).
-    std::vector<uint8_t> busCommand_;
-    /// What the device is still to hand back, front first.
-    std::vector<uint8_t> busReply_;
-    std::size_t          busReplyPos_ = 0;
+    // no such drive and will not emulate that processor; `SmartPortBusDevice`
+    // answers the protocol instead, at the byte level, which is the same seam
+    // `SmartPortCard` already uses one layer up (docs/lle_vs_hle.md). This
+    // card owns the IWM registers, so it is the one that decides which
+    // accesses are the bus's: PH1 + LSTRB high with the port enabled is what
+    // the scan asserts and no disk transaction ever does, and a transaction
+    // once begun stays routed until its reply is consumed.
+    class ImageUnit final : public SmartPortBusUnit {
+    public:
+        void bind(Disk35Image* img) { img_ = img; }
+        bool     hasMedia()       const override { return img_ && img_->isLoaded(); }
+        uint32_t blockCount()     const override { return Disk35Image::kBlockCount; }
+        bool     writeProtected() const override { return !img_ || img_->isWriteProtected(); }
+        bool readBlock (uint32_t b, uint8_t out[512]) override
+        { return img_ && img_->readBlock(b, out); }
+        bool writeBlock(uint32_t b, const uint8_t in[512]) override
+        { return img_ && img_->writeBlock(b, in); }
+    private:
+        Disk35Image* img_ = nullptr;
+    };
+    bool busEnabled_ = true;
+    SmartPortBusDevice           bus_;
+    std::array<ImageUnit, kDrives> busUnits_;
 
-    static bool busTrace();
-    void busBuildReply();
-    bool busHandshakeActive() const;
-    void busHostWrote(uint8_t v);
-    bool busHostReads(uint8_t& out);
+    /// Enabled, and a bay holds media — the device is on the port.
+    bool busLive() const;
+    /// PH1 + LSTRB high with the port enabled: the host is addressing the
+    /// bus, not a drive.
+    bool busAddressed() const;
 
     /// Which drive the IWM's devsel currently points at, or -1 for none.
     /// The Liron's port is a daisy chain: devsel 1 is the first drive, 2 the

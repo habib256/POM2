@@ -42,7 +42,12 @@ constexpr std::size_t kExpansionSize = 2048;
 LironCard::LironCard(int slot)
     : slot_(slot)
 {
-    for (int i = 0; i < kDrives; ++i) drives_[i].setImage(&images_[i]);
+    for (int i = 0; i < kDrives; ++i) {
+        drives_[i].setImage(&images_[i]);
+        busUnits_[static_cast<std::size_t>(i)].bind(&images_[i]);
+        bus_.setUnit(i, &busUnits_[static_cast<std::size_t>(i)]);
+    }
+    bus_.setUnitCount(kDrives);
 
     // MAME-shaped callbacks, minus the MIG. `SmartPortHub` does the same job
     // for the //c+; a Liron's chain is simpler, so the card is its own hub.
@@ -84,204 +89,19 @@ void LironCard::setFloppySound(FloppySoundSink* fs)
 
 // ── The bus ──────────────────────────────────────────────────────────────
 
-bool LironCard::busHandshakeActive() const
+bool LironCard::busAddressed() const
 {
     // PH1 (CA1) and PH3 (LSTRB) both high, with the port enabled. That is
     // what $C800's scan asserts before polling SENSE, and holding LSTRB high
     // through a status read is something no disk transaction ever does — so
     // it is an unambiguous marker for "talking to the bus, not the disk".
     const uint8_t ph = iwm_.phases();
-    const bool on = (ph & 0x02) && (ph & 0x08) && (iwm_.control() & 0x10);
-    if (busTrace()) {
-        static int lastPh = -1;
-        if (ph != lastPh) {
-            std::fprintf(stderr, "[SPBUS] phases=%X ctrl=%02X addressed=%d\n",
-                         ph, iwm_.control(), on ? 1 : 0);
-            lastPh = ph;
-        }
-    }
-    return on;
+    return (ph & 0x02) && (ph & 0x08) && (iwm_.control() & 0x10);
 }
 
-void LironCard::busHostWrote(uint8_t v)
+bool LironCard::busLive() const
 {
-    // A write once a reply exists opens a NEW transaction. Without this the
-    // command buffer accumulates every packet of the session, the reply stays
-    // armed from the first one, and the firmware — which happily issues a
-    // whole enumeration and then a boot read — gets the same answer forever.
-    if (!busReply_.empty()) {
-        busCommand_.clear();
-        busReply_.clear();
-        busReplyPos_ = 0;
-    }
-    busCommand_.push_back(v);
-    busProgress_.commandTaken = true;
-    busProgress_.commandBytes = busCommand_.size();
-    if (busTrace()) std::fprintf(stderr, "[SPBUS] host -> %02X\n", v);
-}
-
-bool LironCard::busTrace()
-{
-    static const bool on = std::getenv("POM2_TRACE_SMARTPORT_BUS") != nullptr;
-    return on;
-}
-
-namespace {
-
-/// Decode one SmartPort bus packet body. The frame is
-///   FF… $C3 | seven header bytes | odd section | groups | chk1 chk2 | $C8
-/// where every byte on the wire carries bit 7 (that is what "byte ready"
-/// means to the IWM shifter), the odd section is a high-bits byte followed by
-/// `oddCount` bytes, and each group is a high-bits byte followed by seven.
-/// The high-bits byte supplies bit 7 for the bytes that follow it, most
-/// significant first — bit 6 for the first byte, and so on.
-bool decodeBusPacket(const std::vector<uint8_t>& wire,
-                     std::array<uint8_t, 7>& header,
-                     std::vector<uint8_t>& body)
-{
-    std::size_t i = 0;
-    while (i < wire.size() && wire[i] != 0xC3) ++i;
-    if (i >= wire.size()) return false;          // no packet start
-    ++i;
-    if (wire.size() - i < 7) return false;
-    for (int h = 0; h < 7; ++h) header[static_cast<std::size_t>(h)] =
-        static_cast<uint8_t>(wire[i++] & 0x7F);
-    const uint8_t oddCount   = header[5];
-    const uint8_t groupCount = header[6];
-
-    body.clear();
-    if (oddCount) {
-        if (i >= wire.size()) return false;
-        const uint8_t high = wire[i++];
-        for (int k = 0; k < oddCount; ++k) {
-            if (i >= wire.size()) return false;
-            const uint8_t bit = (high << (k + 1)) & 0x80;
-            body.push_back(static_cast<uint8_t>((wire[i++] & 0x7F) | bit));
-        }
-    }
-    for (int g = 0; g < groupCount; ++g) {
-        if (i >= wire.size()) return false;
-        const uint8_t high = wire[i++];
-        for (int k = 0; k < 7; ++k) {
-            if (i >= wire.size()) return false;
-            const uint8_t bit = (high << (k + 1)) & 0x80;
-            body.push_back(static_cast<uint8_t>((wire[i++] & 0x7F) | bit));
-        }
-    }
-    return true;
-}
-
-/// Append `n` bytes as an odd section or as a group: the high-bits byte, then
-/// the bytes with bit 7 forced. Mirrors the decoder above, and the ROM's own
-/// tables at $CA27/$CA37/$CA47/$CA57 — those hold nothing but $80/$00 masks
-/// keyed on the marker's bits, which is the same statement in silicon.
-void appendBusGroup(std::vector<uint8_t>& out, const uint8_t* data, int n)
-{
-    uint8_t high = 0x80;
-    for (int k = 0; k < n; ++k)
-        if (data[k] & 0x80) high |= static_cast<uint8_t>(0x40 >> k);
-    out.push_back(high);
-    for (int k = 0; k < n; ++k)
-        out.push_back(static_cast<uint8_t>(data[k] | 0x80));
-}
-
-}  // namespace
-
-void LironCard::busBuildReply()
-{
-    // Reply framing, read out of the firmware's own decoder at $C985 and the
-    // slot page's bulk reader at $C52B: $C3, then seven header bytes into
-    // $0051 down to $004B (first byte on the wire lands highest), then
-    // `$004C` odd bytes into the caller's buffer, then `$004B` groups of
-    // seven, then the checksum as a 4-and-4 pair, then $C8.
-    std::array<uint8_t, 7> hdr{};
-    std::vector<uint8_t>   body;
-    const bool parsed = decodeBusPacket(busCommand_, hdr, body);
-
-    // Which call is this? The enumeration and the boot use the same wire and
-    // the same routines, but NOT the same buffer: the scan's reply lands in a
-    // few bytes of zero page, and answering it with 512 bytes walks over
-    // $004B/$004C — the very fields that say how long the packet is. (That
-    // mistake reads exactly like a checksum failure, which is a good way to
-    // lose an hour.) The boot's parameter block at $CF16 is
-    // `01 50 00 08 00 00 …`: command $01 = read a block, buffer $0800.
-    const uint8_t cmd = (parsed && !body.empty()) ? body[0] : 0xFF;
-    const bool    isRead = (cmd == 0x01);
-    uint32_t block = 0;
-    if (parsed && body.size() >= 7)
-        block = static_cast<uint32_t>(body[4]) |
-                (static_cast<uint32_t>(body[5]) << 8) |
-                (static_cast<uint32_t>(body[6]) << 16);
-
-    uint8_t sector[512] = {};
-    bool haveBlock = false;
-    if (isRead)
-        haveBlock = images_[0].isLoaded() && block < Disk35Image::kBlockCount &&
-                    images_[0].readBlock(block, sector);
-
-    busProgress_.packetParsed = busProgress_.packetParsed || parsed;
-    busProgress_.bodyBytes    = body.size();
-    busProgress_.commandByte  = cmd;
-    ++busProgress_.transactions;
-    if (busTrace()) {
-        std::fprintf(stderr, "[SPBUS] cmd=$%02X parsed=%d body=%zu", cmd,
-                     parsed ? 1 : 0, body.size());
-        if (isRead) std::fprintf(stderr, " block=%u served=%d", block,
-                                 haveBlock ? 1 : 0);
-        std::fprintf(stderr, "\n");
-    }
-
-    busReply_.clear();
-    busReplyPos_ = 0;
-    busReply_.insert(busReply_.end(), { 0xFF, 0xFF, 0xFF, 0xC3 });
-
-    // 512 = 1 odd byte + 73 groups of seven; a status answer carries none.
-    // The odd bytes land at the head of the caller's buffer and the groups
-    // follow ($C9AC: $56 := $54 + $4C).
-    const int kOdd    = isRead ? 1  : 0;
-    const int kGroups = isRead ? 73 : 0;
-    const std::array<uint8_t, 7> reply = {
-        0x00,                              // → $0051
-        0x00,                              // → $0050
-        0x00,                              // → $004F
-        0x00,                              // → $004E
-        0x01,                              // → $004D — non-zero, or the scan
-                                           //   discards the device
-        static_cast<uint8_t>(kOdd),        // → $004C
-        static_cast<uint8_t>(kGroups),     // → $004B
-    };
-    uint8_t checksum = 0;
-    for (uint8_t b : reply) {
-        const uint8_t wire = static_cast<uint8_t>(b | 0x80);
-        busReply_.push_back(wire);
-        checksum ^= wire;              // the header folds in as WIRE bytes
-    }
-
-    if (isRead) {
-        appendBusGroup(busReply_, sector, kOdd);
-        checksum ^= sector[0];
-        for (int g = 0; g < kGroups; ++g) {
-            const uint8_t* p = sector + kOdd + g * 7;
-            appendBusGroup(busReply_, p, 7);
-            for (int k = 0; k < 7; ++k) checksum ^= p[k];
-        }
-    }
-
-    // 4-and-4: the receiver recovers C as ((chk2 << 1) | 1) & chk1.
-    busReply_.push_back(static_cast<uint8_t>(checksum | 0xAA));
-    busReply_.push_back(static_cast<uint8_t>((checksum >> 1) | 0xAA));
-    busReply_.push_back(0xC8);
-
-    if (busTrace())
-        std::fprintf(stderr, "[SPBUS] reply armed (%zu bytes)\n",
-                     busReply_.size());
-}
-
-bool LironCard::busHostReads(uint8_t& out)
-{
-    if (busReplyPos_ >= busReply_.size()) return false;
-    out = busReply_[busReplyPos_++];
-    return true;
+    return busEnabled_ && bus_.anyMedia();
 }
 
 uint8_t LironCard::deviceSelectRead(uint8_t low4)
@@ -298,64 +118,37 @@ uint8_t LironCard::deviceSelectRead(uint8_t low4)
         drives_[active_].ssW(iwm_.sel());
     }
     const uint8_t v = iwm_.read(low4);
-    if (!busEnabled_) return v;
-    busAddressed_ = busHandshakeActive();
-    // The receive routine's cue: after sending a command the firmware calls
-    // $C960, which re-asserts PH1+LSTRB and then READS $C0nD before it starts
-    // waiting for SENSE. Nothing else in the transaction reads that offset,
-    // and the phase lines stay up across the whole exchange — so an edge on
-    // the handshake is not available to trigger on, but this access is.
-    if (low4 == 0x0D && !busCommand_.empty() && busReply_.empty())
-        busBuildReply();
-
+    if (!busLive()) return v;
     // The phase pattern ADDRESSES the device; it does not gate every byte.
     // The firmware drops PH1 as soon as it starts reading the reply ($C982
-    // `LDA $C081,X`), so a per-access gate on the handshake hands the rest of
-    // the packet back to an empty IWM. A transaction stays live from the
-    // first command byte until the last reply byte has been taken.
-    const bool inTransaction = !busCommand_.empty() ||
-                               busReplyPos_ < busReply_.size();
-    if (!busAddressed_ && !inTransaction) return v;
+    // `LDA $C081,X`), so a per-access gate on the handshake would hand the
+    // rest of the packet back to an empty IWM. A transaction stays routed
+    // from its first byte until the reply is consumed and REQ released.
+    if (!busAddressed() && !bus_.active()) return v;
 
-    // Q6/Q7 both low = the data register. In write mode the firmware polls it
-    // for the handshake's "ready" bit; in read mode it wants the device's
-    // next byte. Bit 7 means "there is one" in both directions, which is why
-    // every SmartPort byte on the wire has it set.
-    if ((iwm_.control() & 0xC0) == 0x00) {
-        uint8_t reply = 0;
-        if (busHostReads(reply)) {
-            if (busReplyPos_ >= busReply_.size()) {
-                busProgress_.replyDelivered = true;
-                if (busTrace())
-                    std::fprintf(stderr, "[SPBUS] reply fully read\n");
-            }
-            return reply;
-        }
-        return 0x00;                      // nothing to say yet
+    switch (iwm_.control() & 0xC0) {
+    case 0x00: {
+        // Q6/Q7 both low = the data register in read mode: the device's next
+        // byte, bit 7 meaning "there is one" — which is why every SmartPort
+        // byte on the wire has it set. Nothing to say reads as $00.
+        uint8_t b = 0;
+        return bus_.hostReads(b) ? b : uint8_t{0x00};
     }
-    if ((iwm_.control() & 0xC0) == 0x80) {
+    case 0x80:
         // Write handshake. Bit 7 = "latch free, send the next byte"; bit 6 is
         // the underrun flag the firmware waits to see CLEAR after its last
         // byte ("has the shifter drained?"). POM2 takes bytes instantly and
         // has nothing in flight, so both answers are "yes, go on" — leaving
-        // bit 6 set parks the firmware in the drain loop at $C92C forever.
+        // bit 6 set parks the firmware in the drain loop at $C92C for ever.
         return 0x80;
+    case 0x40:
+        // Status: bit 7 is SENSE, which on this bus is the device's ACK line
+        // rather than a disk's write-protect. See SmartPortBusDevice for the
+        // handshake it follows.
+        return static_cast<uint8_t>((v & 0x7F) | (bus_.sense() ? 0x80 : 0x00));
+    default:
+        return v;
     }
-    if ((iwm_.control() & 0xC0) == 0x40) {
-        // Status: bit 7 is SENSE, which on this bus is the device's
-        // attention line rather than a disk's write-protect. High says "a
-        // device is here" to the scan's poll; it must drop once the command
-        // packet has been taken, because the firmware's next loop waits for
-        // exactly that before it reads the reply.
-        // High before a command (presence) and again once a reply is armed
-        // (attention); low in between, which is the acknowledgement the
-        // firmware waits for after sending.
-        const bool sense = busCommand_.empty() ||
-                           (busReplyPos_ < busReply_.size());
-        if (sense && busCommand_.empty()) busProgress_.probeAnswered = true;
-        return static_cast<uint8_t>((v & 0x7F) | (sense ? 0x80 : 0x00));
-    }
-    return v;
 }
 
 void LironCard::deviceSelectWrite(uint8_t low4, uint8_t v)
@@ -373,15 +166,16 @@ void LironCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     // bytes: the sender establishes write mode with `STA $C08F,X` carrying
     // the first sync byte.
     iwm_.write(low4, v);
-    busAddressed_ = busEnabled_ && busHandshakeActive();
     // …and only while the drive is enabled. The IWM makes the same test —
     // an odd-offset write with Q6+Q7 is a DATA byte when the device is
     // active and the MODE register otherwise — and mistaking the mode write
     // for a command byte poisons the packet before it starts, which then
-    // reads as "the probe failed".
-    if (busEnabled_ && !iwm_.isIdle() &&
-        (iwm_.control() & 0xC0) == 0xC0 && (low4 & 1))
-        busHostWrote(v);
+    // reads as "the probe failed". The address gate keeps a Sony GCR write
+    // (same register, same mode, no bus handshake) out of the packet buffer.
+    if (busLive() && !iwm_.isIdle() &&
+        (iwm_.control() & 0xC0) == 0xC0 && (low4 & 1) &&
+        (busAddressed() || bus_.active()))
+        bus_.hostWrote(v);
 }
 
 uint8_t LironCard::slotRomRead(uint8_t low8)
@@ -411,11 +205,7 @@ void LironCard::onReset()
     iwm_.reset();
     for (auto& d : drives_) d.reset();
     active_ = -1;
-    busAddressed_ = false;
-    busCommand_.clear();
-    busReply_.clear();
-    busReplyPos_ = 0;
-    busProgress_ = BusProgress{};
+    bus_.reset();
     retargetIwm();
 }
 
@@ -446,6 +236,14 @@ void LironCard::retargetIwm()
 
 void LironCard::onPhases(uint8_t phases)
 {
+    if (busLive()) {
+        // An intelligent drive on the chain: the phase lines are the bus's
+        // control lines, not a stepper's. PH0 is REQ; PH0 + PH2 together is
+        // the bus reset the firmware issues before an INIT scan ($C9E5).
+        if ((phases & 0x05) == 0x05) bus_.busReset();
+        bus_.reqChanged((phases & 0x01) != 0);
+        return;
+    }
     // Every drive on the chain, selected or not. CA0-CA2 and LSTRB are wired
     // straight through to the connector, so a drive sees them whether or not
     // its /ENBL is asserted — and the firmware sets the register address up

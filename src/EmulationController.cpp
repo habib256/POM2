@@ -162,6 +162,11 @@ EmulationController::EmulationController()
     mem.setCpu(&processor);
     mem.setIWM(iwmDev.get());
     mem.setSmartPortHub(hub.get());
+    // The plain //c's external 3.5": its own firmware over the SmartPort
+    // bus, answered by whatever the built-in slot 5 holds. Only the
+    // 32 KB //c profile consults it (IIcClassProfile::ioReadIWM).
+    extSmartPort_ = std::make_unique<pom2::IIcExternalSmartPort>(&mem.slotBus());
+    mem.setExternalSmartPort(extSmartPort_.get());
     mem.setNoSlotClock(noSlotClock_.get());
 }
 
@@ -185,6 +190,7 @@ EmulationController::~EmulationController()
     mem.setCpu(nullptr);
     mem.setIWM(nullptr);
     mem.setSmartPortHub(nullptr);
+    mem.setExternalSmartPort(nullptr);
     mem.setNoSlotClock(nullptr);
     tape.reset();
     spk.reset();

@@ -20,6 +20,7 @@
 #include "CpuClock.h"
 #include "DiskIICard.h"
 #include "GrapplerCard.h"
+#include "LironCard.h"
 #include "MouseCard.h"
 #include "MouseCardAppleWin.h"
 #include "ProDOSHardDiskCard.h"
@@ -28,6 +29,7 @@
 #include "SlotPeripheral.h"
 #include "SmartPortCard.h"
 
+#include <string>
 #include <utility>
 
 namespace pom2 {
@@ -193,6 +195,21 @@ SlotCardFactory::Result SlotCardFactory::create(const Request& request) const
                 result.resourcePath = rom;
             }
         }
+        result.card = std::move(card);
+        return result;
+    }
+
+    if (request.key == "liron") {
+        auto card = std::make_unique<pom2::LironCard>(request.slot);
+        if (!card->romLoaded()) {
+            result.warningCategory = "rom";
+            result.warning = "Liron card requested for slot " +
+                std::to_string(request.slot) + " but " + card->lastError() +
+                " — slot left empty";
+            return result;   // no synthetic fallback: that card is smartport35
+        }
+        result.resourcePath = "roms/liron.rom";
+        result.status = "loaded: roms/liron.rom";
         result.card = std::move(card);
         return result;
     }

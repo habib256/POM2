@@ -5,6 +5,70 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The //c gets its external 3.5" back: the SmartPort bus, finished and wired
+
+The request was plain: a //c with its internal 5.25" **and** a 3.5" on the
+rear port, both working. Measured before touching anything, it did not: a
+5.25" boot listed `S6,D1 S6,D2 S3,D2` with an 800K image mounted on slot 5,
+and arming the host-served `$C500` stub from cold dropped the machine into
+the monitor at `$0806`. The cause was never a bug in POM2's stub: the //c's
+own boot does `JSR $C5F8` into that page, and the page under it IS the disk
+controller firmware — the Liron's, byte for byte — which talks to the drive
+as an intelligent device over the SmartPort **bus**. No stub survives being
+the thing the machine's own firmware jumps through. The answer had to be the
+bus, and the bus responder started the same morning stopped after one
+transaction.
+
+**Why it stopped: SENSE is a handshake, not a presence flag.** The first
+responder derived the line from its buffers ("high while no command is
+pending"), so after the INIT reply it answered LOW to the next probe — the
+boot's READ — and the firmware's 3000-retry loop looked exactly like a hang.
+Read from the ROM, the line is the device's ACK: HIGH whenever REQ (PH0) is
+low, LOW when a packet has been taken or a reply fully read; the host waits
+for that edge before it releases REQ, and the release is what makes the
+device ready again and what puts a prepared reply on the wire. Modelled as
+that state machine (`SmartPortBusDevice`, its own translation unit), the
+firmware ran the whole enumeration — INIT to device 1 ("more follow"), INIT
+to device 2 ("last") — and then sent the READ.
+
+**Then two facts about the packet the wire had not needed yet.** The unit is
+the packet's **destination** (`$CD02` swaps the chain number into `$5A`,
+`$C837` puts it on the wire); contents byte 1 is the parameter count from the
+firmware's own table at `$CDE3`, and reading it as the unit refused every
+READ with `$11`. And the header's status byte is the ProDOS result — the
+`$01` that had satisfied the INIT scan ("non-zero ends the scan") made every
+successful READ an error `$27`. With those, `liron_boot35` boots ProDOS 8
+through the real EPROM, and the Liron is in the catalog as `liron`.
+
+**Wiring it to the //c without breaking the 5.25".** On a real //c one IWM
+drives both drives; POM2 deliberately keeps the 5.25" on `DiskIICard`, and
+`iic_diskii_no_iwm_conflict` pins that the machine's shared IWM stays out of
+`$C0E0-$C0EF` on the plain //c because a second controller there once sent
+DOS 3.3 into seek storms. So `IIcExternalSmartPort` carries its **own**
+IWM, used purely as a register tracker, and claims an access only while the
+firmware is addressing the bus (PH1 + LSTRB with the port enabled, or a
+transaction in flight) and only while a slot-5 unit holds media. The units
+come from the built-in `smartport35` card the //c profiles already plug —
+the media panel did not change — through a new `SlotPeripheral::
+smartPortBusUnit`. And while that port is live, `Memory` leaves `$C500`
+alone: the real firmware runs, `bootFromSlot(5)` jumps into it, and the
+arming gate becomes what it should always have been on this ROM, unused.
+
+**The evidence** (`iic_external_smartport`, three full boots): with the 3.5"
+mounted, a normal 5.25" boot brings up ProDOS with `S5,D1 S5,D2 S6,D1 S6,D2`
+plus the RAM disk, after three bus transactions (two INITs and a STATUS);
+Boot on slot 5 brings up ProDOS 8 off the 3.5" after 252 block reads over
+the bus; with nothing mounted the port takes no command and the boot is
+byte-for-byte what it was. `iic_diskii_no_iwm_conflict`, `iicplus_boot35`
+and `iic_onboard_smartport_smoke` are unchanged and green.
+
+**One thing the Disk II must not see.** A claimed access used to be forwarded
+to the slot-6 card "for side effects" (motor sound, turbo); the bus traffic's
+`$C0EB` + `$C0E9` then enabled the card's empty second bay, nothing ever
+disabled it, and the drive-2 spin loop played for ever after a 3.5" session.
+On the real machine the internal drive is not enabled during that traffic;
+now it is not told about it either.
+
 ## 2026-09-01 — The SmartPort wire, decoded, encoded and checksummed
 
 Continuing the entry below: POM2 now speaks the SmartPort bus protocol

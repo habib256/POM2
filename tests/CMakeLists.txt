@@ -527,6 +527,7 @@ set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_smartport_bus_handshake
     smartport_bus_handshake_test.cpp
     ${CMAKE_SOURCE_DIR}/src/LironCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_smartport_bus_handshake
@@ -558,6 +559,7 @@ set_tests_properties(smartport_bus_handshake PROPERTIES TIMEOUT 120)
 add_executable(test_liron_boot35
     liron_boot35_test.cpp
     ${CMAKE_SOURCE_DIR}/src/LironCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${POM2_TEST_CORE_SOURCES}
 )
 target_include_directories(test_liron_boot35 PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -639,6 +641,47 @@ if(WIN32)
 endif()
 add_test(NAME sony35_iwm_read_path COMMAND test_sony35_iwm_read_path)
 set_tests_properties(sony35_iwm_read_path PROPERTIES TIMEOUT 120)
+
+
+# ─── The //c's external 3.5", by the //c's own firmware ───────────────────
+# A 32 KB //c talks to its rear-port drive as an intelligent SmartPort device
+# over the IWM. IIcExternalSmartPort answers that bus for the slot-5 card's
+# units, and Memory leaves the real $C500 page alone while it does. Pins:
+# a 5.25" boot lists slot 5 next to slot 6; booting slot 5 brings up ProDOS
+# off the 3.5"; an empty port is silence and changes nothing. Three full
+# boots, hence `slow`. ROM/disk-gated: SKIPs cleanly.
+
+add_executable(test_iic_external_smartport
+    iic_external_smartport_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_iic_external_smartport
+    PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_iic_external_smartport PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_iic_external_smartport PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_iic_external_smartport PRIVATE winmm)
+endif()
+add_test(NAME iic_external_smartport
+         COMMAND test_iic_external_smartport
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(iic_external_smartport PROPERTIES TIMEOUT 240 LABELS slow)
 
 
 
@@ -839,6 +882,8 @@ set_tests_properties(rewind_delta PROPERTIES TIMEOUT 5)
 add_executable(test_rewind_transport
     rewind_transport_test.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
@@ -871,6 +916,8 @@ set_tests_properties(rewind_transport PROPERTIES TIMEOUT 20)
 add_executable(test_ui_worker_contention
     ui_worker_contention_test.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
@@ -4420,6 +4467,8 @@ add_executable(test_ai_control_server
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
@@ -4664,6 +4713,8 @@ add_executable(test_ai_mouse_hle_probe
     ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/MouseCard.cpp
@@ -4894,6 +4945,8 @@ add_executable(test_softcard_toggle
     ${CMAKE_SOURCE_DIR}/src/SoftCardZ80.cpp
     ${CMAKE_SOURCE_DIR}/src/Z80.cpp
     ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp

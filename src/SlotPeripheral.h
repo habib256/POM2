@@ -43,6 +43,8 @@
 #include <string_view>
 #include <vector>
 
+namespace pom2 { class SmartPortBusUnit; }
+
 class SlotBus;
 
 class SlotPeripheral
@@ -167,12 +169,23 @@ public:
 
     /// On //c-class machines the forced INTCXROM masks ALL slot ROM
     /// ($C100-$CFFF). POM2 punches a single hole for a built-in SmartPort
-    /// whose $Cn00 firmware substitutes for the (unmodelled) IWM/Sony 3.5"
-    /// boot path — but only while the card actually holds bootable media,
-    /// so an empty SmartPort never presents a half-working bootable
-    /// signature to the //c autostart (which would JMP $0801 into garbage).
-    /// Default: ROM stays masked. See Memory::memRead + SmartPortCard.
+    /// whose $Cn00 firmware substitutes for the machine's own — on the 16 KB
+    /// //c, which has no 3.5" firmware, and for the //c+'s host-served HDV.
+    /// Only while the card actually holds bootable media, so an empty
+    /// SmartPort never presents a half-working bootable signature to the
+    /// //c autostart (which would JMP $0801 into garbage). The 32 KB //c
+    /// does not use this at all: its real firmware serves the port through
+    /// `smartPortBusUnit()` below. Default: ROM stays masked. See
+    /// Memory::memRead + SmartPortCard.
     virtual bool exposesIicOnboardRom() const { return false; }
+
+    /// SmartPort **bus** units this card can put on a //c's external disk
+    /// port. The 32 KB //c's own firmware talks to its 3.5" drive as an
+    /// intelligent device over the IWM (`SmartPortBusDevice`); a card that
+    /// answers here is what that firmware finds, enumerates and boots from,
+    /// with no ROM substitution at all. Default: nothing on the port.
+    virtual int smartPortBusUnitCount() const { return 0; }
+    virtual pom2::SmartPortBusUnit* smartPortBusUnit(int /*index*/) { return nullptr; }
 
     /// Slot number assigned by the bus at plug-time (1..7), or -1 before
     /// `SlotBus::plug()` adopts the card. Concrete cards may still carry

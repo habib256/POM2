@@ -64,7 +64,7 @@ class M6502;
 class SpeakerDevice;
 namespace pom2 { class NoSlotClock; }
 
-namespace pom2 { class IWMDevice; class SmartPortHub; }
+namespace pom2 { class IWMDevice; class SmartPortHub; class SmartPortBusPort; }
 
 class Memory
 {
@@ -131,6 +131,14 @@ public:
         if (iicProfile_) iicProfile_->setSmartPortHub(hub);
     }
     pom2::SmartPortHub* getSmartPortHub() const   { return smartPortHub; }
+
+    /// Plain //c external disk port (SmartPortBusPort.h). Owned by
+    /// EmulationController; forwarded to the //c-class profile like the hub.
+    void setExternalSmartPort(pom2::SmartPortBusPort* port) {
+        externalSmartPort_ = port;
+        if (iicProfile_) iicProfile_->setExternalSmartPort(port);
+    }
+    pom2::SmartPortBusPort* getExternalSmartPort() const { return externalSmartPort_; }
 
     /// //c-class on-board SmartPort "armed" gate. The slot-5 SmartPort
     /// firmware stub is punched through the INTCXROM mask at $C500-$C5FF
@@ -904,6 +912,7 @@ private:
     // EmulationController, attached/detached around profile switches.
     pom2::IWMDevice*    iwmDevice     = nullptr;
     pom2::SmartPortHub* smartPortHub  = nullptr;
+    pom2::SmartPortBusPort* externalSmartPort_ = nullptr;
     // Default true: the IWM is authoritative on iicHasAltBank
     // profiles — `$C0EC/ED/EE/EF` reads return what the MAME-faithful
     // state machine produced from POM2's DiskImage flux stream (scaled

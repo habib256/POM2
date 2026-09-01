@@ -134,6 +134,13 @@ public:
     bool isActive() const { return active_ == MODE_ACTIVE; }
     bool isIdle()   const { return active_ == MODE_IDLE; }
 
+    /// While set, a data-register write is taken by an external SmartPort
+    /// bus responder instead of the shifter: the access still moves Q6/Q7
+    /// and the enable, so the chip's control state stays live, but no byte
+    /// enters the write path — and so no "write underrun" is ever raised
+    /// for traffic that was never meant for a disk. See SmartPortBusDevice.
+    void setBusCapture(bool on) { busCapture_ = on; }
+
     /// Current cycle counter snapshot — last `tick()` value. Exposed so
     /// the SmartPort hub can stamp Sony 3.5" mechanical-sound events
     /// (head step, motor on/off) with an emulated-CPU timestamp the
@@ -268,6 +275,7 @@ private:
     uint8_t mode_      = 0x00;
     uint8_t status_    = 0x00;
     uint8_t control_   = 0x00;
+    bool    busCapture_ = false;
     uint8_t rwBitCount_ = 0;
     uint8_t rsh_       = 0x00;
     uint8_t wsh_       = 0x00;

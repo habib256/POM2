@@ -260,6 +260,55 @@ uint8_t SmartPortCard::slotRomRead(uint8_t low8)
     return rom_[low8];
 }
 
+// ── SmartPort bus units (the //c's external port) ───────────────────────
+
+int SmartPortCard::smartPortBusUnitCount() const
+{
+    return static_cast<int>(kMaxUnits);
+}
+
+pom2::SmartPortBusUnit* SmartPortCard::smartPortBusUnit(int index)
+{
+    if (index < 0 || static_cast<size_t>(index) >= kMaxUnits) return nullptr;
+    BusUnit& u = busUnits_[static_cast<size_t>(index)];
+    u.bind(this, static_cast<size_t>(index));
+    return &u;
+}
+
+bool SmartPortCard::BusUnit::hasMedia() const
+{
+    const SmartPortUnit* u = target();
+    return u && u->isLoaded();
+}
+
+uint32_t SmartPortCard::BusUnit::blockCount() const
+{
+    const SmartPortUnit* u = target();
+    return (u && u->isLoaded()) ? u->blockCount() : 0;
+}
+
+bool SmartPortCard::BusUnit::writeProtected() const
+{
+    const SmartPortUnit* u = target();
+    return !u || u->isWriteProtected();
+}
+
+bool SmartPortCard::BusUnit::readBlock(uint32_t block, uint8_t out[512])
+{
+    SmartPortUnit* u = target();
+    if (!u || !u->isLoaded() || !u->readBlock(block, out)) return false;
+    if (card_) card_->noteAccess(u);
+    return true;
+}
+
+bool SmartPortCard::BusUnit::writeBlock(uint32_t block, const uint8_t in[512])
+{
+    SmartPortUnit* u = target();
+    if (!u || !u->isLoaded() || !u->writeBlock(block, in)) return false;
+    if (card_) card_->noteAccess(u);
+    return true;
+}
+
 bool SmartPortCard::exposesIicOnboardRom() const
 {
     // //c-class memory map masks all slot ROM behind the forced INTCXROM;
