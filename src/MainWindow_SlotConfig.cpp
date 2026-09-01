@@ -204,18 +204,28 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
     };
 
     auto plugChatMauve = [&](int s) {
-        auto card = std::make_unique<LeChatMauveCard>(s);
+        // Which Chat Mauve: a //c-class machine has the rear DB-15 adapter,
+        // a slotted machine defaults to the Féline; `chatmauve_variant`
+        // (feline | iic | eve | video7) overrides either.
+        using Variant = LeChatMauveCard::Variant;
+        Variant variant = pom2::profileConfig(activeProfile).noPhysicalSlots
+                              ? Variant::IIcAdapter : Variant::Feline;
+        if (settings) {
+            Variant parsed;
+            if (LeChatMauveCard::parseVariant(
+                    settings->getString("chatmauve_variant", ""), parsed))
+                variant = parsed;
+        }
+        auto card = std::make_unique<LeChatMauveCard>(s, variant);
         // Local, not a retained alias: the display genuinely needs the card
         // for its RGB decode path and is re-pointed on every rebuild.
         LeChatMauveCard* plugged = card.get();
-        if (settings) {
+        if (settings)
             plugged->setInvertBit7(
                 settings->getBool("chatmauve_invert_bit7", false));
-            plugged->setColorTextEnabled(
-                settings->getBool("chatmauve_color_text", true));
-            plugged->setHgrDuochromeEnabled(
-                settings->getBool("chatmauve_hgr_duochrome", false));
-        }
+        // The Eve writes aux memory behind the CPU (CPREG auto-write): the
+        // card programs Memory's aux shadow from its switches.
+        plugged->setMemory(&st.memory());
         st.memory().slotBus().plug(s, std::move(card));
         display->setChatMauveCard(plugged);
     };

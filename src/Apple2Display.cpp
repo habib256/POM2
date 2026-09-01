@@ -15,6 +15,7 @@
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 #include "Apple2Display.h"
+#include "Apple2Display_Internal.h"
 #include "Apple2VideoDecode.h"
 #include "AppleWinNtsc.h"
 #include "LeChatMauveCard.h"
@@ -30,6 +31,7 @@
 // HGR, DHGR and composite-signal paths. Bring them into scope so the
 // per-scanline call sites below stay unqualified.
 using namespace pom2::a2v;
+using namespace pom2::a2disp;   // Apple2Display_Internal.h helpers
 
 Apple2Display::Apple2Display()
     : frame(kWidth * kHeight, 0xFF000000)
@@ -93,23 +95,6 @@ uint16_t Apple2Display::hgrRowAddress(int y, bool page2)
         + 0x28  * (y >> 6));
 }
 
-// Sather "Understanding the Apple IIe" §5-25 table 5.10: PAGE2 only steers
-// the video scanner to page 2 when 80STORE is off (text/lo-res) or when
-// 80STORE+HIRES are not both on (HGR). Otherwise PAGE2 is repurposed as a
-// MAIN/AUX memory bank switch — the scanner stays locked to page 1. Sierra
-// AGI/SCI titles in DHGR (Space Quest II, King's Quest, …) toggle PAGE2
-// every byte to interleave aux+main nibbles into HGR page 1; treating that
-// as a video-page flip displays the uninitialised $4000 area as garbage.
-static bool videoTextPage2(const Memory::DisplayState& s)
-{
-    return s.page2 && !s.eightyStore;
-}
-
-static bool videoHgrPage2(const Memory::DisplayState& s)
-{
-    return s.page2 && !(s.eightyStore && s.hiRes);
-}
-
 void Apple2Display::applyVideoEvent(Memory::DisplayState& state,
                                     Memory::VideoEventKind kind, bool value)
 {
@@ -125,35 +110,6 @@ void Apple2Display::applyVideoEvent(Memory::DisplayState& state,
         case Memory::VideoEventKind::AltChar:   state.altChar   = value; break;
     }
 }
-
-namespace {
-
-// Text rows [rowLo, rowHi) whose 8-scanline cells INTERSECT the band
-// [scanY0, scanY1) — rounded OUTWARD, so a row straddling a beam-split is
-// returned for both bands. Each band's painter then clips its writes to its
-// own scanline window (the clipY0/clipY1 painter args), so the straddled
-// row is painted twice but each scanline exactly once, with the display
-// state active for ITS band. (The old inward rounding returned straddled
-// rows to NEITHER band → stale pixels at non-row-aligned splits.)
-int bandRows(int scanY0, int scanY1, int rowLo, int rowHi, int* outLo, int* outHi)
-{
-    const int lo = std::max(rowLo, scanY0 / 8);
-    const int hi = std::min(rowHi, (scanY1 + 7) / 8);
-    *outLo = lo;
-    *outHi = hi;
-    return lo < hi ? 1 : 0;
-}
-
-int bandScanlines(int scanY0, int scanY1, int lineLo, int lineHi, int* outLo, int* outHi)
-{
-    const int lo = std::max(lineLo, scanY0);
-    const int hi = std::min(lineHi, scanY1);
-    *outLo = lo;
-    *outHi = hi;
-    return lo < hi ? 1 : 0;
-}
-
-} // namespace
 
 // See the TextFrameKey comment in Apple2Display.h for why this is limited to
 // full-screen text and never consulted on a beam-raced frame.
@@ -197,10 +153,7 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     // on that staying true.
     k.chatMauve = chatMauve;
     k.chatMauveState =
-        chatMauve ? ((static_cast<int>(chatMauve->currentMode()) << 2) |
-                     (chatMauve->colorTextEnabled()    ? 2 : 0) |
-                     (chatMauve->hgrDuochromeEnabled() ? 1 : 0))
-                  : -1;
+        chatMauve ? static_cast<int>(chatMauve->renderStateKey()) : -1;
     k.vram.resize(kLen * 2 + crom.size());
     std::memcpy(k.vram.data(),            mainRam + kBase, kLen);
     std::memcpy(k.vram.data() + kLen,     auxBytes + kBase, kLen);
@@ -232,35 +185,43 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
                                        int scanY0, int scanY1)
 {
     if (scanY0 >= scanY1) return;
+    renderInternalBandImpl(mem, state, scanY0, scanY1);
+    // Eve TXTGREEN is a post-pass over whatever painted the text rows: the
+    // decision tree below has a dozen exits and the text painters are shared
+    // with every other pipeline, so the tint is applied once, here.
+    if (chatMauveActive() &&
+        chatMauve->textMode(state.eightyCol, /*an3On=*/!state.dhgr)
+            == LeChatMauveCard::TextMode::Green)
+        tintTextGreen(state, scanY0, scanY1);
+}
 
+void Apple2Display::renderInternalBandImpl(Memory& mem, const Memory::DisplayState& state,
+                                           int scanY0, int scanY1)
+{
     const bool iie80 = mem.isIIE() && state.eightyCol;
     const int  hiResEnd = state.mixedMode ? 160 : 192;
     int gLo = 0, gHi = 0, tLo = 0, tHi = 0;
 
-    // ── Le Chat Mauve / Video-7 RGB-card HGR paths (native 560-dot) ─────
+    // ── Le Chat Mauve / Video-7 RGB card — single HGR (native 560 dots) ──
+    // Every single-HGR state under the card comes here: AN3 on (ordinary
+    // HGR), and AN3 off with 80COL off — where the Féline goes monochrome
+    // (`POKE -16290,0`), the Video-7 shows its foreground/background mode
+    // (MAME hgr_update: rgb_monitor && m_dhires && !m_80col) and the Eve
+    // keeps decoding. AN3 off WITH 80COL on is DHGR: it takes the IIe path
+    // below and renderDhgr asks the card again (LeChatMauveCard::dhgrMode).
+    // The card decides (hgrMode); this function only routes.
+    const bool cm = chatMauveActive();
     const bool chatMauveHGR =
-        state.hiRes && !state.textMode && !state.dhgr &&
-        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+        cm && state.hiRes && !state.textMode && !(iie80 && state.dhgr);
     if (chatMauveHGR) {
-        // DELIBERATE divergence from MAME `apple2video.cpp hgr_update`
-        // (~:785): there the fg/bg-from-aux path is gated on
-        // `rgb_monitor() && m_dhires && !m_80col`, i.e. AN3 LOW with 80COL
-        // off. That is the **Video-7 RGB** card's foreground-background
-        // mode — an American product POM2 does not model. What POM2 models
-        // here is the **Le Chat Mauve "Eve"** (French), whose HGR
-        // Duochrome is selected by the card's OWN soft switch
-        // $C0BA/$C0BB (brevet; see LeChatMauveCard::onVideoSoftSwitch),
-        // not by AN3. Hence the opposite `!state.dhgr` term and the
-        // `hgrDuochromeEnabled()` gate — which IS guest-reachable (a
-        // `STA $C0BB` sets it; it is also snapshotted since blob v2), not
-        // a UI-only switch. Do NOT "align this with MAME": it would break
-        // the Eve model and change the //c PAL profile's default picture.
-        // A real Video-7 would need its own card class.
         if (bandScanlines(scanY0, scanY1, 0, hiResEnd, &gLo, &gHi)) {
-            if (chatMauve->hgrDuochromeEnabled() && auxRam != nullptr)
-                renderHgrDuochrome(mem, state, gLo, gHi);
+            const auto hm = chatMauve->hgrMode(/*an3On=*/!state.dhgr);
+            if ((hm == LeChatMauveCard::HgrMode::FgBg ||
+                 hm == LeChatMauveCard::HgrMode::Cp280) && auxRam != nullptr)
+                renderHgrDuochrome(mem, state, gLo, gHi,
+                                   chatMauve->auxHiNibbleIsForeground());
             else
-                renderHiResChatMauve80(mem, state, gLo, gHi);
+                renderHiResChatMauve80(mem, state, gLo, gHi, hm);
         }
         if (state.mixedMode && bandScanlines(scanY0, scanY1, 160, 192, &gLo, &gHi)) {
             if (iie80) {
@@ -276,13 +237,16 @@ void Apple2Display::renderInternalBand(Memory& mem, const Memory::DisplayState& 
         return;
     }
 
-    const bool chatMauveText =
-        mem.isIIE() && state.textMode && state.dhgr && !state.eightyCol &&
-        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr &&
-        auxRam != nullptr && chatMauve->colorTextEnabled();
-    if (chatMauveText) {
+    // ── Le Chat Mauve / Video-7 RGB card — colour TEXT ───────────────────
+    // Video-7 F/B (AN3 on, 80COL off, hi nibble = fg) and the Eve's TXT16
+    // ($C0B9, 80COL off, hi nibble = bg). Plain and Green fall through to
+    // the motherboard's text painters (Green is tinted afterwards).
+    if (cm && mem.isIIE() && state.textMode && auxRam != nullptr &&
+        chatMauve->textMode(state.eightyCol, /*an3On=*/!state.dhgr)
+            == LeChatMauveCard::TextMode::Color) {
         if (bandRows(scanY0, scanY1, 0, 24, &tLo, &tHi))
-            renderTextChatMauveFgBg(mem, state, tLo, tHi, scanY0, scanY1);
+            renderTextChatMauveFgBg(mem, state, tLo, tHi, scanY0, scanY1,
+                                    chatMauve->auxHiNibbleIsForeground());
         setUseFrame80(true);
         return;
     }
@@ -402,15 +366,16 @@ bool Apple2Display::usesLegacyPath(Memory& mem, const Memory::DisplayState& stat
     // mid-scanline column split is only meaningful on the legacy 280-wide
     // text / hi-res / lo-res path. The 560-wide Chat Mauve and IIe 80-col /
     // DHGR modes paint full width (v1 horizontal-split scope-out).
+    const bool cm = chatMauveActive();
+    const bool iie80 = mem.isIIE() && state.eightyCol;
     const bool chatMauveHGR =
-        state.hiRes && !state.textMode && !state.dhgr &&
-        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+        cm && state.hiRes && !state.textMode && !(iie80 && state.dhgr);
     if (chatMauveHGR) return false;
 
     const bool chatMauveText =
-        mem.isIIE() && state.textMode && state.dhgr && !state.eightyCol &&
-        hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr &&
-        auxRam != nullptr && chatMauve->colorTextEnabled();
+        cm && mem.isIIE() && state.textMode && auxRam != nullptr &&
+        chatMauve->textMode(state.eightyCol, /*an3On=*/!state.dhgr)
+            == LeChatMauveCard::TextMode::Color;
     if (chatMauveText) return false;
 
     // The IIe 80-col block returns (non-legacy) for every sub-state except
@@ -1318,7 +1283,8 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
 void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
                                             const Memory::DisplayState& state,
                                             int firstRow, int lastRow,
-                                            int clipY0, int clipY1)
+                                            int clipY0, int clipY1,
+                                            bool auxHiIsForeground)
 {
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;
@@ -1337,8 +1303,10 @@ void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
             // aux_page[aux_address]).
             const uint8_t src    = ram[rowAddr + col];
             const uint8_t attr   = aux[rowAddr + col];
-            const uint32_t fg = kChatMauveLoResPalette[(attr >> 4) & 0x0Fu];
-            const uint32_t bg = kChatMauveLoResPalette[attr & 0x0Fu];
+            const uint32_t hi = kChatMauveLoResPalette[(attr >> 4) & 0x0Fu];
+            const uint32_t lo = kChatMauveLoResPalette[attr & 0x0Fu];
+            const uint32_t fg = auxHiIsForeground ? hi : lo;   // Video-7 : Eve TXT16
+            const uint32_t bg = auxHiIsForeground ? lo : hi;
 
             // Resolve the glyph into a uniform 7-bit row (bit i = pixel i,
             // bit 0 = leftmost, 1 = lit) with invert/flash already applied,
@@ -1654,56 +1622,6 @@ namespace {
 // (Phosphor + phosphorFor moved above renderLoRes — the lo-res mono paths
 // need them too since 2026-07-12.)
 
-// Le Chat Mauve / Video-7 AppleColor RGB — 6-color HGR palette, applied
-// per-pixel-pair with the byte's MSB selecting the bank. ABGR-in-uint32
-// (R lowest byte) to match `kLoResPalette`.
-//
-// On STANDARD HGR (no DHGR), real Chat Mauve / Video-7 hardware sniffs
-// the digital pre-modulation video signal at the slot connector and
-// decodes it directly into RGB — bypassing the NTSC modulator entirely.
-// What this means concretely (cf. AppleWin RGBMonitor.cpp PR #837 and
-// *Le Chat Mauve* manual):
-//
-//   - The MSB ("high bit") of each byte is a **palette bank flag**, NOT
-//     a half-dot delay. Real Chat Mauve does NOT shift pixels by ½ dot;
-//     that shift is purely an NTSC artefact mechanism Wozniak co-opted
-//     to access the orange/blue half of the wheel via composite phase.
-//   - A clean RGB decoder doesn't double bits to 14 sub-pixels per byte
-//     either — it processes the raw 7-bit-per-byte stream directly.
-//   - Color comes from **pairs of consecutive bits**. With the byte's
-//     MSB selecting the bank:
-//          MSB=0:  00→black  01→VIOLET  10→GREEN   11→white
-//          MSB=1:  00→black  01→BLUE    10→ORANGE  11→white
-//     6 distinct colours total — same as NTSC HGR on a colour TV, but
-//     emitted cleanly with no inter-byte fringing and crisp edges
-//     because the MSB transition is instantaneous, not phase-encoded.
-//
-// The 16-color palette with two distinct grays (the famous Chat Mauve /
-// French Touch trademark) ONLY applies in DHGR mode (4-bit windows over
-// the aux+main interleaved stream) — that path IS modelled, in renderDhgr()
-// (the rmode 0/1/2/3 Video-7 decode against kChatMauveLoResPalette); this
-// kChatMauveHGR table is the standard-HGR (non-DHGR) 6-colour decode only.
-// On standard HGR the $5 / $A bit patterns that NTSC reads as "gray"
-// actually decode to VIOLET / GREEN (or BLUE / ORANGE with MSB=1) under
-// Chat Mauve too — they're never grays on plain HGR.
-//
-// Indexing convention: kChatMauveHGR[msb][bit_pair]. Colour values from
-// AppleWin `RGBMonitor.cpp::PaletteRGB_Feline` (same empirical capture
-// of a real Le Chat Mauve "Feline" board used by kChatMauveLoResPalette
-// — kept in sync so HGR and lo-res share the same visual identity).
-constexpr std::array<std::array<uint32_t, 4>, 2> kChatMauveHGR = {{
-    // MSB = 0 → "violet bank"
-    { 0xFF000000,   //  00  black
-      0xFFD11AAA,   //  01  magenta  rgb(0xaa, 0x1a, 0xd1) (Feline MAGENTA)
-      0xFF2CE66F,   //  10  green    rgb(0x6f, 0xe6, 0x2c) (Feline GREEN)
-      0xFFFFFFFF }, //  11  white
-    // MSB = 1 → "blue bank"
-    { 0xFF000000,   //  00  black
-      0xFFB58A00,   //  01  blue     rgb(0x00, 0x8a, 0xb5) (Feline BLUE)
-      0xFF4772FF,   //  10  orange   rgb(0xff, 0x72, 0x47) (Feline ORANGE)
-      0xFFFFFFFF }, //  11  white
-}};
-
 } // namespace
 
 void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
@@ -1744,7 +1662,13 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
     // available (lo-res, no GL context yet) the visible framebuffer is
     // still a sensible composite-coloured image.
     HiResMode effMode = hiResMode;
-    if (effMode == HiResMode::ChatMauveRGB && !chatMauve) effMode = HiResMode::ColorNTSC;
+    // With a card plugged, every single-HGR state is routed to the 560-dot
+    // Chat Mauve painters before this function is reached
+    // (renderInternalBandImpl); without one, ChatMauveRGB is composite on
+    // the wire. Either way there is nothing for this 280-wide path to do
+    // for the card — the pair-aligned decode it used to carry here was a
+    // second, byte-level copy of the LCM rule and is gone.
+    if (effMode == HiResMode::ChatMauveRGB) effMode = HiResMode::ColorNTSC;
     if (effMode == HiResMode::ColorCompositeOE)           effMode = HiResMode::ColorNTSC;
     // ColorAppleWin normally never reaches renderHiRes at all: render()
     // skips renderInternal for it and demodulates the composite signal
@@ -1752,83 +1676,6 @@ void Apple2Display::renderHiRes(Memory& mem, const Memory::DisplayState& state,
     // branch only fires on the defensive fallback path where the signal
     // couldn't be produced, so a sensible NTSC framebuffer is still drawn.
     if (effMode == HiResMode::ColorAppleWin)              effMode = HiResMode::ColorNTSC;
-
-    // Le Chat Mauve / Video-7 RGB card. Decoded DIRECTLY from the raw
-    // byte stream — bypassing every NTSC-specific transformation in this
-    // file: no `kArtifactColorLut` 7-bit window, no `buildHgrWordRow`
-    // bit doubler, no MSB half-dot delay. Real Chat Mauve hardware taps
-    // the digital video data line at the slot and performs its own
-    // hardware decode in TTL; the only Apple II video signal it consumes
-    // is the raw 7-bit-per-byte serial stream, which we reproduce here
-    // by walking `ram[rowAddr+col]` and shifting out the low 7 bits.
-    //
-    // Algorithm (see comment above kChatMauveHGR for the rationale):
-    //   - Each byte exposes 7 visible pixels (bits 0..6, bit 0 = leftmost).
-    //   - Bit 7 ("MSB") is a per-byte palette bank flag.
-    //   - Pixels are decoded in PAIRS aligned to the line origin (pair
-    //     boundaries on even pixel positions: (0,1), (2,3), …, (278,279)
-    //     — 140 pairs at 280-pixel resolution).
-    //   - Each pair → one palette entry, painted onto BOTH pixels of the
-    //     pair (140-color-clocks × 2 = 280 pixels of identical colour).
-    //   - For pairs that straddle a byte boundary, the MSB of the byte
-    //     containing the LEFT pixel of the pair selects the bank.
-    //
-    // FIFO mode (BW560 / Mixed / Chunky / COL140) sub-variants:
-    //   - BW560     → strict B&W: each pixel is just its raw bit, no
-    //                 colour decoding.
-    //   - everything else → the 6-colour HGR Chat Mauve palette above.
-    //
-    // The truly distinguishing visual against NTSC is NOT 16 vs 6 colours
-    // (we're on standard HGR, not DHGR) — it's the absence of fringing
-    // at byte boundaries when the MSB toggles, and the absence of phase
-    // ambiguity in alternating bit patterns. Edges are sharp.
-    if (effMode == HiResMode::ChatMauveRGB) {
-        using Mode = LeChatMauveCard::RenderMode;
-        const Mode mode = chatMauve->currentMode();
-        const bool monochrome = (mode == Mode::BW560);
-        // Dragon Wars compatibility — flips the per-byte palette-bank flag.
-        const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
-
-        for (int y = firstScanline; y < lastScanline; ++y) {
-            const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
-
-            // Lay out the 280 raw pixels (low 7 bits per byte, no doubling).
-            uint8_t  pixels[kWidth];
-            uint8_t  msbHigh[40];
-            for (int col = 0; col < 40; ++col) {
-                const uint8_t b = ram[rowAddr + col] ^ bit7Xor;
-                msbHigh[col] = (b >> 7) & 1u;
-                pixels[col * 7 + 0] = (b >> 0) & 1u;
-                pixels[col * 7 + 1] = (b >> 1) & 1u;
-                pixels[col * 7 + 2] = (b >> 2) & 1u;
-                pixels[col * 7 + 3] = (b >> 3) & 1u;
-                pixels[col * 7 + 4] = (b >> 4) & 1u;
-                pixels[col * 7 + 5] = (b >> 5) & 1u;
-                pixels[col * 7 + 6] = (b >> 6) & 1u;
-            }
-
-            if (monochrome) {
-                for (int x = 0; x < kWidth; ++x) {
-                    raw[x] = pixels[x] ? 0xFFFFFFFFu : 0xFF000000u;
-                }
-            } else {
-                for (int p = 0; p < kWidth; p += 2) {
-                    // Left pixel of the pair determines which byte's MSB
-                    // we honour; that byte is at index p / 7. Two-bit
-                    // code: bit at p is LSB, bit at p+1 is bit 1.
-                    const unsigned code = pixels[p] | (pixels[p + 1] << 1);
-                    const int      byteIdx = p / 7;
-                    const uint32_t rgb = kChatMauveHGR[msbHigh[byteIdx]][code];
-                    raw[p]     = rgb;
-                    raw[p + 1] = rgb;
-                }
-            }
-
-            uint32_t* outRow = frame.data() + static_cast<size_t>(y) * kWidth;
-            std::memcpy(outRow, raw.data(), sizeof(raw));
-        }
-        return;
-    }
 
     if (effMode == HiResMode::ColorNTSC
         || effMode == HiResMode::ColorCompMedium
@@ -2053,125 +1900,6 @@ void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
     }
 }
 
-// 560-dot native rendering for HGR + Le Chat Mauve. Same algorithm as the
-// Chat Mauve branch of `renderHiRes` (see the long comment block there
-// for the per-pair decode rationale and the AppleWin `Feline` palette
-// citation), but the output goes into `frame80` so the framebuffer
-// itself carries the card's full 14 MHz dot density.
-//
-// Each Apple II HGR byte still drives 7 pixel positions (bits 0..6);
-// each position becomes 2 adjacent output dots in frame80. For colour
-// modes, the existing logic computes one palette entry per even-aligned
-// PAIR of HGR pixels — that single entry is painted across 4 contiguous
-// output dots (2 pixels × 2 dot-doubling). For BW560, each HGR pixel
-// becomes 2 identical dots.
-void Apple2Display::renderHiResChatMauve80(Memory& mem,
-                                           const Memory::DisplayState& state,
-                                           int firstScanline,
-                                           int lastScanline)
-{
-    // Single hi-res (Chat Mauve 80-col-text-window variant) displays MAIN
-    // page 1; aux HGR is only shown via DHGR. (Reading aux under
-    // 80STORE+PAGE2 was a bug — see renderHiRes.)
-    const uint8_t* ram = mem.data();
-
-    using Mode = LeChatMauveCard::RenderMode;
-    const Mode mode = chatMauve->currentMode();
-    const bool monochrome = (mode == Mode::BW560);
-    const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
-
-    uint8_t  pixels[kWidth];     // 280 raw HGR bits
-    uint8_t  msbHigh[40];        // per-byte palette-bank flag
-
-    for (int y = firstScanline; y < lastScanline; ++y) {
-        const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
-
-        for (int col = 0; col < 40; ++col) {
-            const uint8_t b = ram[rowAddr + col] ^ bit7Xor;
-            msbHigh[col] = static_cast<uint8_t>((b >> 7) & 1u);
-            pixels[col * 7 + 0] = static_cast<uint8_t>((b >> 0) & 1u);
-            pixels[col * 7 + 1] = static_cast<uint8_t>((b >> 1) & 1u);
-            pixels[col * 7 + 2] = static_cast<uint8_t>((b >> 2) & 1u);
-            pixels[col * 7 + 3] = static_cast<uint8_t>((b >> 3) & 1u);
-            pixels[col * 7 + 4] = static_cast<uint8_t>((b >> 4) & 1u);
-            pixels[col * 7 + 5] = static_cast<uint8_t>((b >> 5) & 1u);
-            pixels[col * 7 + 6] = static_cast<uint8_t>((b >> 6) & 1u);
-        }
-
-        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
-        if (monochrome) {
-            for (int x = 0; x < kWidth; ++x) {
-                const uint32_t c = pixels[x] ? 0xFFFFFFFFu : 0xFF000000u;
-                outRow[x * 2 + 0] = c;
-                outRow[x * 2 + 1] = c;
-            }
-        } else {
-            // RGB-card HGR decode — port of AppleWin `RGBMonitor.cpp`
-            // `UpdateHiResRGBCell`: each pixel is judged against its two
-            // neighbours. Only the lone patterns 010 / 101 take the colour
-            // of their (even-aligned) pixel PAIR; every other pattern is
-            // pure black/white from the pixel's own bit. Runs of set bits
-            // therefore render WHITE at full 280-pixel sharpness (the
-            // earlier aligned-pair-only decode flattened everything to
-            // 140 colour blocks — visibly soft text/sprites). Palette bank
-            // = bit 7 of the byte containing THIS pixel.
-            for (int i = 0; i < kWidth; ++i) {
-                const int l = (i > 0)          ? pixels[i - 1] : 0;
-                const int ctr = pixels[i];
-                const int r = (i < kWidth - 1) ? pixels[i + 1] : 0;
-                uint32_t rgb;
-                if ((ctr && !l && !r) || (!ctr && l && r)) {
-                    const int      pair = i & ~1;
-                    const unsigned code =
-                        pixels[pair] | (pixels[pair + 1] << 1);
-                    rgb = kChatMauveHGR[msbHigh[i / 7]][code];
-                } else {
-                    rgb = ctr ? 0xFFFFFFFFu : 0xFF000000u;
-                }
-                outRow[i * 2 + 0] = rgb;
-                outRow[i * 2 + 1] = rgb;
-            }
-        }
-    }
-}
-
-// Le Chat Mauve Eve HGR Duochrome. Image bitmap from MAIN $2000-$3FFF,
-// fg/bg colour pair per 7-pixel block from AUX at the matching offset
-// (high nibble = foreground lo-res index, low = background). This is the
-// same idea as Color TEXT — the Eve overloads the aux RAM at the standard
-// screen pages as a "colour shadow" of the image — but applied to HGR
-// pixels instead of text glyphs.
-//
-// Output: 560-wide `frame80`, each HGR pixel becomes 2 identical dots
-// (matching renderHiResChatMauve80's BW560 sub-path).
-void Apple2Display::renderHgrDuochrome(Memory& mem,
-                                       const Memory::DisplayState& state,
-                                       int firstScanline, int lastScanline)
-{
-    const uint8_t* main_ = mem.data();
-    const uint8_t* aux_  = auxRam ? auxRam : main_;
-
-    for (int y = firstScanline; y < lastScanline; ++y) {
-        const uint16_t rowAddr = hgrRowAddress(y, videoHgrPage2(state));
-        uint32_t* outRow = frame80.data() + static_cast<size_t>(y) * kWidth80;
-
-        for (int col = 0; col < 40; ++col) {
-            const uint8_t  pix  = main_[rowAddr + col];
-            const uint8_t  attr = aux_ [rowAddr + col];
-            const uint32_t fg = kChatMauveLoResPalette[(attr >> 4) & 0x0Fu];
-            const uint32_t bg = kChatMauveLoResPalette[ attr       & 0x0Fu];
-            // 7 HGR pixels per byte (low 7 bits, bit 0 = leftmost), each
-            // doubled to 2 frame80 dots → 14 output dots per byte.
-            for (int b = 0; b < 7; ++b) {
-                const bool lit = ((pix >> b) & 1u) != 0;
-                const uint32_t c = lit ? fg : bg;
-                outRow[col * 14 + 2 * b + 0] = c;
-                outRow[col * 14 + 2 * b + 1] = c;
-            }
-        }
-    }
-}
-
 void Apple2Display::upscaleFrameToFrame80(int firstScanline, int lastScanline)
 {
     // Pixel-double frame[] horizontally into frame80[] for the requested
@@ -2245,6 +1973,32 @@ void Apple2Display::renderDhgr(Memory& mem, const Memory::DisplayState& state,
     const bool useComposite = !monochrome && !useChatMauve;
     const uint32_t* rgbCardPalette = useChatMauve
         ? kChatMauveLoResPalette : kLoResPalette;
+
+    // The card decides what DHGR means (LeChatMauveCard::dhgrMode: the
+    // patent latch, the variant's fallbacks, the Eve's table IX-1). Three
+    // of the Eve's answers are not decodes of the 560-dot stream at all.
+    using DhgrMode = LeChatMauveCard::DhgrMode;
+    const DhgrMode dm = useChatMauve ? chatMauve->dhgrMode() : DhgrMode::COL140;
+    if (useChatMauve) {
+        if (dm == DhgrMode::CP280 && auxRam != nullptr) {
+            renderHgrDuochrome(mem, state, firstScanline, lastScanline,
+                               chatMauve->auxHiNibbleIsForeground());
+            return;
+        }
+        if (dm == DhgrMode::COL280A || dm == DhgrMode::COL280B) {
+            renderDhgrCol280(mem, state, firstScanline, lastScanline,
+                             dm == DhgrMode::COL280B);
+            return;
+        }
+        if (dm == DhgrMode::Blank) {
+            // Table IX-1 "écran noir": HR1+HR2 without HR3. CPREG keeps
+            // working underneath (Memory's aux shadow), the picture is black.
+            for (int y = firstScanline; y < lastScanline; ++y)
+                std::fill_n(frame80.data() + static_cast<size_t>(y) * kWidth80,
+                            kWidth80, 0xFF000000u);
+            return;
+        }
+    }
 
     // Phosphor tint + decay. Mirrors the HGR mono path so DHGR mono now
     // shares the same amber afterglow / green persistence characteristics
@@ -2346,19 +2100,16 @@ void Apple2Display::renderDhgr(Memory& mem, const Memory::DisplayState& state,
                 outRow[x] = (uint32_t(0xFF) << 24) | (b << 16) | (g << 8) | r;
             }
         } else {
-            // Le Chat Mauve / Video-7 RGB card. Its 2-bit AN3 FIFO mode
-            // (currentMode) selects one of four DHGR renders — verbatim
-            // port of MAME `apple2video.cpp` dhgr_update() (rgbmode 0/1/2/3),
-            // with POM2's RGB-card lo-res palette as the 16-colour LUT.
-            using Mode = LeChatMauveCard::RenderMode;
-            const Mode rmode = chatMauve->currentMode();
+            // Le Chat Mauve / Video-7 RGB card, on the 560-dot stream.
             constexpr uint32_t kWhite = 0xFFFFFFFFu;
             constexpr uint32_t kBlack = 0xFF000000u;
 
-            if (rmode == Mode::Chunky160) {
-                // rgbmode==2: Video-7 "160-wide" chunky mode (MAME :906-930).
-                // Each column = aux + (main<<8) → four 4-bit pixels of three
-                // dots each (480 wide), centred in 560 with 40 black margins.
+            if (dm == DhgrMode::Chunky160) {
+                // Video-7 "160-wide" chunky mode — MAME dhgr_update
+                // rgbmode==2 (:906-930). Each column = aux + (main<<8) →
+                // four 4-bit pixels of three dots each (480 wide), centred
+                // in 560 with 40 black margins. Video-7 variant only; the
+                // Chat Mauve boards fold this latch value into COL140.
                 int x = 0;
                 for (int b = 0; b < 40; ++b) outRow[x++] = kBlack;
                 for (int c = 0; c < 40; ++c) {
@@ -2371,51 +2122,73 @@ void Apple2Display::renderDhgr(Memory& mem, const Memory::DisplayState& state,
                     }
                 }
                 for (int b = 0; b < 40; ++b) outRow[x++] = kBlack;
-            } else if (rmode == Mode::BW560) {
-                // rgbmode==0: monochrome DHR — the 560-dot stream as clean
-                // black/white (no NTSC artifacts). MAME forces the mono
-                // renderer for rgbmode 0 (dhgr_update :896,941-944).
+            } else if (dm == DhgrMode::BW560) {
+                // 560 dots black and white — the clean version of what a
+                // mono monitor shows (MAME rgbmode 0 forces the mono
+                // renderer, dhgr_update :896,941-944).
                 for (int x = 0; x < kWidth80; ++x)
                     outRow[x] = dots[x] ? kWhite : kBlack;
+            } else if (dm == DhgrMode::COL140) {
+                // The patent's 140×192 mode: each 4-dot cell of the line's
+                // fixed grid is one colour, the nibble (bit 0 = leftmost dot)
+                // rotated right by one into lo-res numbering (AppleWin
+                // `UpdateDHiResCellRGB`, MAME rotl4(n,1)). No fringing.
+                for (int cell = 0; cell < kWidth80 / 4; ++cell) {
+                    const int d = cell * 4;
+                    const unsigned nib = dots[d] | (dots[d + 1] << 1)
+                                       | (dots[d + 2] << 2) | (dots[d + 3] << 3);
+                    const uint32_t col = rgbCardPalette[((nib << 1) | (nib >> 3)) & 0x0Fu];
+                    outRow[d] = outRow[d + 1] = outRow[d + 2] = outRow[d + 3] = col;
+                }
             } else {
-                // rgbmode==1 (Mixed) or ==3 (COL140 / colour). Walk the
-                // aux+main bytes two columns at a time (28-bit window). In
-                // colour mode every pixel is colour; in Mixed mode each
-                // source byte's MSB picks colour (1) vs bit-mapped mono (0)
-                // for its seven dots. MAME `apple2video.cpp:946-977`.
-                const bool colorAll = (rmode == Mode::COL140);
-                // Dragon Wars compatibility — flip the Mixed-mode bit-7
-                // selector (no-op in COL140 where bit 7 is ignored anyway).
-                const uint8_t bit7Xor = (rmode == Mode::Mixed && chatMauve->invertBit7())
-                                            ? uint8_t{0x80} : uint8_t{0};
-                for (int c = 0; c < 40; c += 2) {
-                    const uint8_t a0 = aux_ [rowAddr + c]     ^ bit7Xor;
-                    const uint8_t m0 = main_[rowAddr + c]     ^ bit7Xor;
-                    const uint8_t a1 = aux_ [rowAddr + c + 1] ^ bit7Xor;
-                    const uint8_t m1 = main_[rowAddr + c + 1] ^ bit7Xor;
-                    const unsigned w =
-                          (a0 & 0x7Fu)
-                        | (static_cast<unsigned>(m0 & 0x7Fu) << 7)
-                        | (static_cast<unsigned>(a1 & 0x7Fu) << 14)
-                        | (static_cast<unsigned>(m1 & 0x7Fu) << 21);
-                    // Per-byte MSB → colour mask (each source byte owns 7
-                    // dots). MAME: vaux*0x7f + vram*0x3f80 + ...
-                    const unsigned colorMask = colorAll ? ~0u :
-                          ((a0 >> 7) ? 0x0000007Fu : 0u)
-                        | ((m0 >> 7) ? 0x00003F80u : 0u)
-                        | ((a1 >> 7) ? 0x001FC000u : 0u)
-                        | ((m1 >> 7) ? 0x0FE00000u : 0u);
-                    for (int b = 0; b < 28; ++b) {
-                        const int absX = c * 14 + b;
-                        if (colorMask & (1u << b)) {
-                            // Colour: the 4-dot block's nibble, rotl4 by 1.
-                            const unsigned nib = (w >> (b & ~3u)) & 0x0Fu;
-                            outRow[absX] = rgbCardPalette[
-                                ((nib << 1) | (nib >> 3)) & 0x0Fu];
+                // Mixed COL140 + BW560 — docs/chatmauve_plan.md § 3.3. The
+                // hardware is a per-BYTE mux (the byte's bit 7 selects the
+                // 560 path or the 140 path for its seven dots — patent
+                // FIG. 1) over the 140 path's 4-dot cell latch, which runs
+                // free on the line's grid whatever the mux does. The two
+                // boundary rules fenarinarsa measured on the //c adapter
+                // (AppleWin PR #837, `UpdateDHiResCellRGB`) fall out of it:
+                //   * a colour cell that runs into a BW byte is CUT there
+                //     (the mux switched; the BW byte paints its own bits);
+                //   * a BW byte that runs into a colour byte has its LAST
+                //     BW dot repeated until the next cell boundary (the
+                //     latch was not reloaded at a cell start, so the 140
+                //     path is still holding the level the 560 path left).
+                // The cell's colour is the nibble of the raw stream on the
+                // grid, wherever its four bits come from — as AppleWin.
+                // The manual's "il est fortement conseillé que les 4 bits 7
+                // des octets d'une cellule soient dans un même état" is
+                // advice to stay clear of exactly these two cases.
+                // MAME's byte-level rule (colour dots of a partial cell
+                // painted from the mixed nibble) is the approximation this
+                // replaces. Dragon Wars encodes bit 7 the other way round:
+                // `invertBit7` is that compatibility switch.
+                const uint8_t bit7Xor = chatMauve->invertBit7() ? uint8_t{0x80} : uint8_t{0};
+                bool    lastColor = true;   // stream start: no partial cell to repeat into
+                uint8_t lastBit   = 0;
+                for (int b = 0; b < 80; ++b) {
+                    const uint8_t byte = ((b & 1) ? main_[rowAddr + (b >> 1)]
+                                                  : aux_ [rowAddr + (b >> 1)]) ^ bit7Xor;
+                    const bool isColor = (byte & 0x80u) != 0;
+                    const int  d0 = b * 7;
+                    // First dot of this byte that starts a fresh cell.
+                    const int  firstFullCell = (d0 + 3) & ~3;
+                    for (int d = d0; d < d0 + 7; ++d) {
+                        if (isColor) {
+                            if (!lastColor && d < firstFullCell) {
+                                outRow[d] = lastBit ? kWhite : kBlack;   // repeat rule
+                            } else {
+                                const int c = d & ~3;
+                                const unsigned nib = dots[c] | (dots[c + 1] << 1)
+                                                   | (dots[c + 2] << 2) | (dots[c + 3] << 3);
+                                outRow[d] = rgbCardPalette[((nib << 1) | (nib >> 3)) & 0x0Fu];
+                            }
                         } else {
-                            outRow[absX] = (w & (1u << b)) ? kWhite : kBlack;
+                            lastBit   = dots[d];
+                            outRow[d] = lastBit ? kWhite : kBlack;
                         }
                     }
+                    lastColor = isColor;
                 }
             }
         }

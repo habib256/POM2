@@ -236,25 +236,28 @@ void testHgrChatMauve560()
     assert(pix[0 * 560 + 12] == 0xFF000000u);
     assert(pix[0 * 560 + 13] == 0xFF000000u);
 
-    // BW560 mode: each input dot → 2 identical output dots. Plant a
-    // simple alternating pattern and check.
+    // BW560 is a DHGR mode (the latch never touches single HGR — see
+    // le_chat_mauve_smoke § 3): 80COL on + AN3 off, and the first seven
+    // dots of the line are the AUX byte's bits, one output dot each.
     chatMauve.overrideMode(LeChatMauveCard::RenderMode::BW560);
+    mem.memWrite(0xC00D, 0);          // 80COL on
+    mem.memRead(0xC05E);              // AN3 off → DHGR
     {
-        // 0xAA = 0b1010_1010 (low 7 bits = 0b010_1010): pixels are
-        // 0,1,0,1,0,1,0 (bit 0 leftmost).
-        mem.memWrite(hgrAddr(0), 0xAA);
+        // 0xAA (low 7 bits = 0b010_1010): dots 0,1,0,1,0,1,0 (bit 0 leftmost).
+        mem.auxDataMutable()[hgrAddr(0)] = 0xAA;
+        mem.memWrite(hgrAddr(0), 0x00);
     }
     disp.render(mem);
     assert(disp.width() == 560);
     {
         const uint32_t* px = disp.pixels();
-        // pixel 0 = 0 → dots 0,1 = black; pixel 1 = 1 → dots 2,3 = white.
         assert(px[0]  == 0xFF000000u);
-        assert(px[1]  == 0xFF000000u);
-        assert(px[2]  == 0xFFFFFFFFu);
+        assert(px[1]  == 0xFFFFFFFFu);
+        assert(px[2]  == 0xFF000000u);
         assert(px[3]  == 0xFFFFFFFFu);
         assert(px[4]  == 0xFF000000u);
-        assert(px[5]  == 0xFF000000u);
+        assert(px[5]  == 0xFFFFFFFFu);
+        assert(px[6]  == 0xFF000000u);
     }
     std::puts("  hgr_chat_mauve_560: OK");
 }

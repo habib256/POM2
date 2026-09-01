@@ -378,8 +378,27 @@ public:
     bool ramWritable(uint16_t addr) const {
         if (!writeWatch_.empty() && (writeWatch_[addr] & kWatchArmed))
             return (writeWatch_[addr] & kWatchWasWritable) != 0;
+        if (auxShadowCovers(addr)) return true;   // RAM pages by construction
         return writable[addr];
     }
+
+    // ── Aux shadow (Le Chat Mauve Eve CPREG auto-write) ──────────────────
+    // docs/chatmauve_plan.md § 3.4: while "en fonction", the Eve deposits its
+    // CPREG byte into AUX at the address of every CPU write that lands in
+    // MAIN text page ($0400-$07FF, TXT16) or HGR page ($2000-$3FFF,
+    // ENHRCPREG). Same zero-cost design as the write watchpoints: arming
+    // clears `writable[]` over the page, memWrite's own test then fails and
+    // the write falls into memWriteSlow, which performs it and adds the aux
+    // byte. Nothing is tested for on the hot path. `ramWritable()` reports
+    // an armed page as writable — those two pages are RAM on every profile.
+    void setAuxShadow(bool textPage, bool hgrPage, uint8_t byte);
+    bool auxShadowCovers(uint16_t addr) const {
+        return (auxShadowText_ && addr >= 0x0400 && addr <= 0x07FF) ||
+               (auxShadowHgr_  && addr >= 0x2000 && addr <= 0x3FFF);
+    }
+    bool    auxShadowText() const { return auxShadowText_; }
+    bool    auxShadowHgr()  const { return auxShadowHgr_; }
+    uint8_t auxShadowByte() const { return auxShadowByte_; }
 
     // ── Read watchpoints ─────────────────────────────────────────────────
     // Reads have no per-address table on their fast path to hide a watch in
@@ -776,6 +795,10 @@ private:
     std::vector<uint8_t> writeWatch_;
     std::size_t          writeWatchCount_ = 0;
     pom2::MemoryWatchSink* watchSink_ = nullptr;
+    // Aux shadow (see setAuxShadow): which pages divert, and the byte.
+    bool    auxShadowText_ = false;
+    bool    auxShadowHgr_  = false;
+    uint8_t auxShadowByte_ = 0;
     // Read-watchpoint table, same lifetime rule. `readDivert_` is
     // `readWatchCount_ != 0`; memRead never tests it directly — it is folded
     // into the three derived fast-path bytes below by refreshReadFastFlags().
@@ -1041,6 +1064,14 @@ private:
     /// Duochrome bit. A Chat Mauve plugged INTO slot 3 must still see its
     /// own registers, hence the type check rather than a bare occupancy
     /// test.
+    /// `$C0B0-$C0BF` is slot 3's device-select window AND the Le Chat Mauve
+    /// Eve's sixteen switches (the Eve sits in the AUX slot; on a //c there is
+    /// no slot 3 at all). On a //e the user can plug both, and an SSC in slot
+    /// 3 drives its ACIA registers at exactly these addresses — a serial
+    /// driver's `STA $C0BB` would flip the Eve's TXTGREEN and turn the picture
+    /// green; a slot-3 Mockingboard hits the same range ($C0BB = VIA #1 ACR).
+    /// So the window is forwarded to the card only while slot 3 holds no
+    /// FOREIGN card (a Chat Mauve in slot 3 is allowed to answer there).
     bool chatMauveBlockedBySlot3() const;
 
     uint8_t floatingBus() const;

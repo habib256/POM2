@@ -30,8 +30,11 @@
 //              page-1 hash — Sather 5.10), hgr+AN3 (rev-0 bit-7 mask),
 //              hgr 80COL+mixed (upscale path)} on a //e, plus {text40,
 //              lores, hgr} on a ][+ (the isIIE()==false branches).
-//   + the Chat Mauve FIFO sub-modes (BW560/Mixed/Chunky160) and Eve HGR
-//     Duochrome, frozen under the ChatMauveRGB pipeline.
+//   + the Chat Mauve card: every scene above is rendered with a FÉLINE
+//     (the default variant), and a "cm/" block freezes the per-variant
+//     decodes — the latch sub-modes on a Féline and a Video-7, the Féline's
+//     AN3-off HGR mono vs the Video-7's F/B, the Eve's table IX-1 modes,
+//     TXT16 / TXTGREEN — plus the three mixed-mode boundary rows.
 //   modes   = the integer-deterministic colour pipelines:
 //              ColorNTSC, ColorCompMedium, ColorComp4Bit, ChatMauveRGB,
 //              MonoWhite, MonoGreen, MonoAmber.
@@ -54,8 +57,13 @@
 // math (LUTs, palettes, bit ops) → stable across platforms.
 //
 // Regenerating goldens (after an INTENTIONAL decode change):
-//   POM2_GOLDEN_RECORD=1 build/test_display_golden
+//   POM2_GOLDEN_RECORD=1 build/tests/test_display_golden
 // then paste the printed table over kGolden[] below.
+//
+// Looking at a line instead of a hash (the per-dot RGB dump the Chat Mauve
+// plan asks for, so a rule is argued from pixels, not from a sentence):
+//   POM2_GOLDEN_DUMP=cm/dhgr-mixed-boundary:1 build/tests/test_display_golden
+// prints that entry's scanline 1 as one hex RGB word per dot (560 or 280).
 
 #include "Apple2Display.h"
 #include "LeChatMauveCard.h"
@@ -68,6 +76,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -238,6 +247,33 @@ void sHgrDuo(Memory& m) {
     baseline(m); m.memRead(SET_HIRES);
     fillMain(m, 0x2000, 0x4000, 4); fillAux(m, 0x2000, 0x4000, 10);
 }
+// The same data with AN3 on (DHIRES) and 80COL off — the Video-7's F/B HGR
+// state (MAME hgr_update rgb fg/bg gate), the Féline's monochrome state.
+void sHgrDuoAn3(Memory& m) {
+    sHgrDuo(m); m.memRead(DHIRES_ON);
+}
+// 40-col text with colour attributes in aux, 80COL off, AN3 untouched — the
+// Eve's TXT16 state (no AN3 condition; the BASIC recipe never touches it).
+void sText40Aux(Memory& m) {
+    baseline(m); m.memRead(SET_TEXT);
+    fillMain(m, 0x0400, 0x0800, 1); fillAux(m, 0x0400, 0x0800, 2);
+}
+// Mixed-DHGR boundary rows (chatmauve_dot_rules spells the dots out): row 0
+// aligned, row 1 colour→BW cut, row 2 BW→colour repeat of a 1, row 3 repeat
+// of a 0; the rest of the page is the usual pattern noise.
+void sDhgrMixBoundary(Memory& m) {
+    sDhgr(m);
+    auto put = [&](int y, int col, uint8_t a, uint8_t mn) {
+        const uint16_t addr = static_cast<uint16_t>(0x2000 + 0x400 * (y & 7)
+            + 0x80 * ((y >> 3) & 7) + 0x28 * (y >> 6) + col);
+        m.auxDataMutable()[addr] = a; m.memWrite(addr, mn);
+    };
+    for (int y = 0; y < 4; ++y) for (int c = 0; c < 40; ++c) put(y, c, 0, 0);
+    put(0, 0, 0x8A, 0xFE); put(0, 1, 0x80, 0x80);
+    put(1, 0, 0xFF, 0x06);
+    put(2, 0, 0x40, 0xFF); put(2, 1, 0x80, 0x80);
+    put(3, 0, 0x3F, 0xFF); put(3, 1, 0x80, 0x80);
+}
 // 80COL + HIRES + MIXED without DHGR: single-HGR graphics with an 80-col
 // text band → the upscaleFrameToFrame80 path (280-wide graphics doubled
 // into the 560-wide frame80).
@@ -307,7 +343,7 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/textcolorcm/ntsc", 0x64b9ef4cc731c75cULL },
     { "iie/textcolorcm/medium", 0x64b9ef4cc731c75cULL },
     { "iie/textcolorcm/4bit", 0x64b9ef4cc731c75cULL },
-    { "iie/textcolorcm/chatmauve", 0xcb80c0ac9bb5a603ULL },
+    { "iie/textcolorcm/chatmauve", 0x64b9ef4cc731c75cULL },
     { "iie/textcolorcm/monowhite", 0x64b9ef4cc731c75cULL },
     { "iie/textcolorcm/monogreen", 0x64b9ef4cc731c75cULL },
     { "iie/textcolorcm/monoamber", 0x64b9ef4cc731c75cULL },
@@ -316,10 +352,6 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/lores/medium", 0x85abcadd1bb83d83ULL },
     { "iie/lores/4bit", 0x85abcadd1bb83d83ULL },
     { "iie/lores/chatmauve", 0xa78a672e2f668d03ULL },
-    // Mono lo-res re-baselined 2026-07-12: a lo-res block on a mono monitor
-    // renders its subcarrier dot pattern per phosphor (Apple2Display.cpp
-    // renderLoRes mono branch), not the colour block — hashes now differ
-    // per phosphor.
     { "iie/lores/monowhite", 0xe783070789523383ULL },
     { "iie/lores/monogreen", 0x0df1feaae6158183ULL },
     { "iie/lores/monoamber", 0x7e8404c1fe7bd783ULL },
@@ -334,7 +366,7 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/loresmixed/signal", 0x9e7ae7f3c797af03ULL },
     { "iie/hgr/ntsc", 0xac4e9dd561ff842eULL },
     { "iie/hgr/medium", 0xde163ccdc0549453ULL },
-    { "iie/hgr/4bit", 0xdaa49b394af842f7ULL },   // square filter = MAME mode-2 oracle (nibble>>kCtx-1, rot absX-1)
+    { "iie/hgr/4bit", 0xdaa49b394af842f7ULL },
     { "iie/hgr/chatmauve", 0x3505e551d6200d83ULL },
     { "iie/hgr/monowhite", 0x75565f7ee4f7025cULL },
     { "iie/hgr/monogreen", 0xb953cafc4196e2dcULL },
@@ -371,9 +403,6 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/dlgr/monowhite", 0x1be97da49ac7f383ULL },
     { "iie/dlgr/monogreen", 0xeeb70166cda7f483ULL },
     { "iie/dlgr/monoamber", 0xd2ceb5fa86766d03ULL },
-    // dlgr*/signal rebaselined 2026-06: paintLoResDouble now emits nibble
-    // patterns at ABSOLUTE beam phase (like paintLoRes40), not restarted
-    // per 7-dot half-cell — see dlgr_render_smoke_test.cpp's exact pin.
     { "iie/dlgr/signal", 0x37a24ac400b99a83ULL },
     { "iie/dlgrmixed/ntsc", 0xdc9faf1f29833983ULL },
     { "iie/dlgrmixed/medium", 0xdc9faf1f29833983ULL },
@@ -418,7 +447,7 @@ const std::map<std::string, uint64_t> kGolden = {
     { "iie/hgran3/ntsc", 0x26ac5c2231a77e1cULL },
     { "iie/hgran3/medium", 0x1fd6da1a6675a203ULL },
     { "iie/hgran3/4bit", 0xfe77b96a6343a7aaULL },
-    { "iie/hgran3/chatmauve", 0x9fd22f28c333c103ULL },
+    { "iie/hgran3/chatmauve", 0x9cae0da6ceb78b83ULL },
     { "iie/hgran3/monowhite", 0x472c95c035619183ULL },
     { "iie/hgran3/monogreen", 0xf253ee760efaaa03ULL },
     { "iie/hgran3/monoamber", 0x68dcf510380fcc43ULL },
@@ -455,10 +484,30 @@ const std::map<std::string, uint64_t> kGolden = {
     { "ii+/hgr/monogreen", 0xb953cafc4196e2dcULL },
     { "ii+/hgr/monoamber", 0x16f1c2117085678cULL },
     { "ii+/hgr/signal", 0x22b8536ef74be443ULL },
-    { "cm/dhgr-bw560", 0xaae75d8da1df975cULL },
-    { "cm/dhgr-mixed", 0xeacbc22023f7a429ULL },
-    { "cm/dhgr-chunky", 0xee2c52b12456d419ULL },
-    { "cm/hgr-duochrome", 0x2ed79ae7c027d4c3ULL },
+    { "cm/feline/dhgr-bw560", 0xaae75d8da1df975cULL },
+    { "cm/feline/dhgr-mixed", 0xc5a3a9cab441c1ccULL },
+    { "cm/feline/dhgr-160to140", 0x9adb0fbcb42d8883ULL },
+    { "cm/feline/dhgr-mixed-boundary", 0xb946e0ebb1847dc6ULL },
+    { "cm/feline/hgr-an3off-mono", 0x9cae0da6ceb78b83ULL },
+    { "cm/feline/textcolor-plain", 0x64b9ef4cc731c75cULL },
+    { "cm/video7/dhgr-mixed", 0xc5a3a9cab441c1ccULL },
+    { "cm/video7/dhgr-chunky", 0xee2c52b12456d419ULL },
+    { "cm/video7/hgr-an3off-fgbg", 0x2ed79ae7c027d4c3ULL },
+    { "cm/video7/textcolor", 0xcb80c0ac9bb5a603ULL },
+    { "cm/eve/dhgr-col140", 0x9adb0fbcb42d8883ULL },
+    { "cm/eve/dhgr-mixed-to-140", 0x9adb0fbcb42d8883ULL },
+    { "cm/eve/dhgr-hr3-bw560", 0xaae75d8da1df975cULL },
+    { "cm/eve/dhgr-hr1-col280a", 0xc936f5cd0d0c05c3ULL },
+    { "cm/eve/dhgr-hr2-col280b", 0x012b65b7014c3643ULL },
+    { "cm/eve/dhgr-hr12-blank", 0x9d77ba5943260383ULL },
+    { "cm/eve/dhgr-hr123-cp280", 0xe969bf343d0230c3ULL },
+    { "cm/eve/hgr-hrbw", 0x9cae0da6ceb78b83ULL },
+    { "cm/eve/hgr-spec1", 0x54c471d499232f03ULL },
+    { "cm/eve/hgr-spec2", 0x133d67239b8d9f83ULL },
+    { "cm/eve/text-txt16", 0x2af32c122a32eb03ULL },
+    { "cm/eve/text-txtgreen", 0xbfd914f99c4882dcULL },
+    { "cm/eve/text80-txtgreen", 0xa5f98fd28f95bb5cULL },
+    { "cm/eve/hgrmixed-txtgreen", 0x290db7b881e8ae43ULL },
 };
 
 } // namespace
@@ -466,6 +515,16 @@ const std::map<std::string, uint64_t> kGolden = {
 int main()
 {
     const bool record = std::getenv("POM2_GOLDEN_RECORD") != nullptr;
+    std::string dumpName;
+    int dumpLine = 0;
+    if (const char* d = std::getenv("POM2_GOLDEN_DUMP")) {
+        dumpName = d;
+        const auto colon = dumpName.rfind(':');
+        if (colon != std::string::npos) {
+            dumpLine = std::atoi(dumpName.c_str() + colon + 1);
+            dumpName.erase(colon);
+        }
+    }
     std::vector<std::pair<std::string, uint64_t>> results;
 
     for (const auto& sc : kScenes) {
@@ -508,22 +567,49 @@ int main()
         }
     }
 
-    // ── Chat Mauve FIFO sub-modes + Eve Duochrome, hash-frozen under the
-    // ChatMauveRGB pipeline only (the other pipelines ignore the card's
-    // mode register). Previously covered by behavioural smokes but not
-    // frozen — a silent palette/decode drift was invisible.
+    // ── Chat Mauve per-variant decodes, hash-frozen under the ChatMauveRGB
+    // pipeline only (the other pipelines ignore the card). Each entry names
+    // the variant, the latch value, the Eve switch byte and the scene.
     {
+        using Variant = LeChatMauveCard::Variant;
         struct CmVariant {
             const char* name;
             void      (*setup)(Memory&);
+            Variant     variant;
             LeChatMauveCard::RenderMode mode;
-            bool duo;
+            uint8_t     eveSwitches;   // Eve only: bit i = EveSwitch i
         };
+        constexpr uint8_t HR1 = 1u << LeChatMauveCard::HR1, HR2 = 1u << LeChatMauveCard::HR2,
+                          HR3 = 1u << LeChatMauveCard::HR3, TXT16 = 1u << LeChatMauveCard::TXT16,
+                          TXTGREEN = 1u << LeChatMauveCard::TXTGREEN;
         const CmVariant kCmVariants[] = {
-            { "cm/dhgr-bw560",    sDhgr,   LeChatMauveCard::RenderMode::BW560,     false },
-            { "cm/dhgr-mixed",    sDhgr,   LeChatMauveCard::RenderMode::Mixed,     false },
-            { "cm/dhgr-chunky",   sDhgr,   LeChatMauveCard::RenderMode::Chunky160, false },
-            { "cm/hgr-duochrome", sHgrDuo, LeChatMauveCard::RenderMode::COL140,    true  },
+            // Féline: the three latch modes that exist on it, 160 → COL140.
+            { "cm/feline/dhgr-bw560",     sDhgr,     Variant::Feline, LeChatMauveCard::RenderMode::BW560,     0 },
+            { "cm/feline/dhgr-mixed",     sDhgr,     Variant::Feline, LeChatMauveCard::RenderMode::Mixed,     0 },
+            { "cm/feline/dhgr-160to140",  sDhgr,     Variant::Feline, LeChatMauveCard::RenderMode::Chunky160, 0 },
+            { "cm/feline/dhgr-mixed-boundary", sDhgrMixBoundary, Variant::Feline, LeChatMauveCard::RenderMode::Mixed, 0 },
+            { "cm/feline/hgr-an3off-mono", sHgrAn3,  Variant::Feline, LeChatMauveCard::RenderMode::COL140,    0 },
+            { "cm/feline/textcolor-plain", sTextColorCM, Variant::Feline, LeChatMauveCard::RenderMode::COL140, 0 },
+            // Video-7: all four latch modes, F/B HGR when AN3 is off, F/B text.
+            { "cm/video7/dhgr-mixed",     sDhgr,     Variant::Video7, LeChatMauveCard::RenderMode::Mixed,     0 },
+            { "cm/video7/dhgr-chunky",    sDhgr,     Variant::Video7, LeChatMauveCard::RenderMode::Chunky160, 0 },
+            { "cm/video7/hgr-an3off-fgbg", sHgrDuoAn3, Variant::Video7, LeChatMauveCard::RenderMode::COL140,  0 },
+            { "cm/video7/textcolor",      sTextColorCM, Variant::Video7, LeChatMauveCard::RenderMode::COL140, 0 },
+            // Eve: table IX-1 through the HR switches, TXT16 (hi = bg), TXTGREEN.
+            { "cm/eve/dhgr-col140",       sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    0 },
+            { "cm/eve/dhgr-mixed-to-140", sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::Mixed,     0 },
+            { "cm/eve/dhgr-hr3-bw560",    sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    HR3 },
+            { "cm/eve/dhgr-hr1-col280a",  sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    HR1 },
+            { "cm/eve/dhgr-hr2-col280b",  sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    HR2 },
+            { "cm/eve/dhgr-hr12-blank",   sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    static_cast<uint8_t>(HR1 | HR2) },
+            { "cm/eve/dhgr-hr123-cp280",  sDhgr,     Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    static_cast<uint8_t>(HR1 | HR2 | HR3) },
+            { "cm/eve/hgr-hrbw",          sHgr,      Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    static_cast<uint8_t>(HR2 | HR3) },
+            { "cm/eve/hgr-spec1",         sHgr,      Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    HR1 },
+            { "cm/eve/hgr-spec2",         sHgr,      Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    HR2 },
+            { "cm/eve/text-txt16",        sText40Aux, Variant::Eve,   LeChatMauveCard::RenderMode::COL140,    TXT16 },
+            { "cm/eve/text-txtgreen",     sText40,   Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    TXTGREEN },
+            { "cm/eve/text80-txtgreen",   sText80,   Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    TXTGREEN },
+            { "cm/eve/hgrmixed-txtgreen", sHgrMixed, Variant::Eve,    LeChatMauveCard::RenderMode::COL140,    TXTGREEN },
         };
         for (const auto& v : kCmVariants) {
             Memory mem;
@@ -531,15 +617,24 @@ int main()
             v.setup(mem);
             Apple2Display disp;
             disp.setAuxMemory(mem.auxData());
-            LeChatMauveCard chat;
+            LeChatMauveCard chat(7, v.variant);
             chat.overrideMode(v.mode);
-            chat.setHgrDuochromeEnabled(v.duo);
+            for (int i = 0; i < 8; ++i)
+                if ((v.eveSwitches >> i) & 1u)
+                    chat.setEveSwitch(static_cast<LeChatMauveCard::EveSwitch>(i), true);
             disp.setChatMauveCard(&chat);
             disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
             disp.render(mem);
             const size_t bytes =
                 static_cast<size_t>(disp.width()) * disp.height() * sizeof(uint32_t);
             results.emplace_back(v.name, fnv1a(disp.pixels(), bytes));
+            if (dumpName == v.name) {
+                const int w = disp.width();
+                const uint32_t* row = disp.pixels() + static_cast<size_t>(dumpLine) * w;
+                std::printf("%s line %d (%d dots, ABGR):\n", v.name, dumpLine, w);
+                for (int x = 0; x < w; ++x)
+                    std::printf("%08X%s", row[x], (x % 14 == 13) ? "\n" : " ");
+            }
         }
     }
 

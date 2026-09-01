@@ -155,10 +155,13 @@ const std::vector<AbsEntry>& abstractionCatalog()
       "the low-level one. Switchable above.",
       "Apple2Display.cpp, AppleWinNtsc.h/.cpp" },
     { "chatmauve", "Video", "Le Chat Mauve RGB", AbsLevel::L1,
-      "AN3 pulse FIFO decode (real register state machine) + AppleWin "
-      "RGBMonitor pixel rules; Eve colour text and HGR Duochrome decoded",
-      "Nothing below the register interface is guest-visible.",
-      "LeChatMauveCard.h/.cpp" },
+      "Patent 2-bit mode latch; Feline/IIc LCM HGR + mixed DHGR == AppleWin "
+      "RGBMonitor (pinned chatmauve_dot_rules); Eve $C0B0-$C0BF + CPREG "
+      "aux-shadow + table IX-1 from Purplesoft; Video-7 keeps 160 chunky",
+      "Not the PLA and not a 14 MHz tap: mid-line switches land at the frame "
+      "(P6), Eve DASH/COL280 still prose (P3), IIc 80COL is read not inferred "
+      "(P5), RVB Graph absent (P4). docs/chatmauve_plan.md",
+      "LeChatMauveCard.h/.cpp, Apple2Display.cpp" },
 
     // ── Audio ───────────────────────────────────────────────────────────
     { "speaker", "Audio", "Speaker", AbsLevel::L0,

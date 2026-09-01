@@ -177,6 +177,7 @@ set(SOURCES
     src/RewindBuffer.cpp
     src/AiControlServer.cpp
     src/Apple2Display.cpp
+    src/Apple2Display_ChatMauve.cpp
     src/AppleWinNtsc.cpp
     src/AtaBlockDevice.cpp
     src/AudioDevice.cpp
@@ -591,6 +592,7 @@ set(POM2_MEDIA_SOURCES
 )
 
 set(POM2_RUNTIME_HEADERS
+    src/Apple2Display_Internal.h
     include/pom2/core.hpp
     src/Debugger.h
     # MediaMount.h is pure contract — one <string> include and forward
@@ -618,6 +620,7 @@ set(POM2_RUNTIME_SOURCES
     src/TnfsClient.cpp
     src/TnfsMedia.cpp
     src/Apple2Display.cpp
+    src/Apple2Display_ChatMauve.cpp
     src/AudioDevice.cpp
     src/CharRomCatalog.cpp
     src/EmulationController.cpp
@@ -1137,6 +1140,7 @@ set(POM2_CORE_SOURCES
     src/W5100NameResolver.cpp
     src/Pom2Core.cpp
     src/Apple2Display.cpp
+    src/Apple2Display_ChatMauve.cpp
     src/AppleWinNtsc.cpp
     src/AtaBlockDevice.cpp
     src/AudioDevice.cpp
@@ -1344,6 +1348,7 @@ add_executable(pom2_headless
     # into: --frames/--screenshot renders a real frame (the release packages'
     # boot smoke). No GL anywhere — Apple2Display decodes into a CPU buffer.
     src/Apple2Display.cpp
+    src/Apple2Display_ChatMauve.cpp
     src/AppleWinNtsc.cpp
     src/CharRomCatalog.cpp
     src/CharRomDump.cpp
@@ -1425,6 +1430,7 @@ if(NOT EMSCRIPTEN)
 add_executable(pom2_bench
     src/pom2_bench.cpp
     src/Apple2Display.cpp
+    src/Apple2Display_ChatMauve.cpp
     src/AppleWinNtsc.cpp
     src/AudioDevice.cpp
     src/CassetteDevice.cpp

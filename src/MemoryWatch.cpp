@@ -34,8 +34,11 @@ void Memory::setWriteWatch(uint16_t addr, bool on)
     if (on) {
         if (writeWatch_.empty()) writeWatch_.assign(0x10000, 0);
         if (writeWatch_[addr] & kWatchArmed) return;      // keep the count honest
+        // The REAL permission, not the byte: a page the aux shadow has
+        // already diverted reads false here while being plain RAM.
         writeWatch_[addr] = static_cast<uint8_t>(
-            kWatchArmed | (writable[addr] ? kWatchWasWritable : 0));
+            kWatchArmed | ((writable[addr] || auxShadowCovers(addr))
+                               ? kWatchWasWritable : 0));
         // THE diversion: the fast path's own test now fails for this address,
         // which is the whole trick. Below $C000 only — above it every write
         // already reaches memWriteSlow.
@@ -44,7 +47,9 @@ void Memory::setWriteWatch(uint16_t addr, bool on)
         return;
     }
     if (writeWatch_.empty() || !(writeWatch_[addr] & kWatchArmed)) return;
-    if (addr < 0xC000)
+    // An address the aux shadow still covers stays diverted (its slow-path
+    // permission comes from ramWritable(), which knows about the shadow).
+    if (addr < 0xC000 && !auxShadowCovers(addr))
         writable[addr] = (writeWatch_[addr] & kWatchWasWritable) != 0;
     writeWatch_[addr] = 0;
     if (--writeWatchCount_ == 0) {
@@ -88,10 +93,33 @@ void Memory::clearWriteWatches()
     if (writeWatch_.empty()) return;
     for (std::size_t a = 0; a < writeWatch_.size(); ++a) {
         if (!(writeWatch_[a] & kWatchArmed)) continue;
-        if (a < 0xC000)
+        if (a < 0xC000 && !auxShadowCovers(static_cast<uint16_t>(a)))
             writable[a] = (writeWatch_[a] & kWatchWasWritable) != 0;
     }
     writeWatch_.clear();
     writeWatch_.shrink_to_fit();
     writeWatchCount_ = 0;
+}
+
+// ─── Aux shadow — the Le Chat Mauve Eve's CPREG auto-write ───────────────
+//
+// Memory.h § Aux shadow. The diversion is the same trick as the write
+// watch: clear `writable[]` over the page so memWrite's own test sends the
+// write to memWriteSlow, where the aux byte is added. The two pages are RAM
+// on every profile, so restoring means `true` — except where a watchpoint
+// holds the address diverted for its own reasons, in which case the byte is
+// left alone (the watch's shadow already records the real permission).
+void Memory::setAuxShadow(bool textPage, bool hgrPage, uint8_t byte)
+{
+    auxShadowByte_ = byte;
+    auto apply = [&](bool& flag, bool on, uint16_t lo, uint16_t hi) {
+        if (flag == on) return;
+        flag = on;
+        for (uint32_t a = lo; a <= hi; ++a) {
+            if (hasWriteWatch(static_cast<uint16_t>(a))) continue;
+            writable[a] = !on;
+        }
+    };
+    apply(auxShadowText_, textPage, 0x0400, 0x07FF);
+    apply(auxShadowHgr_,  hgrPage,  0x2000, 0x3FFF);
 }

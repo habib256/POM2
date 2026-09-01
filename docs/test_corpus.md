@@ -27,6 +27,7 @@
 - [2. Disk II controller hell (flux / WOZ)](#2-disk-ii-controller-hell-flux--woz)
 - [3. CPU & hardware quirks](#3-cpu--hardware-quirks)
 - [4. Audio / Mockingboard (VIA IRQ)](#4-audio--mockingboard-via-irq)
+- [5. Le Chat Mauve — RGB cards](#5-le-chat-mauve--rgb-cards)
 - [Appendix — Vapor Lock in detail](#appendix--vapor-lock-in-detail)
 - [Corrections vs the original source](#corrections-vs-the-original-source)
 
@@ -254,6 +255,30 @@ neither desync the main bus nor miss their acknowledgment.
 | **Ultima V: Warriors of Destiny** (Origin) | Mockingboard music driven by VIA timer IRQ continuously during gameplay. | ✅/🟡 Mockingboard A/C (2×VIA + 2×AY) verbatim (`#6`, `ay8910.cpp`, `Via6522`). Wire-OR IRQ via `SlotBus` (`#8`). To be heard in real conditions. |
 | **Music Construction Set / Willy Byte / Rescue Raiders** (confirmed Mockingboard titles) | AY-3-8910 sequencing + IRQ cadence. | ✅/🟡 Same path as above. Good test bench for the accuracy of the T1/T2 timers. |
 | **Phasor / SSI263 (speech)** | 2×VIA + 4×AY (Phasor), SSI263 formant synthesis. | ✅ `PhasorCard` verbatim (`#19`); AppleWin-faithful SSI263 (`#20`). |
+
+---
+
+## 5. Le Chat Mauve — RGB cards
+
+The corpus for `docs/chatmauve_plan.md`: software written FOR the French RGB
+cards, by their maker or for their modes, so that every pixel rule the plan
+states is argued from a picture. The cards are combinational logic on the
+video stream — what these disks exercise is the mode latch, the Eve's
+`$C0B0-$C0BF` switches and CPREG auto-write, and the dot-level decodes
+(LCM HGR, mixed DHGR boundaries, COL280, CP280).
+
+| Program | Where | What it tortures | POM2 status |
+|---|---|---|---|
+| **Purplesoft** (Le Chat Mauve, rev B octobre 1983 — `purplesoft-revb-oct83-{system,demos}.dsk`; juillet 1983 `-{system,fonts}`; `-s1-system` / `-s2-grload` are locked copies with a `CREATEUR D'ECRAN`) | `disks_5.4/chatmauve/` (DOS 3.3) | The Eve's Applesoft `&` extension by the card maker. `& GR 1..10` selects table IX-1's ten modes through five switch tables (`PURPLESOFT*` rev B, runtime `$E06F-$E0A0`: AN3, ENHRCPREG, HR1, HR2, HR3 per mode); `& TEXT 1..6` = 40-col damier/bloc B&W, 40-col **colour** (TXT16, `& BACK=` / `& COLOR=` through CPREG), 80-col B&W, 80-col **green** (TXTGREEN); `& PLOT x,y TO x,y` in every mode (the COL280 bit order lives in there); `& CHRS`, `& WINDOW`, `& PRINT` (software fonts on the graphics page). `DEMO GR16K` walks modes 6-10 (COL140, COL280A, COL280B, CP280, BW560) with 100 random lines each; `DEMO TEXTE` walks the six text screens. | 🟡 **The switch tables are read and pinned** (2026-09-01): they settle two rows the manual's scan left ambiguous — **BW560 = HR2+HR3** (the same pair that is HRBW with AN3 on; the scan's "HR3 alone" was a misread) and **SPEC2 = HR1+HR2** — and `le_chat_mauve_smoke` § 10 pins them. `tests/purplesoft_eve_probe.cpp` boots the demos disk with an Eve, types `RUN DEMO GR16K` / `RUN DEMO TEXTE`, logs each switch change against `dhgrMode()/hgrMode()/textMode()` and writes PPM frames — the visual check of the model against the maker's own software. Goldens of its screens: next. |
+| **Purple Pascal** 1.1 (fév. 83 ×2, juillet 83, rev B) | `disks_5.4/chatmauve/purple-pascal-*.dsk` (Pascal-formatted, not DOS) | The Pascal unit driving the same switches. | ⚪ Not run yet (needs the Apple Pascal system). |
+| **Extasie** (Chat Mauve Reloaded — `Extasie disk1.dsk`, `disk2.dsk`) | `disks_5.4/gist/` (ProDOS, DOS-order sectors) | The **mixed DHGR** mode the Féline / //c adapter have and the Eve lacks: `bit 7 de l'octet dans lequel se trouve le bit 0 du quadruplet`, with the boundary cases the Manuel Arlequin advises against — colour cell **cut** at a BW byte, BW run's **last dot repeated** into a colour byte (measured on the //c adapter, AppleWin PR #837). `$F2` image format, slideshow, `DSP.IMG` viewer. | ✅ **Rule modelled and pinned** (2026-09-01): per-byte 560/140 mux over a free-running 4-dot cell latch, `chatmauve_dot_rules` compares 3×32×192 random rows with a port of AppleWin `UpdateDHiResCellRGB` and spells the three boundary cases out dot by dot; `display_golden_hash` freezes `cm/feline/dhgr-mixed-boundary`. The disks themselves are not booted headlessly yet (the viewer wants a 128 K //e + ProDOS; on the list). |
+| **Arlequin** (Chat Mauve, mixed-mode paint program) · **Chat Mauve demo sides** (Pascal `EDITEUR`, ProDOS `ARLEQUIN` + `GLI16.2` + `*.CHAR`) · **Eve Leonard** | *to fetch* — apple2.org.za Documentation Project (Le Chat Mauve Eve) | The reference sequences (`STA $C00C ; STA $C05E ; STA $C05F` …) and the fonts. | ⚪ Not in the tree yet. |
+| **DIX** (French Touch), **Prince of Persia** title | see § 1 | Chat Mauve screens under a //c adapter: mid-line mode changes (DIX, plan P6) and PoP's title dropping to mono after the first attract loop — a quirk of the adapter's *inferred* 80COL, not of the Féline (plan P5). | 🟡 Per-frame card state today; the dot-clock tap and the adapter quirk are P6 / P5. |
+
+The unit oracles behind the rows: AppleWin `RGBMonitor.cpp` (`UpdateHiResRGBCell`,
+`UpdateDHiResCellRGB` — both validated by fenarinarsa on a real //c adapter) for
+the Féline rules, MAME `apple2video.cpp` `dhgr_update` for the Video-7 modes
+(`video7_parity_smoke`), and Purplesoft's own tables for the Eve's switches.
 
 ---
 

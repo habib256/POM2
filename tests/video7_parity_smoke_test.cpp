@@ -27,8 +27,13 @@
 // compare every one of the 560 dots per line.
 //
 // Mode mapping (POM2 RenderMode == MAME rgbmode):
-//   BW560(0)=mono DHR   Mixed(1)=per-MSB color/mono
-//   Chunky160(2)=160-wide   COL140(3)=full color
+//   BW560(0)=mono DHR   Chunky160(2)=160-wide   COL140(3)=full color
+// The card is the VIDEO-7 variant: it is the one with the 160-wide mode (the
+// Chat Mauve boards fold that latch value into COL140) and the one MAME's
+// rgb_monitor semantics describe. Mixed(1) is NOT pinned against MAME any
+// more: MAME's byte-level rule paints a partial cell from the mixed nibble
+// where the hardware (measured on a //c adapter) repeats the last BW dot —
+// chatmauve_dot_rules pins the measured rule against AppleWin instead.
 //
 // Palette: POM2 deliberately uses the AppleWin "Feline" Le Chat Mauve
 // palette (two distinct grays) where MAME reuses the standard apple2 palette.
@@ -141,7 +146,7 @@ void runDhgrMode(Mode mode, const char* name)
 
     // Card connected to the DISPLAY only (not the slot bus), so mem $C05E/F
     // reads can't reshuffle the FIFO — we drive the mode via overrideMode().
-    LeChatMauveCard card;
+    LeChatMauveCard card(7, LeChatMauveCard::Variant::Video7);
     disp.setChatMauveCard(&card);
     disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
     card.overrideMode(mode);
@@ -204,7 +209,7 @@ void runFgBgText()
     mem.setIIEMode(true);
     Apple2Display disp;
     disp.setAuxMemory(mem.auxData());
-    LeChatMauveCard card;
+    LeChatMauveCard card(7, LeChatMauveCard::Variant::Video7);
     disp.setChatMauveCard(&card);
     disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
 
@@ -284,7 +289,6 @@ int main()
 {
     std::printf("Video-7 parity smoke:\n");
     runDhgrMode(Mode::BW560,     "BW560");
-    runDhgrMode(Mode::Mixed,     "Mixed");
     runDhgrMode(Mode::Chunky160, "Chunky160");
     runDhgrMode(Mode::COL140,    "COL140");
     runFgBgText();

@@ -10,7 +10,8 @@ effort in *italics*. File/line in `backticks`.
 **Read in this order**:
 
 1. [Next up](#next-up) — the ordered list of what to do next (2026-09-01):
-   Le Chat Mauve, the raster offset, the Best1a.nib write-back.
+   Le Chat Mauve (P0-P2 done, P3-P7 + goldens open), the raster offset, the
+   Best1a.nib write-back.
 2. [Priority order](#priority-order) — the 2026-08-28 architecture plan, P0→P3
    (P0-P2 landed; P3 are rulings).
 3. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
@@ -45,37 +46,52 @@ that whoever picks it up can start without re-deriving the finding.
 
 ### 1 · 🟠 Le Chat Mauve at the silicon — `docs/chatmauve_plan.md`
 
-The plan is the document; this entry only says why it is first and where to
-start. POM2 models one Chat Mauve — a Féline-class 2-bit mode latch with
-Video-7's four DHGR interpretations, a Video-7 fg/bg text and two toggles at
-`$C0B8-$C0BB` — and that is a byte-level Féline and a wrong Eve. The research
-pass found the primary sources: the Eve reference manual (sixteen write-only
-switches at `$C0B0-$C0BF`, the CPREG register the card writes into aux memory
-behind the CPU, table IX-1's ten graphics modes, colour text with the nibbles
-the *other* way round from Video-7's), the Eve's PLS100 PLA fuse map (public,
-decoded to 48 terms), the Video-7 patent for the mode latch, the *Manuel
-Arlequin*'s statement of the mixed mode Extasie was written for, and
-fenarinarsa's measurements on a real //c adapter and Eve. Two of today's
-labels are simply wrong (`$C0BA/B` is TXTGREEN, not "HGR Duochrome"; the
-fg/bg HGR POM2 renders is the Eve's CP280 with its nibbles swapped).
+**P0-P2 landed 2026-09-01** (CHANGELOG of that day): one card, four variants
+(Féline · Adaptateur //c · Eve · Video-7 by `chatmauve_variant`), the Féline's
+mixed-DHGR and HGR rules dot-exact against AppleWin's hardware-validated
+oracles, the Eve's sixteen switches + CPREG auto-write (`Memory::setAuxShadow`)
++ TXT16 / TXTGREEN + table IX-1 — with the table corrected three times by
+Purplesoft's own code (BW560 = HR2+HR3; the latch plays no part on the Eve;
+CP280 runs with 80COL off) and the COL280 bit order read off `& PLOT`'s bytes
+(2-dot cells of the 560 stream). `tests/purplesoft_eve_probe.cpp` boots the
+demo disk with an Eve and writes the frames; `DEMO GR16K` / `DEMO TEXTE` come
+out as the maker drew them.
 
-Order of work, from the plan: **P0** corpus + per-dot golden harness (½ d);
-**P1** Féline / //c adapter dot-exact — mode latch per patent, mixed mode as a
-per-byte 560/140 mux over a free-running 4-dot cell latch, LCM HGR rule
-(2-bit cell, 3-bit window), AN3-off mono (1½ d); **P2** the Eve's switches,
-CPREG auto-write hook in `Memory`, TXT16 / TXTGREEN / LOCKRES, table IX-1,
-card *variant* in the catalog (1½ d); **P3** Eve pixel rules from the PLA
-(2-3 d); P4 RVB Graph (gated on its manual); P5 //c adapter quirk; P6 the
-dot-clock video tap; P7 docs. P1 + P2 ≈ 3 d deliver Extasie, Arlequin and
-Purplesoft. Corpus (all downloaded, to register in `docs/test_corpus.md`):
-the two Chat Mauve demo sides, Purplesoft DOS 3.3 / Purple Pascal, Arlequin,
-Extasie + slideshow + `DSP.IMG`, Eve Leonard.
+**What is left, in order** (plan § 5):
 
-One fact found after the plan was written, to fold into P3: the Eve
-addendum's colour-table program (`DATA 0,8,1,9,2,10,3,11,4,12,5,13,6,14,7,15`)
-says the **rev A COL140 palette is the rev B one with the 4-bit code rotated
-right by one** — the same rotation AppleWin applies to DHGR nibbles. No
-capture needed for rev A.
+- 🟠 **Pin the Purplesoft screens** — `DEMO GR16K` modes 6-10 and `DEMO
+  TEXTE` screens 1-6 as golden hashes (the probe is deterministic: same boot,
+  same RND seed; ~1 s of wall time for 400 s of machine). Needs the disk in
+  the tree: `disks_5.4/chatmauve/` is **untracked** today — decide whether
+  the ten Purplesoft / Purple Pascal images (1.4 MB) join `disks_5.4/gist/`
+  under git. A test that SKIPs when the disk is absent is the usual shape.
+- 🟠 **P3 — the Eve's pixel rules from the PLA** (`Chat_Mauve_eve_PLA.jed`,
+  48 terms decoded): SPEC1 / SPEC2 are modelled from the manual's prose (5-dot
+  window: `11011` → black, `00100` → white), DASH renders as HRAPPLEII, HR3
+  alone with AN3 off is assumed BW560 — all to be read out of the fuse map.
+  Purplesoft `& GR 2..5` on the probe gives the pictures to compare.
+- 🟡 **P6 — the dot-clock video tap**: a mid-line `$C05E/F` or `$C0Bx` still
+  lands at the frame (`renderStateKey` is per frame). DIX's Chat Mauve
+  screens and PoP's title are the goldens to add once it exists. TTL-RGBI
+  palette option next to the Féline capture.
+- 🟡 **Extasie / Arlequin goldens**: `Extasie disk1/2.dsk` are ProDOS
+  (DOS-order sectors) and want a 128 K //e boot in the probe's shape; the
+  Chat Mauve demo sides, Arlequin and Eve Leonard are still to fetch
+  (apple2.org.za).
+- 🟢 **P5 — //c adapter quirk** (inferred 80COL; PoP's attract loop dropping
+  to mono), behind a toggle. **P4 — RVB Graph**, gated on its manual.
+- 🟢 **P7 — docs**: `DEV.md` § Le Chat Mauve and `docs/lle_vs_hle.md` are
+  rewritten; `docs/chatmauve_plan.md` § 2.1 is the model as built. Remaining:
+  fold § 3.4's corrected table back into § 3 prose (today it is a note under
+  the table), and the README's Chat Mauve paragraph.
+
+**Found on the way — fixed the same day** (CHANGELOG 2026-09-01): headless
+DOS 3.3 paid RWTS's one-second motor-on wait on nearly every sector because
+the legacy nibble gate stopped the spindle instantly on `$C0E8`, freezing the
+latch RWTS polls before `$C0E9`. The legacy path now models the analog card's
+556 one-second coast like the bit-LSS path's MODE_DELAY; boot to the
+Purplesoft prompt went from 115 s to under 10 s of machine time. Pinned
+`diskii_motor_coast`.
 
 ### 2 · 🟠 Mid-scanline switch lands one character cell off — DIX's rays
 

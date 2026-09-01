@@ -181,8 +181,12 @@ DevicePanelCoordinator::captureChatMauve() const
         snapshot.eightyCol = card->eightyCol();
         snapshot.an3High = card->an3High();
         snapshot.invertBit7 = card->invertBit7();
-        snapshot.colorTextEnable = card->colorTextEnabled();
-        snapshot.hgrDuochrome = card->hgrDuochromeEnabled();
+        snapshot.variant = card->variant();
+        snapshot.dhgrMode = card->dhgrMode();
+        snapshot.eveSwitches = card->eveSwitches();
+        snapshot.cpreg = card->cpreg();
+        snapshot.auxShadowText = state.memory().auxShadowText();
+        snapshot.auxShadowHgr = state.memory().auxShadowHgr();
     }
     return snapshot;
 }
@@ -191,14 +195,13 @@ void DevicePanelCoordinator::applyChatMauve(
     const LeChatMauve_ImGui::FrameResult& command)
 {
     if (!command.requestOverride && !command.requestReset &&
-        !command.requestInvertBit7 && !command.requestColorTextEnable &&
-        !command.requestHgrDuochrome) {
+        !command.requestInvertBit7 && !command.requestVariant &&
+        !command.requestEveSwitch) {
         return;
     }
 
     bool persistInvert = false;
-    bool persistColorText = false;
-    bool persistDuochrome = false;
+    bool persistVariant = false;
     {
         auto state = controller_.lockState();
         auto& bus = state.memory().slotBus();
@@ -211,22 +214,20 @@ void DevicePanelCoordinator::applyChatMauve(
             card->setInvertBit7(command.invertBit7To);
             persistInvert = true;
         }
-        if (command.requestColorTextEnable) {
-            card->setColorTextEnabled(command.colorTextEnableTo);
-            persistColorText = true;
+        if (command.requestVariant) {
+            card->setVariant(command.variantTo);
+            persistVariant = true;
         }
-        if (command.requestHgrDuochrome) {
-            card->setHgrDuochromeEnabled(command.hgrDuochromeTo);
-            persistDuochrome = true;
-        }
+        // A guest register poked from the UI: same path as `STA $C0Bx`.
+        if (command.requestEveSwitch)
+            card->setEveSwitch(command.eveSwitch, command.eveSwitchTo);
     }
 
     if (persistInvert)
         settings_.setBool("chatmauve_invert_bit7", command.invertBit7To);
-    if (persistColorText)
-        settings_.setBool("chatmauve_color_text", command.colorTextEnableTo);
-    if (persistDuochrome)
-        settings_.setBool("chatmauve_hgr_duochrome", command.hgrDuochromeTo);
+    if (persistVariant)
+        settings_.setString("chatmauve_variant",
+                            LeChatMauveCard::variantKey(command.variantTo));
 }
 
 std::vector<DevicePanelCoordinator::SerialSnapshot>

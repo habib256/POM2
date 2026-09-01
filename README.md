@@ -357,7 +357,7 @@ POM2's renderer is **event-driven, not frame-snapshot**. Soft-switch writes carr
 - **Composite NTSC** — OpenEmulator-style fragment shader (`NtscPostProcessor` / `OpenGLShader`): barrel → hue → BCS → phosphor curve → glow.
 - **AppleWin NTSC** — the alternative CPU-side IIR-LUT colour path (`AppleWinNtsc`).
 - **Mono phosphor** — adjustable **phosphor curve** (`ntsc_phosphor_gamma`, luminance half of the CRT model) and **persistence** (temporal half), tunable in *View → CRT Settings*.
-- **RGB cards** — Video-7 and Le Chat Mauve for IIe-class machines.
+- **RGB cards** — Le Chat Mauve (Féline · Adaptateur //c · Eve with its `$C0B0-$C0BF` switches) and the Video-7 AppleColor, one card with a variant setting (`chatmauve_variant`), for IIe-class machines.
 - **3D voxel view** — lift the whole framebuffer into an orbiting voxel scene.
 - **HGR/DHGR Paint editor** (*Tools → HGR Paint Editor*) — MacPaint-style painting straight into live video RAM (HGR, GR lo-res, and DHGR on IIe-class machines), rendered through the real NTSC pipeline. Imports PNG/JPG with ii-pix-style CAM16-UCS perceptual dithering; loads/saves raw pages (8 KB HGR, 1 KB GR, 16 KB A2FC DHGR) and PNG exports.
 - **HGR Sprite Editor** (*Tools → HGR Sprite Editor*) — draw hi-res sprites over live video RAM and export them as ca65 `.byte` tables.

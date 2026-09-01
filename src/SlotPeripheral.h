@@ -120,6 +120,11 @@ public:
     /// AN3 to clock their 2-bit FIFO mode register). Forwarded by
     /// Memory::softSwitchAccess() via SlotBus::broadcastVideoSwitch().
     virtual void onVideoSoftSwitch(uint16_t /*addr*/) {}
+    /// The WRITE side of the same broadcast, with the data byte — for a card
+    /// that latches data off a shared window (the Chat Mauve Eve loads its
+    /// CPREG from every write to $C0B0-$C0BF). Defaults to the address-only
+    /// hook so cards that only decode addresses see both R and W as before.
+    virtual void onVideoSoftSwitchWrite(uint16_t addr, uint8_t /*value*/) { onVideoSoftSwitch(addr); }
 
     /// DMA bus mastery — for cards that halt the 6502 and drive the bus
     /// with their own processor (Microsoft SoftCard's Z80; MAME models

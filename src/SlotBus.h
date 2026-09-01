@@ -139,6 +139,8 @@ public:
     /// video cards (Le Chat Mauve, Video-7) still need to observe:
     /// $C00C/$C00D (80COL) and $C05E/$C05F (AN3).
     void broadcastVideoSwitch(uint16_t addr);
+    /// Same fan-out for a WRITE, carrying the data byte (the Eve's CPREG).
+    void broadcastVideoSwitchWrite(uint16_t addr, uint8_t value);
 
     /// Install (or replace) the IRQ router. Pass an empty function to
     /// disconnect — any subsequent `assertIrq()` from a card becomes a

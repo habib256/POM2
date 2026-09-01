@@ -599,33 +599,120 @@ per byte → 560-dot stream. Three color paths, matching MAME
   560 dots → `kArtifactColorLut[128]` → `rotl4b(value, absX+1)` →
   4-bit lo-res palette. `+1` = MAME `is_80_column=1` in
   `render_line_artifact_color`. Per-pixel decode.
-- **`ChatMauveRGB`** — Video-7 / Le Chat Mauve. 2-bit AN3 FIFO
-  (`LeChatMauveCard::currentMode()`) picks one of four MAME
-  `dhgr_update` rgbmodes (POM2 enum == MAME rgbmode):
-  - `COL140`(3): 4-dot block → raw nibble → `rotl4(n,1)` →
-    `kChatMauveLoResPalette`.
-  - `Mixed`(1): two cols as 28-bit word; each **source byte's MSB**
-    picks color vs 7-dot mono (MAME `:946-977` `color_mask`).
-  - `Chunky160`(2): `aux+(main<<8)` → four 4-bit pixels of three
-    dots each, 480 wide centred in 560 with 40 black margins (MAME
-    `:906-930`).
-  - `BW560`(0): plain mono DHR.
-  Palette verbatim AppleWin `PaletteRGB_Feline`; MAME's Video-7
-  collapses idx 5≡10, POM2 follows AppleWin (intentional).
+- **`ChatMauveRGB`** — the RGB card's clean decode; every rule is the
+  card's, see [§ Le Chat Mauve](#le-chat-mauve-lechatmauvecard) below.
+  `renderDhgr` asks `chatMauve->dhgrMode()` and paints COL140 (4-dot cells,
+  nibble rotl 1 → `kChatMauveLoResPalette`), BW560, the per-dot **mixed**
+  mux, the Video-7's 160 chunky, or hands the Eve's COL280A/B / CP280 /
+  blank to their own painters.
 - **`Mono*`** — luminance × tint; persistence sized for 280-wide
   HGR.
 
 Mixed = DHGR top 160 + 80-col text bottom 4 rows.
 
-**Video-7 fg/bg colored TEXT** (`renderTextChatMauveFgBg`): 40-col
-text with RGB card + DHGR (AN3) on — char code from main, per-cell
-fg/bg from aux at same text address (hi nibble = fg, lo = bg);
-7-bit glyph doubled to 14 dots. Port of MAME `text_update`
-(`:788-791`) + `render_line_color_array` (`:571-583`).
+**Colour TEXT with an RGB card** (`renderTextChatMauveFgBg`): 40-col,
+char code from main, the aux byte at the same address holds the cell's two
+lo-res colours — the Video-7 puts the foreground in the high nibble, the Eve
+(TXT16) the background; `auxHiIsForeground` picks. 7-bit glyph doubled to
+14 dots. Port of MAME `text_update` (`:788-791`) + `render_line_color_array`
+(`:571-583`) for the nibble math.
 
 Pinned: `dhgr_render_smoke_test`, `video7_parity_smoke_test`,
-`dhgr_phase_signal_test` (OE CPU/GPU + AppleWin subcarrier +1 vs MAME
-`rotl4(absX+1)`), `dlgr_render_smoke_test`.
+`chatmauve_dot_rules`, `le_chat_mauve_smoke`, `dhgr_phase_signal_test`,
+`dlgr_render_smoke_test`, and the `cm/<variant>/…` block of
+`display_golden_hash_test`.
+
+### Le Chat Mauve (`LeChatMauveCard`)
+
+The French RGB adapters and their US cousin, as ONE card with a **variant**
+(`chatmauve_variant` = `feline` | `iic` | `eve` | `video7`; //c-class
+profiles default to `iic`, the others to `feline`). The research — manuals,
+the Video-7 patent, the Eve's PLA dump, fenarinarsa's measurements, and
+Purplesoft's own code — is `docs/chatmauve_plan.md`; this section is the
+model as built (P0-P2, 2026-09-01).
+
+**Division of labour.** The card owns the *state* — the patent's 2-bit mode
+latch (AN3 clocks 80COL; POM2 clocks 80COL where AppleWin clocks /80COL, so
+the enum numbering is the bit-inverse of AppleWin's for the same
+`STA $C05E/$C05F` sequence), the Eve's eight switches and CPREG — and
+answers three questions: `dhgrMode()` (what DHGR means after the variant's
+fallbacks and the Eve's table IX-1), `hgrMode(an3On)`, `textMode(eightyCol,
+an3On)`. `Apple2Display` routes on those answers (`renderInternalBandImpl`)
+and owns the pixel rules — the Chat Mauve painters live in their own TU,
+`Apple2Display_ChatMauve.cpp`, with the page/band helpers both TUs share in
+`Apple2Display_Internal.h` (the file-size ratchet's first recorded win on
+`Apple2Display.cpp`, 2713 → 2486 lines). `renderStateKey()` folds everything
+that changes pixels without a video event into the text-frame skip key.
+
+**The Féline / //c adapter rules** (== AppleWin `RGBMonitor.cpp`, itself
+validated by fenarinarsa on a real //c adapter; pinned dot for dot by
+`chatmauve_dot_rules` against ports of `UpdateHiResRGBCell` and
+`UpdateDHiResCellRGB`):
+
+- *HGR*: 140 cells of 2 dots aligned to the line, 3-dot window; `010` /
+  `101` → the cell's colour (bank = bit 7 of the dot's OWN byte), anything
+  else → its own bit. No half-dot shift, no fringing. The latch does not
+  touch single HGR (AppleWin never consults it there — POM2 used to make HGR
+  mono under BW560; gone). AN3 off → **mono** (`POKE -16290,0`).
+- *DHGR mixed*: per-BYTE 560/140 mux over a free-running 4-dot cell latch.
+  A colour cell that runs into a BW byte is **cut**; a BW byte that runs into
+  a colour byte has its **last dot repeated** to the next cell boundary. The
+  cell's colour is the raw stream's nibble on the grid wherever its bits
+  come from. MAME's byte-level rule (partial cell painted from the mixed
+  nibble) is what this replaced. `invertBit7` (Dragon Wars) flips the
+  per-byte selector here and nowhere else.
+- 160 chunky → COL140 (no such mode on the Chat Mauve boards).
+
+**The Video-7** keeps the four patent modes (MAME `dhgr_update` rgbmode 0-3,
+`video7_parity_smoke`), F/B text (AN3 on, 80COL off, hi = fg) and F/B HGR
+when AN3 is off (MAME `hgr_update`'s `rgb_monitor && m_dhires && !m_80col`).
+
+**The Eve.** Sixteen write-only switches at `$C0B0-$C0BF` (slot 3's window —
+`Memory` forwards it through `SlotBus::broadcastVideoSwitch{,Write}` only
+while slot 3 holds no foreign card): any access decodes the address, a write
+also latches the byte into **CPREG**, all off at power-on, Ctrl-Reset clears
+them unless LOCKRES. Modes from table IX-1 as **Purplesoft's `& GR 1..10`
+switch tables** select them (`PURPLESOFT*` rev B, runtime `$E06F-$E0A0`):
+AN3 on — 000 HRAPPLEII, 100 SPEC1, 110 SPEC2, 001 DASH, 011 HRBW; AN3 off —
+000 COL140 (whatever the patent latch says — `& GR 6` leaves it at 00 and
+expects COL140), 100 COL280A, 010 COL280B, 110 blank, 111 CP280 — **with
+80COL off**, as Purplesoft runs it: the Eve is the aux memory and has the
+attribute byte regardless, only the 560-dot modes need 80COL's doubled shift
+rate — and **011 BW560** (the manual's scan read "HR3 alone"; the code says
+HR2+HR3, the same pair as HRBW). Mixed and 160 → COL140. TXT16 =
+colour text with **hi nibble = background**, 80COL off, no AN3 condition;
+TXTGREEN = a white → green pass over the text rows (40 and 80 col, the
+mixed-mode band too). CP280 = the fg/bg HGR painter with the Eve's nibble
+order; COL280A/B = the 560 stream in **2-dot cells** (code = dot + 2·next),
+read off the bytes Purplesoft's `& PLOT` writes (plan § 6, closed);
+SPEC1/SPEC2 = the LCM rule minus an isolated colour dot on white (`11011`)
+and, for SPEC2, on black (`00100`) — 5-dot window, from the manual's prose,
+to confirm against the PLA (P3); DASH renders as HRAPPLEII for now.
+
+**CPREG auto-write** is a `Memory` hook, not a video rule: `setAuxShadow`.
+While TXT16 (text page) or ENHRCPREG (HGR page) is on and LOCKCPREG off, a
+CPU write that lands in MAIN inside the page also deposits CPREG in AUX at
+the same address — `PRINT` in colour, HPLOT in CP280, without the program
+touching aux. Zero cost on the hot path: arming clears `writable[]` over the
+page so `memWrite`'s own test sends the write to `memWriteSlow` (the write
+watchpoints' trick); `ramWritable()` reports the page writable, and the two
+diversions are pinned to coexist (`le_chat_mauve_smoke` § 7). The card
+programs the hook from its switches (`setMemory` at plug time, disarmed on
+unplug).
+
+**Snapshot** blob v3 = latch + switch byte + CPREG; a v2 blob's two toggles
+land on TXT16 / TXTGREEN (they were those switches under wrong labels). The
+variant and `invertBit7` are user settings and stay out.
+
+**UI**: the Chat Mauve panel shows the variant (combo), the latch, what the
+card decodes, and on the Eve the eight switches (a click is a `STA $C0Bx`)
+with CPREG and whether the aux shadow is armed.
+
+**Not yet** (plan P3-P6): the Eve's decoder from its PLS100 fuse map, the RVB
+Graph, the //c adapter's inferred-80COL quirk, and the dot-clock tap that
+lands a mid-line `$C05E/F` or `$C0Bx` at the dot rather than the frame.
+`tests/purplesoft_eve_probe.cpp` boots the maker's demo disk with an Eve
+for the visual check (see `docs/test_corpus.md` § 5).
 
 ### DLGR (IIe, `eightyCol && !hiRes && dhgr && !textMode`)
 
@@ -767,10 +854,11 @@ Three exclusions, all load-bearing:
 | Graphics / MIXED | Painters write phosphor persistence (`max(target, prev × decay)`), so output changes every frame from identical inputs. `renderText`/`renderText80` write none. |
 | CPU demod (`cpuDemodGfx`) | AppleWin / OE-CPU overwrite `frame80` from the composite signal. Key invalidated. |
 
-The key also carries the **Le Chat Mauve** card identity + its mode and both
-Eve toggles. `Memory::DisplayState` is not sufficient: $C0B8-$C0BB are guest
-writes that select the colour-TEXT renderer (and the 560-wide `frame80`), reach
-the card via `SlotBus::broadcastVideoSwitch`, and push **no video event** — so
+The key also carries the **Le Chat Mauve** card identity + its
+`renderStateKey()` (variant, latch, the Eve's switch byte, invertBit7).
+`Memory::DisplayState` is not sufficient: $C0B0-$C0BF are guest writes that
+select the colour-TEXT renderer (and the 560-wide `frame80`), reach the card
+via `SlotBus::broadcastVideoSwitch`, and push **no video event** — so
 without them the skip served a stale screen at the wrong geometry on the //c
 PAL profile's built-in slot 7. Fixed 2026-07-31; pinned by section 9 of
 `display_dirty_skip`, which only bites when the card is actually **plugged into

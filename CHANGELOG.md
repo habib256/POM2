@@ -5,6 +5,100 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — Le Chat Mauve, P0-P2: four cards in one, dot-exact, and Purplesoft says what the manual could not
+
+`docs/chatmauve_plan.md` phases P0, P1 and P2 landed the same day the plan
+was written, and the card maker's own software corrected the plan three
+times before evening.
+
+**One card, four variants.** `LeChatMauveCard` now carries a *variant* —
+Féline, Adaptateur //c, Eve, Video-7 — as a card setting
+(`chatmauve_variant`; //c-class profiles default to the adapter, the others
+to the Féline) rather than four catalog keys: a dozen call sites reason about
+"the RGB card" by the one key `chatmauve`, and the profile is what decides the
+card's home. The card owns the *state* (the patent's 2-bit latch, the Eve's
+switch byte, CPREG) and answers three questions — `dhgrMode()`,
+`hgrMode(an3On)`, `textMode(eightyCol, an3On)`; `Apple2Display` routes on the
+answers and owns the pixel rules. The Video-7 variant is where the old
+behaviour went (F/B text with the foreground in the high nibble, F/B HGR when
+AN3 is off, the 160-wide chunky mode): none of that exists on a Chat Mauve,
+and the Féline — the //c PAL profile's default — now shows plain text and
+monochrome HGR (`POKE -16290,0`) in those states, as its manual says.
+
+**The Féline, dot for dot.** The mixed DHGR rule is now the hardware's: a
+per-byte 560/140 mux over a free-running 4-dot cell latch, so a colour cell
+that runs into a BW byte is *cut* and a BW byte that runs into a colour byte
+has its *last dot repeated* to the cell boundary — fenarinarsa's measurements
+on a //c adapter, AppleWin PR #837. `chatmauve_dot_rules` carries literal
+ports of AppleWin's `UpdateDHiResCellRGB` and `UpdateHiResRGBCell` as oracles
+and agrees with them over every dot of 3×32×192 and 64×192 random rows, then
+spells the three boundary cases out by hand. MAME's byte-level rule, which
+painted a partial cell from the mixed nibble, is retired for this card. Two
+inventions of POM2's own went with it: HGR turning monochrome when the latch
+read BW560 (AppleWin never consults the latch in single HGR), and
+`invertBit7` flipping the HGR bank bit (it is a mixed-mode selector, and
+nothing else).
+
+**The Eve, from its manual and from Purplesoft.** Sixteen switches at
+`$C0B0-$C0BF` (any access decodes, a write loads CPREG, all off at power-on,
+LOCKRES vs Ctrl-Reset, the slot-3 collision guard widened to the whole
+window), TXT16 with the aux nibbles the other way round from Video-7's (high
+= background — `POKE -16199,16*F+C`, F = fond), TXTGREEN as a white → green
+pass over the text rows, LOCKCPREG, ENHRCPREG. **CPREG's auto-write** — the
+card depositing its colour byte in aux at the address of every CPU write to
+the text or HGR page — is a `Memory` hook, `setAuxShadow`, built the way the
+write watchpoints are: arming clears `writable[]` over the page so the fast
+path's own test diverts the write, nothing is tested for on the hot path, and
+the two diversions are pinned to coexist. `$C0BA/B` was never "HGR
+Duochrome": it is TXTGREEN, and the fg/bg HGR that toggle used to select is
+the Eve's CP280, chosen by table IX-1.
+
+**Then `PURPLESOFT*` was read.** Its `& GR 1..10` handler selects modes
+through five switch tables; they settle what the manual's scan left
+ambiguous. BW560 is **HR2+HR3** (the pair that is HRBW with AN3 on), not HR3
+alone; SPEC2 is HR1+HR2. Booting the demo disk with an Eve
+(`tests/purplesoft_eve_probe.cpp`, ~1 s of wall time for 400 s of machine)
+then corrected the model twice more. `& GR 6` (COL140) leaves the patent
+latch at 00 — a Féline would show BW560 — and expects COL140: **the latch
+plays no part on the Eve**. `& GR 9` (CP280) runs with **80COL off**: the Eve
+*is* the auxiliary memory and has the attribute byte whatever 80COL says; only
+the 560-dot modes need the doubled shift rate, and Purplesoft's 80COL table
+says exactly that (on for 6, 7, 8, 10; off for 9). And a program typed into
+the probe (`& COLOR= 9: & PLOT 0,0 TO 100,0` …) read the COL280 bit order
+straight out of the bytes `& PLOT` writes: orange = (main `$2A`, aux `$55`),
+green = (`$55`, `$2A`), white = (`$7F`, `$7F`) — **COL280 is the 560-dot
+stream in 2-dot cells**, not one bit from each bank per dot, which closes
+the plan's first open question without the PLA. `DEMO GR16K` and `DEMO
+TEXTE` now come out as the maker drew them: green COL140 with 16-colour
+lines, COL280A/B in their four colours, CP280's orange field with attribute
+blocks at the crossings, BW560, colour text on black, green 80-column text.
+
+**Also found — and fixed: the legacy gate stopped the spindle instantly.**
+Headless DOS 3.3 paid RWTS's one-second motor-on wait on nearly every sector
+(the demo disk took 115 s of machine time to reach the prompt;
+`dos33_save_smoke` had written "~30M cycles" down as a fact of life). The
+mechanism, read out of RWTS's own bytes in the running machine: the "is the
+disk spinning?" check reads `$C08C` repeatedly BEFORE re-asserting `$C0E9`,
+and skips the wait only if the latch moves — on real hardware the analog
+card's 556 one-shot keeps the spindle driven ~1 s after `$C0E8`, so between
+back-to-back RWTS calls the disk is still turning. The bit-LSS path has
+modelled that window since the MAME port (`MODE_DELAY`); the legacy nibble
+gate — plain `.dsk`, no P6 PROM, i.e. every headless test — cleared `motorOn`
+on the spot, freezing the latch at `$FF`. `$C0E8` on the legacy path now arms
+the same one-second `motorOffDelay` (a `$C0E9` inside the window cancels it;
+the countdown in `advanceCycles` stops the drive and fires the spin-down
+sound). Boot to the Purplesoft prompt: 115 s → under 10 s of machine time,
+3 % of boot samples in the wait loop instead of 40 %. Pinned by
+`diskii_motor_coast` — spin, coast, cancel, stop.
+
+**What the harness grew.** `display_golden_hash` has a per-variant
+`cm/<variant>/…` block (26 entries, including the four mixed-mode boundary
+rows) and `POM2_GOLDEN_DUMP=<entry>:<line>` prints a scanline as hex RGB, so
+a rule can be argued from pixels. `video7_parity_smoke` runs on the Video-7
+variant and no longer pins the mixed mode against MAME (MAME's rule is the
+approximation). `display_persistence_smoke` moved its BW560 check into DHGR.
+`docs/test_corpus.md` § 5 registers the corpus. Snapshot blob v3.
+
 ## 2026-09-01 — Best1a.nib was not a bad dump, and the Chat Mauve gets a plan
 
 **Twenty bytes.** `disks_5.4/gist/Best1a.nib` hung every boot in the Disk II

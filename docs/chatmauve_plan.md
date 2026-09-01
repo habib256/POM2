@@ -68,6 +68,40 @@ Two hardware facts that matter for a model:
 
 ## 2. What POM2 models today, and where it departs
 
+*Status 2026-09-01 evening: P0, P1 and P2 landed (see § 5 for what each
+delivered and § 2.1 for the table as it stands now). The table below is the
+one the plan was written against — kept as the record of where the model
+started.*
+
+### 2.1 After P0-P2 (2026-09-01)
+
+`LeChatMauveCard` carries a **variant** — Féline, Adaptateur //c, Eve,
+Video-7 — and answers three questions for the renderers: `dhgrMode()`,
+`hgrMode(an3On)`, `textMode(eightyCol, an3On)`. The card owns the latch, the
+Eve's switch byte and CPREG; the pixel rules live in `Apple2Display`.
+
+| Area | POM2 now | Pinned by |
+|---|---|---|
+| Mode latch | patent shift register, 80COL clocked (MAME numbering); Féline / //c fold 160 → COL140, the Eve folds mixed and 160 → COL140, the Video-7 keeps all four | `le_chat_mauve_smoke` § 1, `chatmauve_dot_rules` § 4 |
+| DHGR mixed | per-byte 560/140 mux over a free-running 4-dot cell latch — colour cell **cut** into a BW byte, last BW dot **repeated** into a colour byte; == AppleWin `UpdateDHiResCellRGB` over 3×32×192 random rows | `chatmauve_dot_rules` § 2, golden `cm/feline/dhgr-mixed-boundary` |
+| HGR with the card | LCM rule (2-bit cell, 3-bit window, bank = the dot's own byte) == AppleWin `UpdateHiResRGBCell` over 64×192 rows; the latch does NOT touch single HGR (AppleWin never consults it there); AN3 off → Féline / //c **mono**, Video-7 **F/B**, Eve keeps decoding | `chatmauve_dot_rules` § 1, smoke § 3 / § 11 |
+| Eve switches | all sixteen at `$C0B0-$C0BF`, any access decodes, a write loads CPREG, all off at power-on, LOCKRES vs Ctrl-Reset, slot-3 collision guard over the whole window | smoke § 6 |
+| CPREG auto-write | `Memory::setAuxShadow` — text page under TXT16, HGR page under ENHRCPREG, frozen by LOCKCPREG, only when the CPU's write landed in MAIN; zero cost on the hot path (writable[] diversion, like the write watches, and pinned to coexist with them) | smoke § 7 |
+| Table IX-1 | `& GR 1..10` decoded from Purplesoft's own switch tables: 000 HRAPPLE / 100 SPEC1 / 110 SPEC2 / 001 DASH / 011 HRBW with AN3 on; 000 COL140 / 100 COL280A / 010 COL280B / 110 blank / 111 CP280 / **011 BW560** with AN3 off. The patent latch plays no part on the Eve (`& GR 6` leaves it at 00 and expects COL140). **CP280 runs with 80COL OFF** (Purplesoft's 80COL table: on for 6/7/8/10, off for 9 — the Eve is the aux memory and has the attribute byte regardless) | smoke § 10, goldens `cm/eve/*`, `purplesoft_eve_probe` |
+| TXT16 / TXTGREEN | colour text with **hi = background**, 80COL off, no AN3 condition; TXTGREEN as a white → green pass over the text rows (40 and 80 col, mixed-mode band too) | smoke § 8-9, goldens `cm/eve/text*` |
+| COL280A/B | the 560 stream in **2-dot cells** (code = dot + 2·next), palettes in the manual's order — read off Purplesoft's `& PLOT` bytes (§ 6) | smoke § 10, goldens `cm/eve/dhgr-hr*-col280*` |
+| SPEC1 / SPEC2 | 5-dot window: `11011` → black (SPEC1), plus `00100` → white (SPEC2); alternating runs stay coloured | goldens `cm/eve/hgr-spec*` (rule from the manual's prose, to confirm against the PLA in P3) |
+| DASH | rendered as HRAPPLE — P3 | — |
+| Variant selection | one catalog key; `chatmauve_variant` setting (`feline` \| `iic` \| `eve` \| `video7`), default //c-class → `iic`, else `feline`; combo in the Chat Mauve panel, which also shows the eight switches (clickable = `STA $C0Bx`) and CPREG | — |
+| Snapshot | blob v3 = latch + switch byte + CPREG; v2's two toggles map onto TXT16 / TXTGREEN | smoke § 12 |
+
+Not done yet: the dot-clock tap (P6 — mid-line switches still land per
+frame), the //c adapter's inferred-80COL quirk (P5), the RVB Graph (P4),
+the PLA-derived Eve pixel rules (P3), Extasie / Purplesoft screens as
+goldens, a TTL-RGBI palette option.
+
+### 2.2 As found, 2026-09-01 morning
+
 `LeChatMauveCard` (161 + 107 lines) + `Apple2Display::renderDhgr /
 renderHiResChatMauve80 / renderHgrDuochrome / renderTextChatMauveFgBg`.
 
@@ -206,7 +240,27 @@ recipe is `POKE -16199,16*F+C` (TXT16 on with CPREG = F<<4 | C) then
 
 **Table IX-1 — choosing a graphics mode** (read from the scanned page 118;
 the manual prints "COL280A" on both 4-colour rows, the second is COL280B
-by chapter VI):
+by chapter VI). **Corrected 2026-09-01 against Purplesoft's own code**: the
+`& GR n` handler in `PURPLESOFT*` (rev B, octobre 83) selects each mode
+through five ten-entry tables at runtime `$E06F / $E079 / $E083 / $E08D /
+$E097` — the low byte of a `$C0xx` address per mode, for AN3, ENHRCPREG,
+HR1, HR2, HR3:
+
+```
+mode        1  2  3  4  5  6  7  8  9  10
+AN3        5F 5F 5F 5F 5F 5E 5E 5E 5E 5E     on for 1-5, off for 6-10
+ENHRCPREG  B0 B0 B0 B0 B0 B1 B1 B1 B1 B1     on for the AN3-off modes
+HR1        B2 B3 B3 B2 B2 B2 B3 B2 B3 B2
+HR2        B4 B4 B5 B4 B5 B4 B4 B5 B5 B5
+HR3        B6 B6 B6 B7 B7 B6 B6 B6 B7 B7
+```
+
+so 1 HRAPPLEII = 000, 2 HRSPEC1 = 100, 3 **HRSPEC2 = 110**, 4 HRDASH = 001,
+5 HRBW = 011, 6 COL140 = 000, 7 COL280A = 100, 8 COL280B = 010, 9 CP280 =
+111, 10 **BW560 = 011** — HR2+HR3 is "black and white" in both AN3 states,
+and the scan's "HR3 alone" for BW560 was a misread. The `& TEXT n` tables at
+`$E222 / $E228 / $E22E` (TXT16 on for 3 and 4, `$C0BB` TXTGREEN for 6,
+80COL per screen) confirm TXT16 and TXTGREEN as read.
 
 | AN3 | HR1 | HR2 | HR3 | Mode | Note |
 |---|---|---|---|---|---|
@@ -341,7 +395,12 @@ path (`onReset` clears the switches unless locked).
 Estimates are for one person; each phase ends green with its own pinned
 tests and a CHANGELOG entry, in the repo's usual form.
 
-**P0 — Corpus and harness (½ d).** Register the material in
+**P0 — Corpus and harness (½ d). ✅ 2026-09-01** — `docs/test_corpus.md` § 5;
+`display_golden_hash` grew a per-variant `cm/<variant>/…` block (26 entries)
+and `POM2_GOLDEN_DUMP=<entry>:<line>` prints a scanline as hex RGB.
+The Chat Mauve demo sides, Arlequin and Eve Leonard are still to fetch.
+
+*As planned:* Register the material in
 `docs/test_corpus.md`: the two Chat Mauve demo sides (Pascal
 `EDITEUR`, ProDOS `ARLEQUIN` with `GLI16.2` and the `*.CHAR` fonts),
 Purplesoft DOS 3.3 (Juillet 83, Rev. B Octobre 83 — `DEMO GR16K`, `TEXT
@@ -351,7 +410,15 @@ the golden-hash harness with a "card variant" axis and a per-dot RGB dump
 (`--dump-rgb-line`), so every rule below is pinned by an image, not a
 sentence.
 
-**P1 — The Féline and the //c adapter, dot-exact (1½ d).** The mode latch
+**P1 — The Féline and the //c adapter, dot-exact (1½ d). ✅ 2026-09-01** —
+`chatmauve_dot_rules` (AppleWin oracle ports, boundary cases spelled out),
+160 → 140 fallback, AN3-off mono, the MAME byte-level mixed rule retired.
+The "80COL must have been written" detail was NOT added: on the Féline the
+wire is direct and the patent samples the level; the detail is a property
+of the //c adapter's inference and belongs to P5. Extasie / DIX / PoP
+goldens: not yet (no headless boot of those disks).
+
+*As planned:* The mode latch
 as the patent draws it (already there; add the "80COL must have been
 written" detail and the 160 → 140 fallback). The mixed mode as a per-byte
 560/140 mux over a free-running 4-dot cell latch, pinned on Extasie's
@@ -362,7 +429,13 @@ pixel-for-pixel against `UpdateHiResRGBCell`; AN3-off HGR mono
 Golden hashes: Extasie slides, DIX's Chat Mauve screens, PoP title (both
 adapter behaviours).
 
-**P2 — The Eve's switches and CPREG (1½ d).** Full `$C0B0-$C0BF` decode,
+**P2 — The Eve's switches and CPREG (1½ d). ✅ 2026-09-01** — everything
+listed, the variant as a card setting rather than four catalog keys (see
+`LeChatMauveCard.h`), table IX-1 corrected from Purplesoft's tables.
+Purplesoft `DEMO GR16K` / `DEMO TEXTE` run through `purplesoft_eve_probe`;
+their screens as goldens are the next step.
+
+*As planned:* Full `$C0B0-$C0BF` decode,
 CPREG latch on every write, the auto-write hook in `Memory`, TXT16 with
 the Eve nibble order, TXTGREEN (drop the "HGR Duochrome" label — the mode
 it renders is CP280 and is selected by table IX-1), LOCKCPREG, ENHRCPREG,
@@ -409,7 +482,9 @@ Purplesoft need.
 
 | Question | Closes with |
 |---|---|
-| COL280A/B bit order (main vs aux per dot) | Purplesoft `&PLOT` disassembly, or the PLA once pins are assigned |
+| ~~COL280A/B bit order~~ **Closed 2026-09-01, from Purplesoft's `& PLOT` run in POM2** (`tests/purplesoft_eve_probe.cpp COL280`): `& COLOR= 9` writes (main `$2A`, aux `$55`), `12` writes (`$55`, `$2A`), `15` writes (`$7F`, `$7F`) — i.e. COL280 is the **560-dot stream in 2-dot cells** (aux byte then main byte, bit 0 first; code = dot + 2 × next dot), NOT one bit from each bank per dot. Codes 1/2/3 = orange/green/white (A), light blue/pink/yellow (B) — the manual's lists in code order. | — |
+| HR3 alone with AN3 off (the scan's BW560 row; Purplesoft never uses it) — modelled BW560 | the PLA, or an owner |
+| SPEC1 / SPEC2 / DASH exact rules — SPEC1/2 modelled from the manual's prose with a 5-dot window, DASH as HRAPPLE | the PLA (P3) |
 | PLA pin assignment | consistency search (P3); a board photo of the Eve would settle it in an hour |
 | Eve rev B palette (rev A is rev B rotated, see § 1) | a capture from an owner (system-cfg, WDA forums) |
 | RVB Graph HGR colour registers | its manual — not found online |

@@ -207,6 +207,11 @@ void SlotBus::broadcastVideoSwitch(uint16_t addr)
     for (auto& s : slots) if (s) s->onVideoSoftSwitch(addr);
 }
 
+void SlotBus::broadcastVideoSwitchWrite(uint16_t addr, uint8_t value)
+{
+    for (auto& s : slots) if (s) s->onVideoSoftSwitchWrite(addr, value);
+}
+
 void SlotBus::reset()
 {
     for (auto& s : slots) if (s) s->onReset();

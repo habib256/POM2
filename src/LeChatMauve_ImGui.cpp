@@ -52,14 +52,36 @@ const char* modeShort(LeChatMauveCard::RenderMode m)
 // pass-through; kept as a function for documentation).
 ImU32 toImU32(uint32_t abgr) { return abgr; }
 
+const char* dhgrLabel(LeChatMauveCard::DhgrMode m)
+{
+    using D = LeChatMauveCard::DhgrMode;
+    switch (m) {
+        case D::BW560:     return "BW560";
+        case D::COL140:    return "COL140";
+        case D::Mixed:     return "Mixed 140C/560M";
+        case D::Chunky160: return "160 chunky";
+        case D::COL280A:   return "COL280A";
+        case D::COL280B:   return "COL280B";
+        case D::CP280:     return "CP280 (fg/bg)";
+        case D::Blank:     return "blank";
+    }
+    return "?";
+}
+
+// The Eve's eight switches, in address order ($C0B0 + 2i = off, +1 = on).
+const char* kEveSwitchNames[8] = {
+    "ENHRCPREG", "HR1", "HR2", "HR3", "TXT16", "TXTGREEN", "LOCKCPREG", "LOCKRES",
+};
+
 // 6-colour HGR Chat Mauve palette duplicated locally so the panel can
 // draw swatches without pulling in Apple2Display.h. Keep these in sync
-// with kChatMauveHGR in Apple2Display.cpp.
+// with kChatMauveHGR in Apple2Display.cpp (Feline capture: magenta, green,
+// blue, orange).
 constexpr uint32_t kHGRBank0[4] = {
-    0xFF000000, 0xFFDD22DD, 0xFF22DD11, 0xFFFFFFFF,
+    0xFF000000, 0xFFD11AAA, 0xFF2CE66F, 0xFFFFFFFF,
 };
 constexpr uint32_t kHGRBank1[4] = {
-    0xFF000000, 0xFFFF2222, 0xFF1188FF, 0xFFFFFFFF,
+    0xFF000000, 0xFFB58A00, 0xFF4772FF, 0xFFFFFFFF,
 };
 const char* kHGRBank0Names[4] = { "blk", "vlt", "grn", "wht" };
 const char* kHGRBank1Names[4] = { "blk", "blu", "org", "wht" };
@@ -88,7 +110,7 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
         return r;
     }
 
-    // ─── Plug status ─────────────────────────────────────────────────────
+    // ─── Plug status + variant ───────────────────────────────────────────
     if (snap.plugged) {
         ImGui::TextColored(ImVec4(0.4f, 0.85f, 0.4f, 1.0f),
                            "Plugged in slot %d (Péritel RGB)", snap.slot);
@@ -96,12 +118,27 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
         ImGui::TextColored(ImVec4(0.85f, 0.4f, 0.4f, 1.0f),
                            "Not plugged");
     }
+    {
+        using V = LeChatMauveCard::Variant;
+        ImGui::SetNextItemWidth(260.0f);
+        if (ImGui::BeginCombo("Variant", LeChatMauveCard::variantLabel(snap.variant))) {
+            for (int i = 0; i < LeChatMauveCard::kVariantCount; ++i) {
+                const V v = static_cast<V>(i);
+                if (ImGui::Selectable(LeChatMauveCard::variantLabel(v), v == snap.variant)) {
+                    r.requestVariant = true;
+                    r.variantTo      = v;
+                }
+            }
+            ImGui::EndCombo();
+        }
+    }
     ImGui::Separator();
 
-    // ─── Active mode + FIFO state ────────────────────────────────────────
-    ImGui::Text("Active mode: %s", modeLabel(snap.mode));
+    // ─── Mode latch (F2 F1) + what the decoder makes of it ───────────────
+    ImGui::Text("Mode latch : %s", modeLabel(snap.mode));
     ImGui::Text("FIFO bits  : [%d][%d]",
                 (snap.fifoBits >> 1) & 1, snap.fifoBits & 1);
+    ImGui::Text("DHGR decode: %s", dhgrLabel(snap.dhgrMode));
 
     // Soft-switch line indicators (data + clock). Useful when debugging
     // an Arlequin-style setup sequence — you can step the CPU and watch
@@ -214,37 +251,37 @@ LeChatMauve_ImGui::FrameResult LeChatMauve_ImGui::render(
         }
     }
 
-    ImGui::Separator();
-    ImGui::TextDisabled("Eve extensions:");
-
-    // Eve $C0B8/$C0B9 — Color TEXT master enable. When off, 40-col text
-    // under AN3 falls back to the standard monochrome IIe text renderer.
-    {
-        bool en = snap.colorTextEnable;
-        if (ImGui::Checkbox("Color TEXT enable ($C0B8/9)", &en)) {
-            r.requestColorTextEnable = true;
-            r.colorTextEnableTo      = en;
+    // ─── Eve registers ($C0B0-$C0BF) ────────────────────────────────────
+    if (snap.variant == LeChatMauveCard::Variant::Eve) {
+        ImGui::Separator();
+        ImGui::TextDisabled("Eve switches ($C0B0-$C0BF, click = STA $C0Bx):");
+        for (int i = 0; i < 8; ++i) {
+            const bool on = (snap.eveSwitches >> i) & 1u;
+            bool v = on;
+            char label[48];
+            std::snprintf(label, sizeof(label), "%-9s $C0B%X/%X", kEveSwitchNames[i],
+                          2 * i, 2 * i + 1);
+            if (ImGui::Checkbox(label, &v)) {
+                r.requestEveSwitch = true;
+                r.eveSwitch        = static_cast<LeChatMauveCard::EveSwitch>(i);
+                r.eveSwitchTo      = v;
+            }
         }
-    }
-
-    // Eve $C0BA/$C0BB — HGR Duochrome. When on, standard HGR pulls fg/bg
-    // colour pairs from aux RAM at the matching screen offset (high
-    // nibble = fg, low = bg, both lo-res palette indices).
-    {
-        bool en = snap.hgrDuochrome;
-        if (ImGui::Checkbox("HGR Duochrome ($C0BA/B)", &en)) {
-            r.requestHgrDuochrome = true;
-            r.hgrDuochromeTo      = en;
-        }
+        ImGui::Text("CPREG = $%02X  (dot %d, background %d)", snap.cpreg,
+                    snap.cpreg & 0x0F, (snap.cpreg >> 4) & 0x0F);
+        ImGui::TextDisabled("auto-write to aux: text %s, HGR %s",
+                            snap.auxShadowText ? "ON" : "off",
+                            snap.auxShadowHgr  ? "ON" : "off");
     }
 
     ImGui::Separator();
     ImGui::TextDisabled("Notes:");
-    ImGui::TextDisabled(" - Standard HGR: 6 colors, no fringing");
+    ImGui::TextDisabled(" - HGR: LCM rule (2-bit cell, 3-bit window), no fringing");
     ImGui::TextDisabled(" - Lo-res: 16 colors with 2 distinct grays");
-    ImGui::TextDisabled(" - DHGR (IIe + aux RAM): COL140 / BW560 / Mixed / Chunky160");
-    ImGui::TextDisabled(" - 40-col TEXT + AN3 -> per-cell fg/bg colors (Video-7)");
-    ImGui::TextDisabled(" - Eve HGR Duochrome + Color TEXT ($C0B8-$C0BB)");
+    ImGui::TextDisabled(" - DHGR: latch -> COL140 / BW560 / Mixed (160 = Video-7 only)");
+    ImGui::TextDisabled(" - Feline / //c: AN3 off = HGR mono; no color text");
+    ImGui::TextDisabled(" - Eve: table IX-1 (HR1-3), TXT16 hi=bg, CPREG -> aux");
+    ImGui::TextDisabled(" - Video-7: F/B text + F/B HGR (hi=fg), 160 chunky");
     ImGui::TextDisabled(" - Mode actif via menu Display -> Le Chat Mauve");
 
     ImGui::End();

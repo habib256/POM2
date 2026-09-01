@@ -121,7 +121,8 @@ struct Machine {
         // section 9 would silently test nothing. Slot 7 mirrors the //c PAL
         // profile's built-in; slot 3 must stay EMPTY or Memory's collision
         // guard (chatMauveBlockedBySlot3) suppresses the whole decode.
-        auto card = std::make_unique<LeChatMauveCard>(7);
+        // An EVE: the only variant with registers at $C0B0-$C0BF.
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
         chat = card.get();
         mem.slotBus().plug(7, std::move(card));
         disp.setChatMauveCard(chat);
@@ -285,11 +286,12 @@ void runScript(VideoStandard vs, const char* standard)
     }
     sw(0xC05F);
 
-    // 9. The Le Chat Mauve "Eve" extension registers, $C0B8-$C0BB. These are
-    //    GUEST writes that change what a full-screen TEXT frame looks like —
-    //    $C0B9 turns colour TEXT on, which switches the renderer to
+    // 9. The Le Chat Mauve Eve's switches, $C0B0-$C0BF. These are GUEST
+    //    writes that change what a full-screen TEXT frame looks like —
+    //    $C0B9 (TXT16) turns colour TEXT on, which switches the renderer to
     //    renderTextChatMauveFgBg AND the output buffer to the 560-wide
-    //    frame80 — yet they do NOT touch Memory::DisplayState and, unlike
+    //    frame80; $C0BB (TXTGREEN) tints the text — yet they do NOT touch
+    //    Memory::DisplayState and, unlike
     //    $C05E/$C05F, they push NO video event (they reach the card through
     //    broadcastVideoSwitch, not the display soft-switch decode). So the
     //    frame after such a write has an EMPTY event log and an unchanged
@@ -298,13 +300,12 @@ void runScript(VideoStandard vs, const char* standard)
     //    This is the //c PAL profile's built-in slot-7 card — the French
     //    Touch / DIX target hardware — so it is not a hypothetical corner.
     for (Machine* mm : both) mm->disp.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
-    sw(0xC05E);                                        // DHGR on (arms colour text)
     for (int i = 0; i < 2; ++i) frame("chat mauve armed");
-    sw(0xC0B8); for (int i = 0; i < 3; ++i) frame("eve colour-text OFF");
-    sw(0xC0B9); for (int i = 0; i < 3; ++i) frame("eve colour-text ON");
-    sw(0xC0BB); for (int i = 0; i < 3; ++i) frame("eve duochrome ON");
-    sw(0xC0BA); for (int i = 0; i < 3; ++i) frame("eve duochrome OFF");
-    sw(0xC05F);
+    sw(0xC0B8); for (int i = 0; i < 3; ++i) frame("eve TXT16 OFF");
+    sw(0xC0B9); for (int i = 0; i < 3; ++i) frame("eve TXT16 ON");
+    sw(0xC0B8); for (int i = 0; i < 3; ++i) frame("eve TXT16 OFF again");
+    sw(0xC0BB); for (int i = 0; i < 3; ++i) frame("eve TXTGREEN ON");
+    sw(0xC0BA); for (int i = 0; i < 3; ++i) frame("eve TXTGREEN OFF");
     for (Machine* mm : both) mm->disp.setHiResMode(Apple2Display::HiResMode::ColorNTSC);
 
     std::printf("[%s] %d frames compared\n", standard, f);

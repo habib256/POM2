@@ -2072,20 +2072,9 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
     }
     // Eve-class Le Chat Mauve registers live in slot-3 device-select
     // space ($C0B8-$C0BB — $C0B8/9 Color TEXT, $C0BA/B HGR Duochrome).
-    // The Eve sits in the AUX slot, not a numbered expansion slot, so
-    // these addresses don't collide unless the user also assigns a
-    // slot-3 card. Forward the access to plugged Chat Mauve cards via
-    // the video-switch broadcast so they update their internal flags.
-    // $C0B8-$C0BB is ALSO slot 3's device-select window. A real Eve sits
-    // on the //c's rear DB-15 (no slot 3 exists there); on a //e the user
-    // can plug both, and an SSC in slot 3 drives its ACIA data/status/
-    // command/CONTROL registers at exactly these four addresses — a
-    // serial driver's `STA $C0BB` (baud setup) would flip the Eve's HGR
-    // Duochrome bit and turn the picture to garbage. A slot-3
-    // Mockingboard hits the same range ($C0BB = VIA #1 ACR). So only
-    // decode the Eve window when slot 3 is EMPTY; the card's real home
-    // (//c-class, noPhysicalSlots) always satisfies that.
-    if (addr >= 0xC0B8 && addr <= 0xC0BB && !chatMauveBlockedBySlot3())
+    // Le Chat Mauve Eve switches, $C0B0-$C0BF — slot 3's window, forwarded
+    // to the card only while slot 3 is free (Memory.h, chatMauveBlockedBySlot3).
+    if (addr >= 0xC0B0 && addr <= 0xC0BF && !chatMauveBlockedBySlot3())
         slots.broadcastVideoSwitch(addr);
     if (addr <= 0xC0FF) return slots.deviceSelectRead(addr);
 
@@ -2312,8 +2301,14 @@ void Memory::memWriteSlow(uint16_t addr, uint8_t value)
                 << " cyc=" << std::dec << cycleCounter;
             pom2::log().warn("IIE", oss.str());
         }
-        if (iieMode) iieMemWrite(addr, value);
-        else         mem[addr] = value;
+        if (iieMode) {
+            iieMemWrite(addr, value);
+            // Eve CPREG auto-write (Memory.h § Aux shadow): CPREG lands in AUX
+            // at the address of a write that went to MAIN.
+            if (auxShadowCovers(addr) && !iieWriteToAux(addr)) aux[addr] = auxShadowByte_;
+        } else {
+            mem[addr] = value;
+        }
         return;
     }
     if (addr >= 0xD000) {
@@ -2355,8 +2350,8 @@ void Memory::memWriteSlow(uint16_t addr, uint8_t value)
         // Le Chat Mauve Eve registers — mirror of the memRead path so the
         // toggle reacts to STA $C0B9 and friends, not just LDA. Same
         // slot-3 collision guard as the read path.
-        if (addr >= 0xC0B8 && addr <= 0xC0BB && !chatMauveBlockedBySlot3())
-            slots.broadcastVideoSwitch(addr);
+        if (addr >= 0xC0B0 && addr <= 0xC0BF && !chatMauveBlockedBySlot3())
+            slots.broadcastVideoSwitchWrite(addr, value);
         slots.deviceSelectWrite(addr, value);
         return;
     }

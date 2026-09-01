@@ -14,43 +14,69 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// LeChatMauveCard — Apple II/II+ RGB video adapter (Péritel/SCART output)
-// emulating the French "Le Chat Mauve" family (RVB Graph, Eve, Féline) and
-// its US-licensed cousin (Video-7 AppleColor RGB / Apple Color Card).
+// LeChatMauveCard — the French "Le Chat Mauve" RGB video adapters (Péritel /
+// SCART output) and their US-licensed cousin, the Video-7 AppleColor RGB.
 //
-// On real hardware these cards sniff the digital video signal and synthesize
-// a clean RGB output — no NTSC artifact decoding, no inter-byte fringing,
-// two distinct grays for the $5 and $A bit patterns (NTSC averages them
-// into a single neutral). They occupy an expansion slot but expose **no**
-// memory-mapped I/O and **no** slot ROM — they are passive observers of
-// two soft switches:
+// The card is combinational logic on the motherboard's video stream plus a
+// little sequential state, and that state is ALL this class holds; the pixel
+// rules live in Apple2Display's Chat Mauve renderers, which ask the card
+// what to do through the three `*Mode()` queries below. What the hardware
+// really does, rule by rule and with its sources, is `docs/chatmauve_plan.md`;
+// this header only says what is modelled.
 //
-//   $C00C / $C00D   80COL — used here as the FIFO data line
-//   $C05E / $C05F   AN3   — used here as the FIFO clock (rising edge)
+// ── Variants ─────────────────────────────────────────────────────────────
 //
-// The card holds a 2-bit shift register. Each rising edge of AN3 (i.e. each
-// $C05E→$C05F transition) pushes the current 80COL bit into the FIFO,
-// selecting one of four render modes:
+//   Feline      Le Chat Mauve Féline (//e aux slot). Mode latch, COL140 /
+//               BW560 / mixed DHGR, LCM HGR colour, HGR mono when AN3 is
+//               off. No registers, no colour text. 160 → COL140 fallback.
+//   IIcAdapter  Apple's "Adaptateur IIc" on the //c DB-15 — a Féline without
+//               RAM. Same behaviour today; the adapter's inferred-80COL quirk
+//               (plan § P5) is where the two will part.
+//   Eve         Le Chat Mauve Eve (//e aux slot). Everything the Féline does
+//               EXCEPT mixed DHGR (→ COL140), plus sixteen write-only switches
+//               at $C0B0-$C0BF, the CPREG colour register the card writes
+//               into aux memory behind the CPU, table IX-1's graphics modes
+//               (COL280A/B, CP280, HRBW, SPEC1/2, DASH), TXT16 colour text
+//               with the aux nibbles the OTHER way round from Video-7's,
+//               TXTGREEN, LOCKRES.
+//   Video7      Video-7 AppleColor RGB / Apple Extended 80-col RGB card: the
+//               four patent modes including 160-wide chunky, F/B colour text
+//               (aux hi nibble = foreground) and F/B HGR when AN3 is off —
+//               MAME's `apple2video.cpp` rgb_monitor semantics.
 //
-//     00  BW560      Strict monochrome 560-dot DHR (no chroma).
-//     01  Mixed      Per-byte: MSB set → 4-bit color cell, MSB clear →
-//                    7-dot bit-mapped mono (Video-7 "mixed" mode).
-//     10  Chunky160  Video-7 160-wide chunky bytes: aux+(main<<8) → four
-//                    4-bit pixels of three dots each, centred in 560.
-//     11  COL140     Default at reset — RGB 16-color 140-cell decoding.
+// One catalog key ("chatmauve") covers the four: the variant is a card
+// setting (`chatmauve_variant`), because the card's home is decided by the
+// profile (//c-class → IIcAdapter, else Féline by default) and a dozen
+// call sites reason about "the RGB card" by that one key.
 //
-// The card is purely a renderer-mode selector: Apple2Display queries
-// `currentMode()` each frame to choose between the NTSC pipeline (no card)
-// and the ChatMauve RGB / Mono pipelines (card present). The full DHGR
-// render of all four modes — plus the Video-7 foreground-background colored
-// TEXT mode (40-col text + AN3, per-cell fg/bg nibbles in aux RAM) — is
-// implemented in Apple2Display::renderDhgr / renderTextChatMauveFgBg, ported
-// from MAME apple2video.cpp dhgr_update()/render_line_color_array() and
-// pinned by tests/video7_parity_smoke_test.cpp.
+// ── The mode latch (all variants) ────────────────────────────────────────
 //
-// Slot 7 by convention (Apple Color Card / Video-7 historical placement).
-// Slot 0 is the language-card slot; slots 1-5 are typically printer/serial;
-// slot 6 is taken by Disk II in this emulator.
+// US 4,631,692 FIG. 1: a two-bit shift register clocked by AN3, data = 80COL.
+// Each $C05E→$C05F edge pushes the current 80COL level (POM2 clocks 80COL
+// itself where AppleWin clocks /80COL — same hardware, inverse numbering):
+//
+//     $C00C,$C00C → 00 BW560      $C00D,$C00D → 11 COL140 (power-on)
+//     $C00C,$C00D → 01 Mixed      $C00D,$C00C → 10 Chunky160
+//
+// No precondition on TEXT/MIXED/HIRES (measured on the //c adapter). The
+// enum value IS the latch value; `dhgrMode()` says what the variant makes
+// of it.
+//
+// ── The Eve's registers ($C0B0-$C0BF, Eve only) ──────────────────────────
+//
+// Sixteen addresses = eight switches × {off (even), on (odd)}; any access
+// decodes the address, a WRITE additionally latches the data byte into
+// CPREG (low nibble = dot colour, high nibble = background). All off at
+// power-on; Ctrl-Reset clears them unless LOCKRES is on. Memory forwards the
+// window through SlotBus::broadcastVideoSwitch{,Write} only while slot 3 is
+// free (an SSC there drives its ACIA at the same addresses).
+//
+// CPREG's auto-write — a CPU write to MAIN text page ($0400-$07FF, TXT16 on)
+// or HGR page ($2000-$3FFF, ENHRCPREG on) deposits CPREG in AUX at the same
+// address, LOCKCPREG off — is a Memory write hook (`Memory::setAuxShadow`)
+// the card programs whenever its switches or CPREG move. That is how
+// Purplesoft's `PRINT` in colour and HPLOT in CP280 get their colours
+// without the program ever touching aux.
 
 #ifndef POM2_LE_CHAT_MAUVE_CARD_H
 #define POM2_LE_CHAT_MAUVE_CARD_H
@@ -60,9 +86,20 @@
 #include <cstdint>
 #include <string_view>
 
+class Memory;
+
 class LeChatMauveCard : public SlotPeripheral
 {
 public:
+    enum class Variant : uint8_t {
+        Feline     = 0,
+        IIcAdapter = 1,
+        Eve        = 2,
+        Video7     = 3,
+    };
+    static constexpr int kVariantCount = 4;
+
+    /// The raw two-bit mode latch (value == F2 F1 as POM2 clocks 80COL).
     enum class RenderMode : uint8_t {
         BW560     = 0b00,
         Mixed     = 0b01,
@@ -70,92 +107,149 @@ public:
         COL140    = 0b11,
     };
 
+    /// What the decoder does in DHGR (AN3 off + 80COL on), after the
+    /// variant's fallbacks and, on the Eve, table IX-1.
+    enum class DhgrMode : uint8_t {
+        BW560,      // 560 dots, black and white
+        COL140,     // 140 cells of 4 dots, 16 colours
+        Mixed,      // per-byte 560/140 mux over a free-running 4-dot cell latch
+        Chunky160,  // Video-7 160 × 4-bit, three dots each
+        COL280A,    // Eve: the 560 stream in 2-dot cells, black/orange/green/white
+        COL280B,    // Eve: the 560 stream in 2-dot cells, black/lt-blue/pink/yellow
+        CP280,      // Eve: 280 dots fg/bg per 7-dot byte, colours in aux (hi = bg) — with
+                    // 80COL on; Purplesoft runs it with 80COL OFF (HgrMode::Cp280)
+        Blank,      // Eve: HR1+HR2 — screen black, CPREG keeps working
+    };
+
+    /// What the decoder does in single HGR (AN3 on, or AN3 off with 80COL
+    /// off).
+    enum class HgrMode : uint8_t {
+        LcmColor,   // 2-bit cell colour, 3-bit window (010/101 coloured)
+        Mono,       // 280 dots black and white
+        FgBg,       // Video-7 F/B: colours from aux at the same address (hi = fg)
+        Spec1,      // Eve HRSPEC1: LCM minus "colour dot on white" (101 → own bit)
+        Spec2,      // Eve HRSPEC2: SPEC1 minus "colour dot on black" (010 → own bit)
+        Dash,       // Eve HRDASH: colour runs drawn dotted (P3 — rendered as LcmColor)
+        Cp280,      // Eve CP280: AN3 off, 80COL OFF, HR1+HR2+HR3 — fg/bg from aux (hi = bg)
+    };
+
+    /// What the decoder does with TEXT.
+    enum class TextMode : uint8_t {
+        Plain,      // the motherboard's black and white
+        Color,      // 40-col colour text, per-cell colours in aux (see auxHiNibbleIsForeground)
+        Green,      // Eve TXTGREEN: white → green, 40 and 80 col
+    };
+
+    /// Eve switches, bit i of `eveSwitches()`; address = $C0B0 + 2·i (+1 = on).
+    enum EveSwitch : uint8_t {
+        ENHRCPREG = 0,  // CPREG also mirrors HGR writes (must be off while AN3 on)
+        HR1       = 1,
+        HR2       = 2,
+        HR3       = 3,
+        TXT16     = 4,  // 40-col colour text, hi nibble = background
+        TXTGREEN  = 5,  // green monochrome text
+        LOCKCPREG = 6,  // CPREG frozen — no auto-write
+        LOCKRES   = 7,  // switches survive Ctrl-Reset
+    };
+
     static constexpr int kDefaultSlot = 7;
 
-    /// The card has no slot ROM and no device-select space (it sniffs
-    /// $C00C/$C00D and $C05E/$C05F via the video soft-switch broadcast),
-    /// so the slot number is purely informational — held for the UI /
-    /// diagnostics panel.
-    explicit LeChatMauveCard(int slot = kDefaultSlot) : slot_(slot) {}
+    /// The card has no slot ROM and no device-select space of its own (it
+    /// sniffs the video soft switches through the broadcast, and the Eve's
+    /// window is slot 3's), so the slot number is informational — held for
+    /// the UI / diagnostics panel.
+    explicit LeChatMauveCard(int slot = kDefaultSlot, Variant v = Variant::Feline)
+        : slot_(slot), variant_(v) {}
 
     int getSlot() const { return slot_; }
 
+    /// Constant across variants: Memory::chatMauveBlockedBySlot3 and the
+    /// slot-configuration coordinator identify the card by this name.
     std::string_view name() const override { return "Le Chat Mauve"; }
 
-    // Apple II RESET — re-arm the FIFO to the Féline default (COL140).
-    // The card ships in this state from the factory; the boot ROM
-    // doesn't reconfigure it, so games that don't talk to AN3+80COL
-    // get the RGB rendering "for free".
+    // ── Variant ──────────────────────────────────────────────────────────
+    Variant variant() const { return variant_; }
+    void    setVariant(Variant v);
+    static const char* variantKey  (Variant v);   // settings token: feline | iic | eve | video7
+    static const char* variantLabel(Variant v);   // UI label
+    static bool        parseVariant(std::string_view key, Variant& out);
+
+    /// The Eve writes aux memory behind the CPU; that hook lives in Memory.
+    /// Optional — a card without a Memory simply has no auto-write.
+    void setMemory(Memory* mem);
+
+    // ── Bus ──────────────────────────────────────────────────────────────
+    /// Apple II RESET: re-arms the latch to COL140; on the Eve clears the
+    /// sixteen switches unless LOCKRES is on. CPREG is not a switch and
+    /// keeps its value.
     void onReset() override;
+    /// Leaving the bus disarms the aux shadow it may have programmed into
+    /// Memory (a slot rebuild must not leave two RAM pages diverted).
+    void onUnplug() override;
 
-    // System soft-switch broadcast from Memory::softSwitchAccess().
-    // The only addresses we react to are $C00C/$C00D (data) and
-    // $C05E/$C05F (clock); anything else is ignored.
+    /// System soft-switch broadcast from Memory::softSwitchAccess() and the
+    /// $C0B0-$C0BF forward. Reads and writes both land here; a write also
+    /// arrives through onVideoSoftSwitchWrite with its data byte.
     void onVideoSoftSwitch(uint16_t addr) override;
+    void onVideoSoftSwitchWrite(uint16_t addr, uint8_t value) override;
 
-    // Rewind/snapshot: the guest-visible mode register (FIFO + latches).
-    // Without these, rewinding to before a BW560/Mixed switch kept
-    // rendering in the later mode until the guest re-clocked the FIFO,
-    // and a stale an3Prev could swallow/admit one spurious shift right
-    // after restore. v2 additionally carries the two Eve extension
-    // toggles: they are ALSO settable from the UI, but the $C0B8-$C0BB
-    // decode mutates them from the guest bus, so they are genuinely
-    // guest-volatile and a rewind past a `STA $C0BB` used to leave the
-    // display stuck in HGR Duochrome. invertBit7_ stays out — that one
-    // really is a user-only setting with no bus decode.
+    // Rewind/snapshot: the guest-visible state. v3 = v2 + the Eve's switch
+    // byte and CPREG (guest-written through $C0Bx, so guest-volatile).
+    // The variant and invertBit7 are user settings and stay out.
     void appendSnapshotState(std::vector<uint8_t>& out) const override;
     void loadSnapshotState(const uint8_t* data, std::size_t len) override;
 
-    // Read-only accessors used by Apple2Display and the UI panel.
-    RenderMode currentMode() const { return mode; }
-    uint8_t    fifoBits()    const { return fifo; }
-    bool       eightyCol()   const { return eightyColLatched; }
-    bool       an3High()     const { return an3Prev; }
+    // ── What the renderers ask ───────────────────────────────────────────
+    RenderMode currentMode() const { return mode; }          // raw latch
+    DhgrMode   dhgrMode() const;
+    HgrMode    hgrMode(bool an3On) const;                    // 80COL off, or AN3 on
+    TextMode   textMode(bool eightyCol, bool an3On) const;
+    /// Colour-text / CP280 / F/B nibble order: Video-7 puts the foreground in
+    /// the high nibble, the Eve the background (manual IV-2.2, III-2).
+    bool auxHiNibbleIsForeground() const { return variant_ == Variant::Video7; }
+    /// Everything that changes pixels without a video event, folded into one
+    /// integer for Apple2Display's frame key.
+    uint32_t renderStateKey() const;
 
-    // UI override: force a render mode independent of the FIFO. Useful for
-    // testing the four modes without a 6502 program driving them. Resets
-    // back to the FIFO-driven mode on the next AN3 rising edge.
+    // Read-only accessors used by the UI panel.
+    uint8_t fifoBits()    const { return fifo; }
+    bool    eightyCol()   const { return eightyColLatched; }
+    bool    an3High()     const { return an3Prev; }
+    uint8_t eveSwitches() const { return eveSwitches_; }
+    bool    eveSwitch(EveSwitch s) const { return (eveSwitches_ >> s) & 1u; }
+    uint8_t cpreg()       const { return cpreg_; }
+
+    /// UI override: force a latch value independent of the bus. Resets back
+    /// to the bus-driven value on the next AN3 rising edge.
     void overrideMode(RenderMode m) { mode = m; fifo = static_cast<uint8_t>(m); }
+    /// UI / tests: poke an Eve switch as a `STA $C0Bx` would (Eve only).
+    void setEveSwitch(EveSwitch s, bool on);
+    void setCpreg(uint8_t v);
 
-    // Dragon Wars compatibility: a handful of titles (the eponymous one
-    // being the canonical case) encode their DHGR Mixed-mode data with
-    // bit 7 inverted relative to the Video-7 / Le Chat Mauve spec — colour
-    // cells where the brevet expects mono, and vice-versa. Setting this
-    // toggle to true XORs the bit-7 (mode flag in DHGR Mixed, bank flag
-    // in standard HGR) at decode time, restoring the intended rendering.
-    // Matches AppleWin's `-rgb-card-invert-bit7` CLI switch. Off = strict
-    // brevet semantics (default).
+    // Dragon Wars compatibility: a handful of titles encode their DHGR
+    // mixed-mode bit 7 the other way round from the patent (colour where the
+    // hardware expects mono, and vice-versa). XORs bit 7 at decode time in
+    // the mixed mode; matches AppleWin's `-rgb-card-invert-bit7`. Off =
+    // strict patent semantics (default). Not applied to the HGR bank bit.
     void setInvertBit7(bool v) { invertBit7_ = v; }
     bool invertBit7() const    { return invertBit7_; }
 
-    // Eve Color TEXT master enable — soft-switched on real hardware at
-    // $C0B9 (set) / $C0B8 (clear). Default = enabled so software that
-    // doesn't poke the Eve register still gets the Video-7 fg/bg text
-    // path that has been live for a while (preserves backward
-    // compatibility with the rest of POM2's IIe TEXT+AN3 pipeline).
-    void setColorTextEnabled(bool v) { colorTextEnabled_ = v; }
-    bool colorTextEnabled() const    { return colorTextEnabled_; }
-
-    // Eve HGR Duochrome — soft-switched at $C0BB (set) / $C0BA (clear).
-    // When on, standard HGR ($2000-$3FFF in MAIN) renders with per-byte
-    // foreground/background colour pairs sourced from AUX at the matching
-    // address (high nibble = fg lo-res index, low nibble = bg). Off
-    // (default) keeps the 6-colour HGR bank/pair decode the Féline and
-    // Video-7 ship with.
-    void setHgrDuochromeEnabled(bool v) { hgrDuochromeEnabled_ = v; }
-    bool hgrDuochromeEnabled() const    { return hgrDuochromeEnabled_; }
-
 private:
-    int         slot_;
-    bool        an3Prev          = true;           // AN3 powers up HIGH (DHIRES off)
-    bool        eightyColLatched = false;          // last seen 80COL level
-    uint8_t     fifo             = 0b11;           // 2 bits, MSB shifted out
-    RenderMode  mode             = RenderMode::COL140;
-    bool        invertBit7_      = false;          // Dragon Wars compatibility
-    bool        colorTextEnabled_   = true;        // Eve $C0B8/$C0B9
-    bool        hgrDuochromeEnabled_= false;       // Eve $C0BA/$C0BB
+    int        slot_;
+    Variant    variant_;
+    Memory*    mem_             = nullptr;
+    bool       an3Prev          = true;     // AN3 powers up HIGH (DHIRES off)
+    bool       eightyColLatched = false;    // last seen 80COL level
+    uint8_t    fifo             = 0b11;     // 2 bits, MSB shifted out
+    RenderMode mode             = RenderMode::COL140;
+    bool       invertBit7_      = false;
+    uint8_t    eveSwitches_     = 0;        // all off at power-on
+    uint8_t    cpreg_           = 0;
 
+    bool isEve() const { return variant_ == Variant::Eve; }
     void clockFifo(bool dataBit);
+    void eveDecode(uint16_t addr);
+    void syncAuxShadow();
 };
 
 #endif // POM2_LE_CHAT_MAUVE_CARD_H

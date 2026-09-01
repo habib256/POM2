@@ -1473,10 +1473,20 @@ void DiskIICard::handleSwitchAccess(uint8_t low4)
         }
         switch (low4) {
             case 0x8:
-                if (motorOn && sound_)
-                    sound_->motor(false, images[activeDrive].isLoaded());
-                motorOn = false;
-                motorOffDelay = 0;
+                // The controller's 556 one-shot keeps the spindle driven for
+                // ~1 s after a motor-off — the same MODE_DELAY the bit-LSS
+                // path ports from MAME (`control()` case 0x8). The legacy
+                // gate used to stop the drive INSTANTLY, and that is what
+                // made every headless RWTS call pay the full one-second
+                // motor-on wait: RWTS decides "the disk is spinning" by
+                // reading $C08C repeatedly BEFORE it re-asserts $C0E9, and a
+                // frozen $FF latch fails the check on every sector (DOS 3.3
+                // took ~115 s of machine time to boot to the prompt).
+                // `motorOn` stays true through the window — the nibble gate
+                // keeps turning — and the countdown in advanceCycles() stops
+                // the drive (and fires the spin-down sound) when it expires.
+                if (motorOn && motorOffDelay <= 0)
+                    motorOffDelay = 1'022'727;   // 1 sec @ 1.0227 MHz
                 break;
             case 0x9:
                 if (!motorOn) {

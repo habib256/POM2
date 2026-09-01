@@ -132,7 +132,7 @@ whenever a ROM dump exists but the chip behind it does not need to.
 | **Mouse card — MAME** (`MouseCard`) | **L0** | **M68705P3 MCU executing its real 2 KB mask ROM** at 2× CPU clock + MC6821 PIA + quadrature edge generation | Only the PAL16R4 chip-select sequencer is skipped (firmware-invisible) |
 | **Mouse card — AppleWin** (`MouseCardAppleWin`) | **H1** | Same slot EPROM, but the MCU is a C++ command-byte state machine (`$00 SET` … `$90 TIME`); position copied from the host delta | Ships *because* the MCU mask ROM is not always available |
 | **Joystick / paddles** | **L1** | Real `$C070` RC discharge timing sampled at `$C064-$C067` bit 7 | — |
-| **Le Chat Mauve** (`LeChatMauveCard`) | **L1** | AN3 pulse FIFO decode (real register state machine) + AppleWin `RGBMonitor.cpp` pixel rules; Eve Color text (`$C0B8/9`) and HGR Duochrome (`$C0BA/B`) decoded (`LeChatMauveCard.cpp:48-58`, rendered by `Apple2Display::renderTextChatMauveFgBg`, snapshot v2) | — |
+| **Le Chat Mauve** (`LeChatMauveCard`, variants Féline / Adaptateur //c / Eve / Video-7) | **L1** | One catalog key, four variants (`docs/chatmauve_plan.md`, P0–P2 landed). Patent 2-bit mode latch (AN3 clocks 80COL). **Féline / //c**: LCM HGR (2-bit cell + 3-bit window) and mixed DHGR (per-byte 560/140 mux, colour cell *cut* / last BW dot *repeated*) == AppleWin `RGBMonitor.cpp`, pinned `chatmauve_dot_rules`. **Eve**: sixteen `$C0B0-$C0BF` switches, CPREG auto-write into aux (`Memory::setAuxShadow`), table IX-1 from Purplesoft's own `& GR` tables, TXT16 (hi = background), TXTGREEN. **Video-7**: the four patent DHGR modes including 160 chunky. The cards are combinational on the 14 MHz stream; POM2 still samples their state **per frame** | Not the PLA and not a dot tap. Eve colour decoder is measured/manual rules, not the public PLS100 (P3 — DASH stubs as HRAPPLE, COL280 `main = LSB` assumed). Mid-line `$C05E/F` / `$C0Bx` land at the frame (P6). //c adapter infers 80COL from VID7M/LDPS; POM2 reads the switch (P5). RVB Graph not modelled (P4) |
 
 ## The interesting cases
 
@@ -176,6 +176,32 @@ and therefore really does need a transport.
 **Lesson**: "this looks like HLE" is sometimes just "this chip's own
 abstraction level is high". Judge the boundary against the datasheet, not
 against intuition.
+
+### Le Chat Mauve: L1 from the patent and the measurements, not from the PLA
+
+The cards are combinational logic on the motherboard's 14 MHz video stream
+plus a two-bit latch and, on the Eve, a PLS100. True L0 would evaluate that
+PLA per dot on a tap of `VID7M` / `LDPS` / `AN3` / `~80COL`. POM2 is not
+there yet (`docs/chatmauve_plan.md` P3 / P6). What landed in P0–P2 is the
+**L1 cut that the software actually talks to**:
+
+- The latch is the patent's shift register, as a register state machine.
+- The Féline / //c pixel rules are AppleWin's, themselves validated on a
+  real //c adapter — mixed DHGR cut/repeat, LCM HGR 2-bit cell + 3-bit
+  window — pinned against ports of those functions, not against a sentence.
+- The Eve's sixteen switches and CPREG are the manual's chapter IX, with
+  table IX-1 read out of Purplesoft's own `& GR` tables (the scan's "HR3
+  alone" for BW560 was a misread; the code says HR2+HR3). CPREG's
+  auto-write is a `Memory` hook, not a video rule: the card spies on MAIN
+  writes and deposits colour in AUX behind the 6502's back. That is LLE of
+  a side-effect, and it is how `PRINT` in colour actually works.
+
+The remaining seams (DASH as HRAPPLE, COL280 bit order assumed, per-frame
+card state, inferred 80COL on the //c adapter) are listed below. They are
+the difference between "Extasie and Purplesoft work" and "the Eve *is* its
+PLA". AppleWin is the only other emulator that models the Féline this
+closely; its Eve is still a placeholder (`$C0Bx` never decoded). The
+boundary POM2 chose is the one the maker's software crosses.
 
 ### Storage is where the split is sharpest
 
@@ -292,16 +318,21 @@ Every one of these is documented in-repo. They are the price list.
 | FujiNet relay: **rewind does not rewind** | The peer's clock never moves backwards. Blocks it wrote stay written, HTTP requests stay made; the card only resynchronises its sequence number on snapshot load |
 | FujiNet relay: not on //c-class | Forced INTCXROM masks slot ROM; the real //c wires FujiNet to the disk port instead, which needs the on-board `$C500` path |
 | `bootFromSlot` | Labelled a "synthetic shortcut" in `EmulationController.h:154`: cold boot + forced `PC = $Cn00` after validating the JSR trio. No real firmware scan happens |
+| Chat Mauve per-frame card state | The card is combinational on the 14 MHz stream; POM2 samples latch / `$C0Bx` **once per frame**. A mid-line `$C05E/F` or `$C0Bx` (DIX) lands at the frame, not the dot — plan P6 |
+| Chat Mauve Eve decoder vs its PLA | DASH paints as HRAPPLE; SPEC1/2 come from the manual's prose; COL280 `main = LSB` is assumed. The PLS100 fuse map is public and not evaluated (P3) |
+| Chat Mauve //c adapter 80COL | The adapter infers 80COL from VID7M/LDPS; POM2 reads the switch. Prince of Persia's title dropping to mono after the first attract loop is a real-box quirk that does not reproduce (P5) |
+| Chat Mauve RVB Graph | `$C0F0-$C0F3` / HGR colour registers not modelled. Gated on the card's manual (P4) |
 
-And the mirror-image failure, worth keeping in view: the **//c+ IWM 3.5" boot**
-is the one place where LLE is *present but incomplete*. The IWM itself is
-verbatim MAME, yet the firmware's Sony boot path never reaches a bootable disk
-because the full bit-shift state machine plus the UniDisk drive-side 65C02 are
-missing. The HLE path (host-served SmartPort at slot 5) is what actually boots
-3.5" and HDV on every //c-class profile — though "complete" had to be earned:
-it took the 2026-08-30 case study's three fixes before ProDOS itself would
-finish booting on the //c. **Half an LLE hangs; an HLE only works once it is
-actually complete — including the bus etiquette.**
+And the mirror-image failure, worth keeping in view: **half an LLE hangs**.
+The //c+ IWM 3.5" path used to be the exhibit — IWM L0 present, Sony boot
+never reached a disk because the shifter ran on the CPU clock, too coarse
+for a 2.02-cycle cell. That one closed on 2026-09-01 (`iicplus_boot35`:
+IWM on its own 7.16 MHz ticks). What is still half-an-LLE is the UniDisk
+drive-side 65C02, deliberately out of scope; `SmartPortBusDevice` answers
+its **protocol** instead (H2), and both the Liron ROM and the 32 KB //c's
+`$C500` boot through it. The 2026-08-30 case study still applies to every
+HLE that lives on a real bus: **an HLE only works once it is actually
+complete — including the bus etiquette.**
 
 ## The decision rule POM2 actually follows
 
@@ -343,6 +374,7 @@ Ordered by how much the gate has changed since the original decision.
 | **Display per-scanline incremental** | L1 beam-raced | L0 | Would fix the documented unidirectional mid-frame page-split limit (renders full-page today) |
 | **Composite analog IIR** | L1 (1-bit + FIR) | L1+ | Marked academic in TODO, *5–10 d* |
 | **SSI263 formant synth** | H1 audio | L1 | No reference implementation exists anywhere; would be original DSP work |
+| **Le Chat Mauve Eve decoder + video tap** | L1 (registers + measured pixel rules) | L0 combinational on a 14 MHz tap | Plan P3 (evaluate the public PLS100 per dot — DASH, COL280 bit order, SPEC1/2 cease to be prose) + P6 (mid-line switches land at the dot). P5 inferred-80COL on the //c adapter is optional. P4 RVB Graph is gated on its manual |
 
 ### Keeping a level once you have it
 
@@ -365,14 +397,15 @@ asserts the real-ROM path is taken, and exactly the paths that define the L
 levels can degrade unnoticed. `clock_card_smoke` is explicit about this ("the
 ctor loads the dump *when the user has it*").
 
-Two cheap mitigations, neither implemented:
+Two cheap mitigations named when the hole was written down; the first has
+landed, the second has not:
 
-- Have the ROM Status panel report **degraded** rather than merely *missing* —
-  "running the synthetic ROM" is a different state from "card unavailable", and
-  only the first is invisible today.
-- Add an opt-in CI lane (or a local `ctest -L rom`) that asserts the real-ROM
+- The Abstraction Levels panel reports **degraded** rather than merely
+  *missing* — "running the synthetic ROM" is a different state from "card
+  unavailable". The ROM Status panel still only says present/missing.
+- An opt-in CI lane (or a local `ctest -L rom`) that asserts the real-ROM
   path is taken when the dumps *are* present, so a regression that quietly
-  routes to the fallback fails somewhere.
+  routes to the fallback fails somewhere — still open.
 
 The pattern to copy is `mouse_card_axis_parity_test`: it boots **both** real
 ROMs on a full `M6502` + `Memory` and drives ProDOS `InitMouse/SetMouse/
@@ -414,5 +447,7 @@ should not be judged on this axis. Listed so the taxonomy is exhaustive:
 
 *Cross-references: [`TODO.md`](../TODO.md#mame--pom2-parity-dashboard) for
 fidelity-per-subsystem, [`DEV.md`](../DEV.md) for the per-subsystem deep dives
-cited throughout, [`docs/test_corpus.md`](test_corpus.md) for the software that
-exercises the low-level paths (DIX first).*
+cited throughout, [`docs/chatmauve_plan.md`](chatmauve_plan.md) for the RGB
+cards' silicon vs the P0–P2 cut, [`docs/test_corpus.md`](test_corpus.md) for
+the software that exercises the low-level paths (DIX first; Purplesoft /
+Extasie for Chat Mauve).*

@@ -25,13 +25,18 @@
 //      delay, no 7-bit LUT). With FIFO=COL140, $01 at col 0 produces
 //      one violet pixel + 6 black; $7F produces 7 white. Both differ
 //      visibly from the NTSC pipeline tested in hgr_render_smoke.
-//   3. BW560 forces strict B/W: $01 at col 0 paints exactly one white
-//      pixel at x=0; no chroma anywhere on the row.
+//   3. The latch only governs DHGR: BW560 there is 560 plain dots, while
+//      single HGR keeps the LCM colour rule whatever the latch reads.
 //   4. Lo-res Chat Mauve palette. Indices 5 ($5) and 10 ($A) decode to
 //      DISTINCT grays under Chat Mauve, where NTSC's //gs-corrected
 //      palette merges them.
 //   5. Falling back to ColorNTSC when the card isn't plugged keeps the
 //      NTSC pipeline intact (regression guard).
+//   6-12. The Eve (docs/chatmauve_plan.md § 3.4): the sixteen switches and
+//      CPREG, the CPREG auto-write through Memory's aux shadow (and its
+//      coexistence with write watches), TXT16 with the Eve nibble order,
+//      TXTGREEN, table IX-1 (BW560 / CP280 / blank / COL280A), what AN3 off
+//      does to single HGR on each variant, and the v3 snapshot blob.
 
 #include "Apple2Display.h"
 #include "LeChatMauveCard.h"
@@ -40,6 +45,9 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <vector>
 
 namespace {
 
@@ -202,10 +210,18 @@ int main()
         for (int x = 0; x < 560; ++x) assert(*pixelAt(display, x, 3) == kWhite);
     }
 
-    // ─── 3. ChatMauveRGB BW560 forces strict B/W ─────────────────────────
+    // ─── 3. The latch is a DHGR thing: BW560 forces strict B/W THERE, and
+    //        single HGR stays the LCM colour rule whatever the latch says ──
+    //
+    // AppleWin `updateScreenSingleHires40RGB` calls UpdateHiResRGBCell for
+    // every RGB-card HGR frame without looking at g_rgbMode; only the DHGR
+    // painter consults RGB_Is560Mode(). POM2 used to make HGR mono when the
+    // latch read 00 — its own invention, gone.
     {
         Memory mem;
+        mem.setIIEMode(true);
         Apple2Display display;
+        display.setAuxMemory(mem.auxData());
         auto card = std::make_unique<LeChatMauveCard>();
         LeChatMauveCard* raw = card.get();
         mem.slotBus().plug(7, std::move(card));
@@ -217,17 +233,30 @@ int main()
         display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
         raw->overrideMode(LeChatMauveCard::RenderMode::BW560);
 
-        // BW560 mode: each HGR pixel → 2 identical output dots in
-        // frame80 (literally a 560-pixel monochrome stream — the card's
-        // namesake mode). $01 at col 0: bit 0 = white at dots 0..1,
-        // rest black, no chroma anywhere.
+        // Single HGR, latch at BW560: a lone dot is still the LCM magenta.
         clearHgrLine(mem, 0);
         writeHgrByte(mem, 0, 0, 0x01);
         display.render(mem);
         assert(display.width() == 560);
-        assert(*pixelAt(display, 0, 0) == kWhite);
-        assert(*pixelAt(display, 1, 0) == kWhite);
-        for (int x = 2; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+        assert(*pixelAt(display, 0, 0) == magenta && *pixelAt(display, 1, 0) == magenta);
+
+        // DHGR (80COL + AN3 off), latch at BW560: 560 dots of plain black and
+        // white — aux bit 0 is dot 0; a pattern that would be a colour cell
+        // under COL140 ($A = 1010) is two white dots and two black ones.
+        mem.memWrite(0xC00D, 0);
+        (void)mem.memRead(0xC05E);
+        mem.auxDataMutable()[0x2000] = 0x0A;
+        mem.memWrite(0x2000, 0x00);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kBlack && *pixelAt(display, 1, 0) == kWhite);
+        assert(*pixelAt(display, 2, 0) == kBlack && *pixelAt(display, 3, 0) == kWhite);
+        for (int x = 4; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
+        // ...and COL140 makes the same nibble one grey cell.
+        raw->overrideMode(LeChatMauveCard::RenderMode::COL140);
+        display.render(mem);
+        const uint32_t grey1 = 0xFF7E979Fu;   // Feline idx 5
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 0) == grey1);
     }
 
     // ─── 4. Lo-res Chat Mauve palette: distinct grays at 5 / A ───────────
@@ -277,156 +306,444 @@ int main()
         assert(std::abs(int(r8(gray2)) - int(b8(gray2))) >= 4);   // tinted (not pure)
     }
 
-    // ─── 5. Dragon Wars compat: invertBit7 flips HGR palette banks ───────
+    // ─── 5. Dragon Wars compat: invertBit7 flips the MIXED-mode selector ──
     //
-    // Pins the AppleWin-style `-rgb-card-invert-bit7` toggle: when set,
-    // every Chat Mauve HGR byte is decoded with bit 7 XOR'd. $01 at col 0
-    // (MSB=0) normally hits the violet/magenta bank — with the toggle on,
-    // it should hit the BLUE bank instead (MSB=1 path).
+    // AppleWin's `-rgb-card-invert-bit7` is `RGB_IsMixModeInvertBit7()`: it
+    // inverts the per-byte colour/mono selector of the mixed DHGR mode and
+    // nothing else — the HGR bank bit is left alone (UpdateHiResRGBCell never
+    // looks at the flag). POM2 used to XOR the HGR bank too; that is gone.
     {
         Memory mem;
-        Apple2Display display;
-        auto card = std::make_unique<LeChatMauveCard>();
-        LeChatMauveCard* raw = card.get();
-        mem.slotBus().plug(7, std::move(card));
-        display.setChatMauveCard(raw);
-
-        (void)mem.memRead(0xC050);
-        (void)mem.memRead(0xC057);
-        (void)mem.memRead(0xC054);
-        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
-
-        // Baseline — invertBit7 default OFF. $01 → bank 0 code 01 = magenta.
-        assert(!raw->invertBit7());
-        clearHgrLine(mem, 0);
-        writeHgrByte(mem, 0, 0, 0x01);
-        display.render(mem);
-        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
-        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 0) == magenta);
-        assert(*pixelAt(display, 2, 0) == kBlack);
-
-        // Flip the toggle. Same $01 byte now decodes as if MSB were 1,
-        // so bank 1 code 01 = Feline BLUE. Bits 0..6 unchanged.
-        raw->setInvertBit7(true);
-        assert(raw->invertBit7());
-        clearHgrLine(mem, 1);
-        writeHgrByte(mem, 1, 0, 0x01);
-        display.render(mem);
-        const uint32_t blue = pack(0x00, 0x8A, 0xB5);
-        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 1) == blue);
-
-        // Inverse: $81 (MSB=1) with toggle on → decodes as MSB=0 → magenta.
-        clearHgrLine(mem, 2);
-        writeHgrByte(mem, 2, 0, 0x81);
-        display.render(mem);
-        for (int x = 0; x < 2; ++x) assert(*pixelAt(display, x, 2) == magenta);
-
-        raw->setInvertBit7(false);
-    }
-
-    // ─── 6. Eve $C0B8/$C0B9 — Color TEXT master enable ───────────────────
-    //
-    // Default = enabled (preserves the Video-7 / IIe-class Color TEXT
-    // path that has been live for a while). Soft-strobing $C0B8 turns
-    // it off; $C0B9 turns it back on. The flag is gated entirely on the
-    // card side — Memory broadcasts the access via the slot bus.
-    {
-        Memory mem;
-        auto card = std::make_unique<LeChatMauveCard>();
-        LeChatMauveCard* raw = card.get();
-        mem.slotBus().plug(7, std::move(card));
-
-        // Default: Color TEXT enabled.
-        assert(raw->colorTextEnabled());
-        (void)mem.memRead(0xC0B8);
-        assert(!raw->colorTextEnabled());
-        (void)mem.memRead(0xC0B9);
-        assert(raw->colorTextEnabled());
-        // STA $C0B8 must also flip (the report says "écriture").
-        mem.memWrite(0xC0B8, 0);
-        assert(!raw->colorTextEnabled());
-        mem.memWrite(0xC0B9, 0);
-        assert(raw->colorTextEnabled());
-    }
-
-    // ─── 7. Eve $C0BA/$C0BB — HGR Duochrome ──────────────────────────────
-    //
-    // When $C0BB has armed the toggle AND aux RAM is available, standard
-    // HGR pulls fg/bg colour from aux at the matching offset. Image
-    // bitmap stays in MAIN $2000-$3FFF; the aux byte at the same address
-    // encodes high-nibble = fg, low-nibble = bg.
-    {
-        Memory mem;
-        mem.setIIEMode(true);                     // need aux RAM
+        mem.setIIEMode(true);
         Apple2Display display;
         display.setAuxMemory(mem.auxData());
         auto card = std::make_unique<LeChatMauveCard>();
         LeChatMauveCard* raw = card.get();
         mem.slotBus().plug(7, std::move(card));
         display.setChatMauveCard(raw);
-
-        // Toggle: default off → $C0BB → on.
-        assert(!raw->hgrDuochromeEnabled());
-        (void)mem.memRead(0xC0BB);
-        assert(raw->hgrDuochromeEnabled());
-
-        // Force HGR + ChatMauve.
-        (void)mem.memRead(0xC050);   // graphics
-        (void)mem.memRead(0xC057);   // hires
-        (void)mem.memRead(0xC054);   // page 1
         display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
-
-        // Row 0 col 0: image $7F (all 7 pixels lit), aux attr $93 →
-        // fg = idx 9 (Feline ORANGE), bg = idx 3 (Feline MAGENTA).
-        // All 14 output dots in the cell should be ORANGE.
+        (void)mem.memRead(0xC050); (void)mem.memRead(0xC057); (void)mem.memRead(0xC054);
+        mem.memWrite(0xC00D, 0); (void)mem.memRead(0xC05E);       // DHGR
+        raw->overrideMode(LeChatMauveCard::RenderMode::Mixed);
         clearHgrLine(mem, 0);
-        writeHgrByte(mem, 0, 0, 0x7F);
-        const uint16_t addr0 = static_cast<uint16_t>(0x2000
-            + 0x400 * (0 & 7) + 0x80 * ((0 >> 3) & 7) + 0x28 * (0 >> 6));
-        mem.auxDataMutable()[addr0 + 0] = 0x93;
-        display.render(mem);
-        assert(display.width() == 560);
-        const uint32_t orange = pack(0xFF, 0x72, 0x47);   // Feline idx 9
-        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == orange);
+        mem.auxDataMutable()[0x2000] = 0x0A;                      // bit 7 clear: BW under the patent
+        mem.memWrite(0x2000, 0x00);
+        const uint32_t grey1 = 0xFF7E979Fu;
 
-        // Row 1 col 0: image $00 (all dark), same attr → all 14 dots bg.
+        assert(!raw->invertBit7());
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kBlack && *pixelAt(display, 1, 0) == kWhite);  // mono dots
+        raw->setInvertBit7(true);
+        display.render(mem);
+        for (int x = 0; x < 4; ++x) assert(*pixelAt(display, x, 0) == grey1);            // a colour cell
+        raw->setInvertBit7(false);
+
+        // Single HGR: the flag changes nothing — $01 is bank 0 magenta either way.
+        (void)mem.memRead(0xC05F); mem.memWrite(0xC00C, 0);
         clearHgrLine(mem, 1);
-        const uint16_t addr1 = static_cast<uint16_t>(0x2000
-            + 0x400 * (1 & 7) + 0x80 * ((1 >> 3) & 7) + 0x28 * (1 >> 6));
-        mem.auxDataMutable()[addr1 + 0] = 0x93;
+        writeHgrByte(mem, 1, 0, 0x01);
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
         display.render(mem);
-        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);  // Feline idx 3
-        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 1) == magenta);
-
-        // Row 2 col 0: alternating image $55 (bits 0,2,4,6 lit) → mixed
-        // fg/bg, doubled to 2 dots each (14 dots total).
-        clearHgrLine(mem, 2);
-        writeHgrByte(mem, 2, 0, 0x55);
-        const uint16_t addr2 = static_cast<uint16_t>(0x2000
-            + 0x400 * (2 & 7) + 0x80 * ((2 >> 3) & 7) + 0x28 * (2 >> 6));
-        mem.auxDataMutable()[addr2 + 0] = 0x93;
+        assert(*pixelAt(display, 0, 1) == magenta);
+        raw->setInvertBit7(true);
         display.render(mem);
-        // Pattern: bits 0,2,4,6 → orange; bits 1,3,5 → magenta.
-        // Each HGR pixel = 2 dots in frame80.
-        for (int b = 0; b < 7; ++b) {
-            const uint32_t exp = ((0x55 >> b) & 1) ? orange : magenta;
-            assert(*pixelAt(display, 2 * b + 0, 2) == exp);
-            assert(*pixelAt(display, 2 * b + 1, 2) == exp);
-        }
-
-        // Disable Duochrome ($C0BA) — back to standard Chat Mauve HGR
-        // 6-colour decode. With $7F at col 0 + $00 elsewhere, pairs
-        // (0,1)/(2,3)/(4,5) decode as code=11 → white; the (6,7) pair
-        // straddles into the next ($00) byte and goes magenta. Either
-        // way the row is no longer orange (the Duochrome fg).
-        (void)mem.memRead(0xC0BA);
-        assert(!raw->hgrDuochromeEnabled());
-        display.render(mem);
-        for (int x = 0; x < 12; ++x) assert(*pixelAt(display, x, 0) == kWhite);
-        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) != orange);
+        assert(*pixelAt(display, 0, 1) == magenta);
+        raw->setInvertBit7(false);
     }
 
-    // ─── 8. ColorNTSC fallback when card not plugged ─────────────────────
+    // ─── 6. Eve registers $C0B0-$C0BF — sixteen switches + CPREG ─────────
+    //
+    // Eve manual IX (docs/chatmauve_plan.md § 3.4): eight switches × off/on
+    // at the slot-3 addresses, ALL OFF at power-on, any access decodes the
+    // address, every WRITE also latches the data byte into CPREG. Ctrl-Reset
+    // clears the switches unless LOCKRES. A Féline has no registers there.
+    {
+        using Sw = LeChatMauveCard::EveSwitch;
+        Memory mem;
+        mem.setIIEMode(true);
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+
+        assert(raw->eveSwitches() == 0 && raw->cpreg() == 0);   // power-on
+        (void)mem.memRead(0xC0B9);                              // TXT16 on (read strobe)
+        assert(raw->eveSwitch(Sw::TXT16));
+        assert(raw->cpreg() == 0);                              // a read carries no byte
+        mem.memWrite(0xC0B8, 0x5A);                             // TXT16 off, CPREG = $5A
+        assert(!raw->eveSwitch(Sw::TXT16));
+        assert(raw->cpreg() == 0x5A);
+        mem.memWrite(0xC0BB, 0x93);                             // TXTGREEN on, CPREG = $93
+        assert(raw->eveSwitch(Sw::TXTGREEN) && raw->cpreg() == 0x93);
+        mem.memWrite(0xC0B1, 0x00); mem.memWrite(0xC0B3, 0x00);
+        mem.memWrite(0xC0B5, 0x00); mem.memWrite(0xC0B7, 0x00);
+        mem.memWrite(0xC0BD, 0x00);
+        assert(raw->eveSwitch(Sw::ENHRCPREG) && raw->eveSwitch(Sw::HR1) &&
+               raw->eveSwitch(Sw::HR2) && raw->eveSwitch(Sw::HR3) &&
+               raw->eveSwitch(Sw::LOCKCPREG));
+        assert(raw->cpreg() == 0x00);
+
+        // Ctrl-Reset clears everything — LOCKRES off.
+        raw->onReset();
+        assert(raw->eveSwitches() == 0);
+        // With LOCKRES on the card survives the reset (LOCKRES included).
+        mem.memWrite(0xC0BF, 0x11);
+        mem.memWrite(0xC0B9, 0x11);
+        raw->onReset();
+        assert(raw->eveSwitch(Sw::LOCKRES) && raw->eveSwitch(Sw::TXT16));
+        assert(raw->cpreg() == 0x11);                           // a register, not a switch
+
+        // A Féline ignores the whole window.
+        Memory mem2;
+        auto feline = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Feline);
+        LeChatMauveCard* fraw = feline.get();
+        mem2.slotBus().plug(7, std::move(feline));
+        mem2.memWrite(0xC0B9, 0x5A); (void)mem2.memRead(0xC0BB);
+        assert(fraw->eveSwitches() == 0 && fraw->cpreg() == 0);
+
+        // Slot-3 collision guard still applies to the widened window: a
+        // foreign card in slot 3 (any non-Chat-Mauve peripheral) hides it.
+        struct Foreign : SlotPeripheral {
+            std::string_view name() const override { return "SSC"; }
+        };
+        Memory mem3;
+        mem3.setIIEMode(true);
+        auto eve3 = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
+        LeChatMauveCard* e3 = eve3.get();
+        mem3.slotBus().plug(7, std::move(eve3));
+        mem3.slotBus().plug(3, std::make_unique<Foreign>());
+        mem3.memWrite(0xC0B1, 0x77);
+        assert(e3->eveSwitches() == 0 && e3->cpreg() == 0);
+    }
+
+    // ─── 7. CPREG auto-write — Memory's aux shadow ───────────────────────
+    //
+    // The LLE-relevant mechanism: a CPU write that lands in MAIN text page
+    // (TXT16 on) or HGR page (ENHRCPREG on) makes the card write CPREG into
+    // AUX at the same address; LOCKCPREG freezes it. Zero cost on the hot
+    // path — the page is diverted through writable[] like a write watch —
+    // so the interplay with a real write watch is pinned too.
+    {
+        using Sw = LeChatMauveCard::EveSwitch;
+        Memory mem;
+        mem.setIIEMode(true);
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
+        LeChatMauveCard* raw = card.get();
+        raw->setMemory(&mem);
+        mem.slotBus().plug(7, std::move(card));
+        const uint8_t* aux = mem.auxData();
+
+        // Nothing armed: a text write is just a text write.
+        mem.memWrite(0x0400, 0xC1);
+        assert(mem.data()[0x0400] == 0xC1 && aux[0x0400] == 0x00);
+        assert(!mem.auxShadowText() && !mem.auxShadowHgr());
+
+        // The manual's recipe: POKE -16199,16*F+C → TXT16 on, CPREG = $F1
+        // (background 15, dot 1); then every character PRINTed gets it.
+        mem.memWrite(0xC0B9, 0xF1);
+        assert(mem.auxShadowText() && !mem.auxShadowHgr());
+        mem.memWrite(0x0401, 0xC2);
+        assert(mem.data()[0x0401] == 0xC2);
+        assert(aux[0x0401] == 0xF1);
+        mem.memWrite(0x07FF, 0xA0);  assert(aux[0x07FF] == 0xF1);
+        mem.memWrite(0x0800, 0xA0);  assert(aux[0x0800] == 0x00);   // page 2: outside
+        mem.memWrite(0x2000, 0x7F);  assert(aux[0x2000] == 0x00);   // HGR: ENHRCPREG off
+
+        // A new CPREG is what the next writes deposit.
+        mem.memWrite(0xC0B9, 0x3C);
+        mem.memWrite(0x0402, 0xC3);  assert(aux[0x0402] == 0x3C);
+
+        // ENHRCPREG extends it to the HGR page (CP280's HPLOT).
+        mem.memWrite(0xC0B1, 0x3C);
+        assert(mem.auxShadowHgr());
+        mem.memWrite(0x2000, 0x7F);  assert(mem.data()[0x2000] == 0x7F && aux[0x2000] == 0x3C);
+        mem.memWrite(0x3FFF, 0x01);  assert(aux[0x3FFF] == 0x3C);
+        mem.memWrite(0x4000, 0x01);  assert(aux[0x4000] == 0x00);   // page 2: outside
+
+        // LOCKCPREG freezes both (the CPU's own write still lands).
+        mem.memWrite(0xC0BD, 0x3C);
+        assert(!mem.auxShadowText() && !mem.auxShadowHgr());
+        mem.memWrite(0x0403, 0xC4);  assert(mem.data()[0x0403] == 0xC4 && aux[0x0403] == 0x00);
+        mem.memWrite(0xC0BC, 0x3C);                                // unlock
+        assert(mem.auxShadowText() && mem.auxShadowHgr());
+
+        // A write the MMU already routes to AUX (80STORE + PAGE2) IS the aux
+        // byte — the card does not overwrite it with CPREG.
+        mem.memWrite(0xC001, 0); (void)mem.memRead(0xC055);
+        mem.memWrite(0x0404, 0xC5);
+        assert(aux[0x0404] == 0xC5 && mem.data()[0x0404] != 0xC5);
+        mem.memWrite(0xC000, 0); (void)mem.memRead(0xC054);
+
+        // Write watch on a shadowed address: both mechanisms divert the same
+        // byte; disarming one must not lose the other or drop the write.
+        mem.setWriteWatch(0x0405, true);
+        mem.memWrite(0x0405, 0xC6);
+        assert(mem.data()[0x0405] == 0xC6 && aux[0x0405] == 0x3C);
+        mem.setWriteWatch(0x0405, false);
+        mem.memWrite(0x0405, 0xC7);
+        assert(mem.data()[0x0405] == 0xC7 && aux[0x0405] == 0x3C);  // shadow still on
+        mem.setWriteWatch(0x0406, true);
+        mem.memWrite(0xC0BD, 0x00);                                // LOCKCPREG: shadow off
+        mem.memWrite(0x0406, 0xC8);
+        assert(mem.data()[0x0406] == 0xC8);                        // the watch keeps it writable
+        mem.setWriteWatch(0x0406, false);
+        mem.memWrite(0x0406, 0xC9);
+        assert(mem.data()[0x0406] == 0xC9);                        // permission restored
+        mem.memWrite(0xC0BC, 0x00);
+
+        // Unplugging the card disarms what it programmed.
+        mem.slotBus().unplug(7);
+        assert(!mem.auxShadowText() && !mem.auxShadowHgr());
+        mem.memWrite(0x0407, 0xCA);
+        assert(mem.data()[0x0407] == 0xCA && aux[0x0407] == 0x00);
+    }
+
+    // ─── 8. Eve TXT16 — colour text, hi nibble = BACKGROUND ─────────────
+    //
+    // Manual IV-2.2 / III-2: `POKE -16199,16*F+C` — F (fond) in the high
+    // nibble, C (couleur du caractère) in the low one; the opposite of the
+    // Video-7 order the card used to render. Needs 80COL off; no AN3
+    // condition.
+    {
+        Memory mem;
+        mem.setIIEMode(true);
+        Apple2Display display;
+        display.setAuxMemory(mem.auxData());
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(raw);
+        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        (void)mem.memRead(0xC051);        // TEXT
+        mem.memWrite(0xC00C, 0);          // 80COL off
+
+        const uint16_t r0 = loresAddr(0);
+        mem.memWrite(r0, 0xA0);           // normal space: every dot = background
+        mem.auxDataMutable()[r0] = 0x93;  // F = 9 (orange), C = 3 (magenta)
+        const uint32_t orange  = pack(0xFF, 0x72, 0x47);
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+
+        // TXT16 off: plain text, the space is black.
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kBlack);
+
+        mem.memWrite(0xC0B9, 0x93);       // TXT16 on
+        display.render(mem);
+        assert(display.width() == 560);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == orange);   // background = hi nibble
+        mem.memWrite(r0, 0x20);           // inverse space: every dot = foreground
+        display.render(mem);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == magenta);
+
+        // 80COL on → TXT16 has no effect (80-col text is mono only).
+        mem.memWrite(0xC00D, 0);
+        display.render(mem);
+        for (int x = 0; x < 560; ++x) {
+            const uint32_t c = *pixelAt(display, x, 0);
+            assert(c == kBlack || c == kWhite);
+        }
+    }
+
+    // ─── 9. Eve TXTGREEN — white → green, 40 and 80 columns ─────────────
+    {
+        Memory mem;
+        mem.setIIEMode(true);
+        Apple2Display display;
+        display.setAuxMemory(mem.auxData());
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
+        LeChatMauveCard* raw = card.get();
+        mem.slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(raw);
+        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        (void)mem.memRead(0xC051);
+        mem.memWrite(0xC00C, 0);
+        mem.memWrite(loresAddr(0), 0x20);            // inverse space = a white block
+        mem.memWrite(loresAddr(1), 0xA0);            // normal space below it (RAM is $00 = inverse '@')
+        const uint32_t green = pack(0x33, 0xFF, 0x33);
+
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kWhite);
+        mem.memWrite(0xC0BB, 0x00);                  // TXTGREEN on
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == green);
+        assert(*pixelAt(display, 0, 8) == kBlack);   // row 1 is empty: untouched
+
+        mem.memWrite(0xC00D, 0);                     // 80 columns: still green
+        mem.auxDataMutable()[loresAddr(0)] = 0x20;   // aux = even column 0
+        display.render(mem);
+        assert(display.width() == 560);
+        assert(*pixelAt(display, 0, 0) == green);
+
+        // Mixed HGR + text: only the text band is tinted.
+        mem.memWrite(0xC00C, 0);
+        (void)mem.memRead(0xC050); (void)mem.memRead(0xC057); (void)mem.memRead(0xC053);
+        for (int col = 0; col < 40; ++col) writeHgrByte(mem, 0, col, 0x7F);   // white HGR row
+        mem.memWrite(loresAddr(20), 0x20);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 0) == kWhite);   // graphics stays white
+        assert(*pixelAt(display, 0, 160) == green);  // text band is green
+        mem.memWrite(0xC0BA, 0x00);
+        display.render(mem);
+        assert(*pixelAt(display, 0, 160) == kWhite);
+    }
+
+    // ─── 10. Eve table IX-1 — HR1/HR2/HR3 in DHGR (AN3 off, 80COL on) ────
+    {
+        using Sw = LeChatMauveCard::EveSwitch;
+        using DM = LeChatMauveCard::DhgrMode;
+        Memory mem;
+        mem.setIIEMode(true);
+        Apple2Display display;
+        display.setAuxMemory(mem.auxData());
+        auto card = std::make_unique<LeChatMauveCard>(7, LeChatMauveCard::Variant::Eve);
+        LeChatMauveCard* raw = card.get();
+        raw->setMemory(&mem);
+        mem.slotBus().plug(7, std::move(card));
+        display.setChatMauveCard(raw);
+        display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+        (void)mem.memRead(0xC050); (void)mem.memRead(0xC057); (void)mem.memRead(0xC054);
+        mem.memWrite(0xC00D, 0);          // 80COL on
+        (void)mem.memRead(0xC05E);        // AN3 off → DHGR
+        const uint16_t a0 = static_cast<uint16_t>(0x2000);   // row 0
+        clearHgrLine(mem, 0);
+        mem.memWrite(a0, 0x7F);           // main col 0: 7 dots lit
+        mem.auxDataMutable()[a0] = 0x93;  // aux col 0: bits 0,1,4,7 → as colours F=9 C=3
+        const uint32_t orange  = pack(0xFF, 0x72, 0x47);
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+
+        // HR all off: COL140 whatever the latch says (Purplesoft's `& GR 6`
+        // leaves the latch at 00 and expects COL140).
+        assert(raw->dhgrMode() == DM::COL140);
+        raw->overrideMode(LeChatMauveCard::RenderMode::BW560);
+        assert(raw->dhgrMode() == DM::COL140);
+        // HR2 + HR3 (Purplesoft's `& GR 10`): BW560 — aux bit 0 is dot 0
+        // (lit), aux bit 2 is dot 2 (dark). HR3 alone (the scan's reading of
+        // that row) is kept on BW560 too.
+        raw->setEveSwitch(Sw::HR2, true); raw->setEveSwitch(Sw::HR3, true);
+        assert(raw->dhgrMode() == DM::BW560);
+        display.render(mem);
+        assert(display.width() == 560);
+        assert(*pixelAt(display, 0, 0) == kWhite && *pixelAt(display, 2, 0) == kBlack);
+        raw->setEveSwitch(Sw::HR2, false);
+        assert(raw->dhgrMode() == DM::BW560);
+        // HR1 + HR2 + HR3 (`& GR 9`): CP280 — main bits = dots, aux = colours, hi = bg.
+        raw->setEveSwitch(Sw::HR1, true); raw->setEveSwitch(Sw::HR2, true);
+        assert(raw->dhgrMode() == DM::CP280);
+        display.render(mem);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == magenta);   // fg = lo nibble
+        mem.memWrite(a0, 0x00);
+        display.render(mem);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == orange);    // bg = hi nibble
+        // ...and with 80COL OFF, which is how Purplesoft's `& GR 9` runs it
+        // (the Eve is the aux memory: it has the attribute byte regardless).
+        mem.memWrite(0xC00C, 0);
+        assert(raw->hgrMode(/*an3On=*/false) == LeChatMauveCard::HgrMode::Cp280);
+        mem.memWrite(a0, 0x7F);
+        display.render(mem);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == magenta);
+        mem.memWrite(a0, 0x00);
+        display.render(mem);
+        for (int x = 0; x < 14; ++x) assert(*pixelAt(display, x, 0) == orange);
+        mem.memWrite(0xC00D, 0);
+        // HR1 + HR2: blank. CPREG keeps working underneath (ENHRCPREG on).
+        raw->setEveSwitch(Sw::HR3, false);
+        assert(raw->dhgrMode() == DM::Blank);
+        display.render(mem);
+        for (int x = 0; x < 560; ++x) assert(*pixelAt(display, x, 0) == kBlack);
+        mem.memWrite(0xC0B1, 0x5A);
+        mem.memWrite(a0 + 1, 0x01);
+        assert(mem.auxData()[a0 + 1] == 0x5A);
+        // HR1 alone: COL280A — the 560 stream in 2-dot cells, exactly the
+        // bytes Purplesoft's `& PLOT` writes: `& COLOR= 9` → (main $2A,
+        // aux $55) = code 1 = orange; `12` → ($55, $2A) = code 2 = green;
+        // `15` → ($7F, $7F) = code 3 = white; a byte pair of zeros = black.
+        raw->setEveSwitch(Sw::HR2, false);
+        assert(raw->dhgrMode() == DM::COL280A);
+        clearHgrLine(mem, 0);
+        mem.memWrite(a0, 0x2A);     mem.auxDataMutable()[a0]     = 0x55;
+        mem.memWrite(a0 + 1, 0x55); mem.auxDataMutable()[a0 + 1] = 0x2A;
+        mem.memWrite(a0 + 2, 0x7F); mem.auxDataMutable()[a0 + 2] = 0x7F;
+        // Column 3: both banks zero — the aux byte LAST, because ENHRCPREG is
+        // on and the main write just deposited CPREG there (§ 7).
+        mem.memWrite(a0 + 3, 0x00); mem.auxDataMutable()[a0 + 3] = 0x00;
+        display.render(mem);
+        const uint32_t green = pack(0x6F, 0xE6, 0x2C);
+        for (int x = 0;  x < 14; ++x) assert(*pixelAt(display, x, 0) == orange);
+        for (int x = 14; x < 28; ++x) assert(*pixelAt(display, x, 0) == green);
+        for (int x = 28; x < 42; ++x) assert(*pixelAt(display, x, 0) == kWhite);
+        assert(*pixelAt(display, 42, 0) == kBlack);
+        // COL280B: the same codes through the second palette (`& COLOR= 7`,
+        // `11`, `13` on Purplesoft's side): light blue, pink, yellow.
+        raw->setEveSwitch(Sw::HR1, false); raw->setEveSwitch(Sw::HR2, true);
+        assert(raw->dhgrMode() == DM::COL280B);
+        display.render(mem);
+        for (int x = 0;  x < 14; ++x) assert(*pixelAt(display, x, 0) == pack(0x9F, 0x9E, 0xFF));
+        for (int x = 14; x < 28; ++x) assert(*pixelAt(display, x, 0) == pack(0xFF, 0x7A, 0xCF));
+        for (int x = 28; x < 42; ++x) assert(*pixelAt(display, x, 0) == pack(0xFF, 0xF6, 0x7B));
+    }
+
+    // ─── 11. AN3 off in single HGR: Féline mono, Video-7 F/B, Eve keeps LCM ─
+    {
+        auto run = [](LeChatMauveCard::Variant v, uint32_t& dot0, uint32_t& dot14) {
+            Memory mem;
+            mem.setIIEMode(true);
+            Apple2Display display;
+            display.setAuxMemory(mem.auxData());
+            auto card = std::make_unique<LeChatMauveCard>(7, v);
+            LeChatMauveCard* raw = card.get();
+            mem.slotBus().plug(7, std::move(card));
+            display.setChatMauveCard(raw);
+            display.setHiResMode(Apple2Display::HiResMode::ChatMauveRGB);
+            (void)mem.memRead(0xC050); (void)mem.memRead(0xC057); (void)mem.memRead(0xC054);
+            mem.memWrite(0xC00C, 0);      // 80COL off
+            (void)mem.memRead(0xC05E);    // AN3 off — `POKE -16290,0`
+            clearHgrLine(mem, 0);
+            writeHgrByte(mem, 0, 0, 0x01);           // a lone dot → magenta under LCM
+            writeHgrByte(mem, 0, 1, 0x7F);           // a white byte
+            mem.auxDataMutable()[0x2000 + 1] = 0x93; // F/B colours for byte 1
+            display.render(mem);
+            assert(display.width() == 560);
+            dot0  = *pixelAt(display, 0, 0);
+            dot14 = *pixelAt(display, 14, 0);
+        };
+        const uint32_t magenta = pack(0xAA, 0x1A, 0xD1);
+        const uint32_t orange  = pack(0xFF, 0x72, 0x47);
+        uint32_t d0 = 0, d14 = 0;
+        run(LeChatMauveCard::Variant::Feline, d0, d14);
+        assert(d0 == kWhite && d14 == kWhite);        // monochrome
+        run(LeChatMauveCard::Variant::IIcAdapter, d0, d14);
+        assert(d0 == kWhite && d14 == kWhite);
+        run(LeChatMauveCard::Variant::Video7, d0, d14);
+        assert(d14 == orange);                         // F/B: fg = hi nibble 9
+        run(LeChatMauveCard::Variant::Eve, d0, d14);
+        assert(d0 == magenta && d14 == kWhite);        // LCM colour, unchanged
+    }
+
+    // ─── 12. Snapshot v3 round trip, and a v2 blob's toggles land on switches ─
+    {
+        using Sw = LeChatMauveCard::EveSwitch;
+        LeChatMauveCard eve(7, LeChatMauveCard::Variant::Eve);
+        eve.overrideMode(LeChatMauveCard::RenderMode::BW560);
+        eve.setEveSwitch(Sw::TXT16, true); eve.setEveSwitch(Sw::LOCKRES, true);
+        eve.setCpreg(0x5A);
+        std::vector<uint8_t> blob;
+        eve.appendSnapshotState(blob);
+        assert(blob.size() == 9 && blob[2] == 3);
+        LeChatMauveCard back(7, LeChatMauveCard::Variant::Eve);
+        back.loadSnapshotState(blob.data(), blob.size());
+        assert(back.currentMode() == LeChatMauveCard::RenderMode::BW560);
+        assert(back.eveSwitches() == eve.eveSwitches() && back.cpreg() == 0x5A);
+        // v2: 'C' 'M' 2 fifo mode an3 80col colourText duochrome.
+        const uint8_t v2[9] = { 'C', 'M', 2, 0b11, 0b11, 1, 0, 1, 1 };
+        LeChatMauveCard fromV2(7, LeChatMauveCard::Variant::Eve);
+        fromV2.loadSnapshotState(v2, sizeof v2);
+        assert(fromV2.eveSwitch(Sw::TXT16) && fromV2.eveSwitch(Sw::TXTGREEN));
+        // On a Féline the switch byte is meaningless and stays clear.
+        LeChatMauveCard fel(7, LeChatMauveCard::Variant::Feline);
+        fel.loadSnapshotState(blob.data(), blob.size());
+        assert(fel.eveSwitches() == 0);
+    }
+
+    // ─── 13. ColorNTSC fallback when card not plugged ─────────────────────
     {
         Memory mem;     // no card plugged
         Apple2Display display;
@@ -443,6 +760,8 @@ int main()
         for (int x = 0; x < 280; ++x) assert(*pixelAt(display, x, 0) == kWhite);
     }
 
-    std::printf("Le Chat Mauve smoke: OK (FIFO, COL140 + BW560 HGR, lo-res grays, bit7 invert, Eve $C0B8-B Color TEXT + HGR Duochrome, NTSC fallback)\n");
+    std::printf("Le Chat Mauve smoke: OK (FIFO, LCM HGR, BW560, lo-res grays, bit7 invert, "
+                "Eve $C0B0-$C0BF + CPREG auto-write + TXT16 + TXTGREEN + table IX-1, "
+                "AN3-off per variant, snapshot v3, NTSC fallback)\n");
     return 0;
 }

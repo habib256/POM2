@@ -38,6 +38,7 @@
 #ifndef POM2_APPLE2_DISPLAY_H
 #define POM2_APPLE2_DISPLAY_H
 
+#include "LeChatMauveCard.h"
 #include "Memory.h"
 
 #include <array>
@@ -45,8 +46,6 @@
 #include <functional>
 #include <mutex>
 #include <vector>
-
-class LeChatMauveCard;
 
 class Apple2Display
 {
@@ -477,25 +476,43 @@ private:
                            int clipY0 = 0, int clipY1 = kHeight);
     void renderHiRes (Memory& mem, const Memory::DisplayState& state,
                       int firstScanline, int lastScanline, int col0 = 0, int col1 = 40);
-    // HGR + Le Chat Mauve (RGB-card) at the card's native 560-dot
-    // resolution. Same decode algorithm as the Chat Mauve branch of
-    // `renderHiRes`, but writes into `frame80` so screen captures and
-    // future MSB half-dot-delay work see the full pixel density.
-    // Each 4-dot color pair → 4 identical output dots; each BW560 input
-    // dot → 2 identical output dots. (The on-screen output of GL
-    // upscaling is identical to the 280-wide path in the current model;
-    // the gain is in the framebuffer fidelity itself.)
+    // Single HGR under a Le Chat Mauve / Video-7 card, at the card's native
+    // 560-dot output (each HGR dot = 2 frame80 dots). `hm` is what the card
+    // makes of the switches (LeChatMauveCard::hgrMode): the LCM colour rule
+    // (2-bit cell colour, 3-bit window — docs/chatmauve_plan.md § 3.2, pixel
+    // for pixel AppleWin `UpdateHiResRGBCell`), plain monochrome, or the
+    // Eve's SPEC1/SPEC2 variants. FgBg is not handled here (see
+    // renderHgrDuochrome).
     void renderHiResChatMauve80(Memory& mem, const Memory::DisplayState& state,
-                                int firstScanline, int lastScanline);
-    // Le Chat Mauve Eve "HGR Duochrome". Single-HGR resolution image
-    // bitmap lives in MAIN $2000-$3FFF (one bit per pixel as usual);
-    // at the matching offset in AUX, each byte holds a per-7-pixel-block
-    // colour pair (high nibble = foreground lo-res palette index, low
-    // nibble = background). Each HGR pixel becomes 2 dots in frame80.
-    // Renders into `frame80` (560 wide); the gate at the top of render()
-    // requires `auxRam != nullptr` so this path can read the aux bytes.
+                                int firstScanline, int lastScanline,
+                                LeChatMauveCard::HgrMode hm);
+    // Foreground/background HGR: the bitmap in MAIN $2000-$3FFF, and at the
+    // same address in AUX one byte of colours per 7-dot block. Two cards
+    // have it with the nibbles the other way round — the Video-7's F/B mode
+    // (AN3 off, 80COL off; hi nibble = foreground) and the Eve's CP280
+    // (table IX-1; hi nibble = background) — hence `auxHiIsForeground`.
+    // Each HGR dot becomes 2 dots in frame80. Callers gate on `auxRam`.
     void renderHgrDuochrome(Memory& mem, const Memory::DisplayState& state,
-                            int firstScanline, int lastScanline);
+                            int firstScanline, int lastScanline,
+                            bool auxHiIsForeground);
+    // Eve COL280A/B (table IX-1): the 560-dot stream (aux then main per
+    // column, bit 0 first) in 2-dot cells, code = dot + 2 × next dot, through
+    // one of two fixed 4-colour palettes — read off Purplesoft's `& PLOT`
+    // (see the definition). Each cell = 2 dots in frame80.
+    void renderDhgrCol280(Memory& mem, const Memory::DisplayState& state,
+                          int firstScanline, int lastScanline, bool paletteB);
+    // Eve TXTGREEN: the text rows of a band, white → green (P31 tint) in
+    // whichever framebuffer the band was painted into. Text is black and
+    // white before this pass, so the remap is exact.
+    void tintTextGreen(const Memory::DisplayState& state, int scanY0, int scanY1);
+    // The RGB-card pipeline is selected AND a card is plugged. Without the
+    // card ChatMauveRGB silently renders as ColorNTSC (a real machine pulled
+    // out of its adapter still has composite on the wire).
+    bool chatMauveActive() const {
+        return hiResMode == HiResMode::ChatMauveRGB && chatMauve != nullptr;
+    }
+    void renderInternalBandImpl(Memory& mem, const Memory::DisplayState& state,
+                                int scanY0, int scanY1);
     // IIe-only. Renders text rows [firstRow, lastRow) into `frame80` at
     // 560×192. Reads aux RAM for even columns and main RAM for odd
     // columns (per AppleWin's scanner). `altCharSet` toggles flashing
@@ -512,18 +529,18 @@ private:
     // selected phosphor.
     void renderDhgr  (Memory& mem, const Memory::DisplayState& state,
                       int firstScanline, int lastScanline);
-    // Le Chat Mauve / Video-7 "foreground-background" colored TEXT mode.
-    // Active on a IIe-class machine with the RGB card in 40-col text while
-    // the DHGR (AN3) soft-switch is on. Char code comes from main RAM; the
-    // aux byte at the same text address holds the cell colours (high nibble
-    // = foreground, low nibble = background, both lo-res palette indices).
+    // Colour TEXT with an RGB card: 40 columns, char code from main RAM, the
+    // aux byte at the same text address holds the cell's two lo-res colours.
+    // Video-7 F/B text (AN3 on, 80COL off) has the foreground in the high
+    // nibble; the Eve's TXT16 ($C0B9, 80COL off) has the BACKGROUND there
+    // (manual IV-2.2: `POKE -16199,16*F+C`... F = fond) — `auxHiIsForeground`.
     // The 7-bit glyph row is doubled to 14 dots, each dot painted fg/bg.
     // Renders rows [firstRow, lastRow) into `frame80` at 560 wide. Port of
     // MAME `apple2video.cpp` text_update (:788-791) + render_line_color_array
     // (:571-583).
     void renderTextChatMauveFgBg(Memory& mem, const Memory::DisplayState& state,
                                  int firstRow, int lastRow,
-                                 int clipY0 = 0, int clipY1 = kHeight);
+                                 int clipY0, int clipY1, bool auxHiIsForeground);
     // Horizontally double `frame[firstRow*8 .. lastRow*8)` into `frame80`.
     // Used when mixed-mode HGR is on top and 80-col text is at the bottom.
     void upscaleFrameToFrame80(int firstScanline, int lastScanline);
