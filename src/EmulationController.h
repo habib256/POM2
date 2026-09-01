@@ -26,6 +26,7 @@
 #include "Debugger.h"
 #include "Disk35Image.h"
 #include "FloppySoundDevice.h"
+#include "IIcExternalSmartPort.h"
 #include "IWMDevice.h"
 #include "M6502.h"
 #include "Memory.h"
@@ -113,6 +114,7 @@ public:
     AudioDevice&       audio()       { return *audioDev; }
     pom2::IWMDevice&   iwm()         { return *iwmDev; }
     pom2::SmartPortHub& smartPortHub() { return *hub; }
+    pom2::IIcExternalSmartPort& externalSmartPort() { return *extSmartPort_; }
     /// Dallas DS1216E "SmartWatch" — lives at controller scope so its
     /// (battery-backed on real hardware) state machine survives profile
     /// switches and CPU resets.
@@ -314,6 +316,7 @@ private:
     std::unique_ptr<pom2::Sony35Drive>  drive35Int;
     std::unique_ptr<pom2::Sony35Drive>  drive35Ext;
     std::unique_ptr<pom2::SmartPortHub> hub;
+    std::unique_ptr<pom2::IIcExternalSmartPort> extSmartPort_;   // plain //c rear port
     std::unique_ptr<pom2::NoSlotClock>  noSlotClock_;
 
     pom2::RewindBuffer rewind_;

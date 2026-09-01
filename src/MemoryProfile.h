@@ -33,7 +33,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace pom2 { class IWMDevice; class SmartPortHub; }
+namespace pom2 { class IWMDevice; class SmartPortHub; class SmartPortBusPort; }
 
 class MemoryProfile {
 public:
@@ -74,6 +74,15 @@ public:
     virtual void setIwm(pom2::IWMDevice* iwm) = 0;
     virtual void setSmartPortHub(pom2::SmartPortHub* hub) = 0;
     virtual void setIwmAuthoritative(bool on) = 0;
+
+    /// The external disk port's SmartPort bus responder (plain 32 KB //c
+    /// only — the //c+ has its MIG path and the 16 KB //c no 3.5"
+    /// firmware at all). Optional: with none set, the //c keeps the
+    /// host-served $C500 substitute. See SmartPortBusPort.h.
+    virtual void setExternalSmartPort(pom2::SmartPortBusPort* /*port*/) {}
+    /// True while the machine's own firmware is serving slot 5 over that
+    /// port — Memory must then leave the real $C500 page alone.
+    virtual bool servesExternalSmartPort() { return false; }
 
     /// Serialize any profile-private device state that survives across
     /// frames. Only the //c-class profile has any (the //c+ MIG gate

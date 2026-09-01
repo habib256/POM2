@@ -261,6 +261,7 @@ int Memory::loadAppleIIRom(const char* filename, bool pickLower16KFor32K)
         iicProfile_ = std::make_unique<IIcClassProfile>(
             payload, payloadSize, altBankSrc,
             iwmDevice, smartPortHub, iwmAuthoritative);
+        iicProfile_->setExternalSmartPort(externalSmartPort_);
             // //c boots with INTCXROM forced on. applyProfile calls
         // resetSoftSwitches BEFORE loadAppleIIRom, so its MF_INTCXROM
         // hook (now gated on iicProfile_) doesn't catch the just-detected
@@ -2061,7 +2062,9 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
     if (addr >= 0xC0E0 && addr <= 0xC0EF && iicProfile_) {
         uint8_t v;
         if (iicProfile_->ioReadIWM(addr, cycleCounter, v)) {
-            (void)slots.deviceSelectRead(addr);    // side effects only
+            // Disk II side effects — not for the external port's own traffic.
+            if (!iicProfile_->servesExternalSmartPort())
+                (void)slots.deviceSelectRead(addr);
             return v;
         }
         // Shadow mode (or no IWM/media): IWM state advanced, but the
@@ -2139,12 +2142,8 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
             // select I/O ($C0(8+s)0-$C0(8+s)F) is never masked — it reaches
             // the slot bus above. Used today by:
             //
-            //   sl5 SmartPort: kept on real //c at $C500-$C5FF too. POM2
-            //     substitutes a host-served block stub (IWM/Sony 3.5" boot
-            //     path is unmodelled — see project_iic_smartport_boot).
-            //     Additionally gated by iicSmartPortArmed_ so an unarmed
-            //     //c cold boot never finds a bootable signature there
-            //     (would JMP $0801 into garbage on empty SmartPort).
+            //   sl5 SmartPort: host-served stub (16 KB //c, //c+ HDV); armed
+            //     by bootFromSlot only, off when the real firmware serves it.
             //   sl4 AppleWin HLE mouse: PR#4 needs the EPROM at $C400 to
             //     reach the slot card's PIA at $C0C0. The //c's internal
             //     mouse firmware talks to on-board IOU hardware POM2
@@ -2152,7 +2151,8 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
             //     dead mouse. No autostart probe at $C400, so unarmed.
             if (iicProfile_ && addr >= 0xC100 && addr <= 0xC7FF) {
                 const int slot = (addr >> 8) & 0x07;
-                const bool armOk = (slot != 5) || iicSmartPortArmed_;
+                const bool armOk = (slot != 5) ||
+                    (iicSmartPortArmed_ && !iicProfile_->servesExternalSmartPort());
                 if (armOk) {
                     if (SlotPeripheral* p = slots.peripheral(slot);
                         p && p->exposesIicOnboardRom()) {

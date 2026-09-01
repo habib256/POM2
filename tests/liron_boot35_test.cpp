@@ -14,14 +14,14 @@
 // You should have received a copy of the GNU General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// A //e runs the real Liron firmware over a real IWM — and does NOT boot,
-// for a reason worth writing down.
+// A //e runs the real Liron firmware over a real IWM, and boots a 3.5" disk
+// from it — over the SmartPort BUS, which is what the firmware speaks.
 //
 // `LironCard` plugs the actual 4 KB EPROM, an `IWMDevice`, and Sony 3.5"
-// mechanisms; nothing is served from the host (that is `SmartPortCard`'s
-// job, and it works). The plan in TODO § Storage was that with the //c+
-// booting, this card was small — "the risk was never the card". The card was
-// indeed small. The risk was the DRIVE.
+// mechanisms; nothing is served from the host through a substitute ROM
+// (that is `SmartPortCard`'s job, and it stays). The plan in TODO § Storage
+// was that with the //c+ booting, this card was small — "the risk was never
+// the card". The card was indeed small. The risk was the DRIVE.
 //
 // What the firmware's device scan actually does, read off the dump with
 // POM2's own disassembler at $C800:
@@ -44,24 +44,20 @@
 // device — a UniDisk 3.5, which carries its own 65C02 — answers it. There is
 // no fallback path in this dump's scan: the timeout decrements the device
 // count and the scan ends, so ProDOS is told $28 and the //e drops to the
-// monitor.
+// monitor. POM2 does not emulate that 65C02; `SmartPortBusDevice` answers
+// the protocol at the byte level instead, and this test is what says the
+// answer is right: the firmware's INIT scan, then its boot READ, then
+// ProDOS 8 on the text page.
 //
-// POM2's TODO has always kept "the UniDisk 3.5 drive-side 65C02 firmware"
-// out of scope. That line, not the GCR path, is what stands between this
-// card and a boot — and it took building the card to find out. Booting it
-// needs a SmartPort bus-level responder (an HLE UniDisk), which is a new
-// subsystem, not a fix.
-//
-// So this test pins what IS true today, all of it load-bearing:
+// Two things about the card itself are still load-bearing and pinned below:
 //   * the dump's per-slot page and ProDOS identity bytes reach the bus;
-//   * the firmware runs, and its probe reaches the drive — motor enabled,
-//     SEL asserted, phase lines delivered. That last one is not a formality:
-//     the first version of the card forwarded phases only to a *selected*
-//     drive, and the firmware sets the register address up before it enables
-//     one, so every sense read answered for register 0 and the probe never
-//     even strobed.
-// `POM2_LIRON_BOOT_STRICT=1` additionally requires a boot, for whoever adds
-// the responder.
+//   * the firmware's probe reaches the drive — motor enabled, SEL asserted.
+//     Not a formality: the first version of the card forwarded phases only
+//     to a *selected* drive, and the firmware sets the register address up
+//     before it enables one, so every sense read answered for register 0
+//     and the probe never even strobed.
+// The head never moves: an intelligent drive seeks inside itself and the
+// host sees blocks. `POM2_TRACE_SMARTPORT_BUS=1` prints every byte.
 
 #include "Disk35Image.h"
 #include "LironCard.h"
@@ -194,17 +190,15 @@ int main()
              "Sony35Drive::ssW, and on a Sony that line is also bit 3 of the "
              "register address, so every probe would answer for the wrong "
              "register");
-    if (strict) {
-        if (bootCycle < 0 && screen.find("ProDOS 8") == std::string::npos)
-            fail("ProDOS never reached the text page");
-        if (maxTrack == 0)
-            fail("the head never left track 0");
-    } else if (bootCycle >= 0) {
-        std::printf("NOTE: this booted, which the header says is impossible "
-                    "without a SmartPort bus responder. Something real "
-                    "changed — update the comment and drop the strict "
-                    "flag.\n");
-    }
+    // Since 2026-09-01 the card's SmartPort bus responder answers the
+    // firmware's packets, so the boot IS the assertion. The head never
+    // moves: an intelligent drive seeks inside itself, the host only sees
+    // blocks — `maxTrack` stays 0 by design and is reported, not asserted.
+    if (bootCycle < 0 && screen.find("ProDOS 8") == std::string::npos)
+        fail("ProDOS never reached the text page — the firmware found the "
+             "device (motor + SEL above) but the bus exchange did not carry "
+             "a boot; POM2_TRACE_SMARTPORT_BUS=1 shows where it stopped");
+    (void)strict;
 
     if (failures) {
         std::printf("--- text page ---\n%s---\n", screen.c_str());
@@ -215,15 +209,8 @@ int main()
                     liron->iwm().status());
         return 1;
     }
-    if (bootCycle >= 0)
-        std::printf("liron_boot35: OK — ProDOS 8 booted from a Liron card in "
-                    "slot %d at %ld cycles, head reached track %d\n",
-                    kSlot, bootCycle, maxTrack);
-    else
-        std::printf("liron_boot35: OK — the real firmware runs and its "
-                    "SmartPort probe reaches the drive (motor + SEL). It "
-                    "finds no INTELLIGENT device and reports $28, which is "
-                    "correct for a dumb Sony behind this dump — see the "
-                    "header.\n");
+    std::printf("liron_boot35: OK — ProDOS 8 booted from a Liron card in slot "
+                "%d at %ld cycles, over the SmartPort bus (%d blocks read)\n",
+                kSlot, bootCycle, liron->busProgress().blocksRead);
     return 0;
 }

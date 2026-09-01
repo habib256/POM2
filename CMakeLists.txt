@@ -199,6 +199,7 @@ set(SOURCES
     src/EchoPlusCard.cpp
     src/EchoPlusTMS5220Card.cpp
     src/EmulationController.cpp
+    src/IIcExternalSmartPort.cpp
     src/FloppySoundDevice.cpp
     src/HdvController_ImGui.cpp
     src/IWMDevice.cpp
@@ -211,7 +212,9 @@ set(SOURCES
     src/JoystickPanel_ImGui.cpp
     src/LeChatMauveCard.cpp
     src/LeChatMauve_ImGui.cpp
+    src/IIcExternalSmartPort.cpp
     src/LironCard.cpp
+    src/SmartPortBusDevice.cpp
     src/M68705P3.cpp
     src/MainWindow.cpp
     src/MainWindow_MemoryMaps.cpp
@@ -376,7 +379,9 @@ set(POM2_DEVICES_SOURCES
     src/FujiNetCard.cpp
     src/GrapplerCard.cpp
     src/LeChatMauveCard.cpp
+    src/IIcExternalSmartPort.cpp
     src/LironCard.cpp
+    src/SmartPortBusDevice.cpp
     src/M68705P3.cpp
     src/MC6821.cpp
     src/Mockingboard.cpp
@@ -431,6 +436,7 @@ set(POM2_FOUNDATION_HEADERS
     src/Pom2Build.h
     src/PrinterSoundSink.h
     src/SerialPort.h
+    src/SmartPortBusPort.h
     src/SettingsList.h
 )
 
@@ -689,7 +695,10 @@ set(HEADERS
     src/JoystickPanel_ImGui.h
     src/IconsFontAwesome6.h
     src/LeChatMauveCard.h
+    src/IIcExternalSmartPort.h
     src/LironCard.h
+    src/SmartPortBusDevice.h
+    src/SmartPortBusPort.h
     src/LeChatMauve_ImGui.h
     src/M68705P3.h
     src/MainWindow.h
@@ -1145,6 +1154,7 @@ set(POM2_CORE_SOURCES
     src/EchoPlusCard.cpp
     src/EchoPlusTMS5220Card.cpp
     src/EmulationController.cpp
+    src/IIcExternalSmartPort.cpp
     src/FloppySoundDevice.cpp
     src/IWMDevice.cpp
     src/SmartPortHub.cpp
@@ -1153,7 +1163,9 @@ set(POM2_CORE_SOURCES
     src/CharRomCatalog.cpp
     src/CharRomDump.cpp
     src/LeChatMauveCard.cpp
+    src/IIcExternalSmartPort.cpp
     src/LironCard.cpp
+    src/SmartPortBusDevice.cpp
     src/M68705P3.cpp
     src/AudioCoordinator.cpp
     src/DevicePanelCoordinator.cpp
@@ -1342,6 +1354,8 @@ add_executable(pom2_headless
     src/DiskImage.cpp
     src/DiskIICard.cpp
     src/EmulationController.cpp
+    src/IIcExternalSmartPort.cpp
+    src/SmartPortBusDevice.cpp
     src/Debugger.cpp
     src/FloppySoundDevice.cpp
     src/IWMDevice.cpp

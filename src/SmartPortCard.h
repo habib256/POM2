@@ -71,6 +71,7 @@
 
 #include "MountableMediaCard.h"
 #include "SlotPeripheral.h"
+#include "SmartPortBusDevice.h"
 #include "SmartPortUnit.h"
 
 #include <array>
@@ -109,6 +110,13 @@ public:
     /// Idempotent on an already-empty slot.
     std::unique_ptr<SmartPortUnit> setUnit(size_t idx,
                                            std::unique_ptr<SmartPortUnit> u);
+
+    /// The same units, as SmartPort **bus** devices for a //c's external
+    /// port (SlotPeripheral::smartPortBusUnit). On the 32 KB //c this card's
+    /// $C500 page is never punched in: the machine's own firmware speaks to
+    /// these over the IWM, enumerates them and boots from them.
+    int                    smartPortBusUnitCount() const override;
+    pom2::SmartPortBusUnit* smartPortBusUnit(int index) override;
 
     /// Borrowed access for the panel UI. Nullable.
     SmartPortUnit*       unit(size_t idx)
@@ -188,6 +196,24 @@ public:
 private:
     int  slot_;
     std::array<std::unique_ptr<SmartPortUnit>, kMaxUnits> units_{};
+
+    /// SmartPortBusUnit over a SmartPortUnit. Bound to a bay, not a unit
+    /// object, so a swap through setUnit() is seen on the next call.
+    class BusUnit final : public pom2::SmartPortBusUnit {
+    public:
+        void bind(SmartPortCard* card, size_t bay) { card_ = card; bay_ = bay; }
+        bool     hasMedia()       const override;
+        uint32_t blockCount()     const override;
+        bool     writeProtected() const override;
+        bool     readBlock (uint32_t block, uint8_t out[512]) override;
+        bool     writeBlock(uint32_t block, const uint8_t in[512]) override;
+    private:
+        SmartPortUnit* target() const
+        { return card_ ? card_->units_[bay_].get() : nullptr; }
+        SmartPortCard* card_ = nullptr;
+        size_t         bay_  = 0;
+    };
+    std::array<BusUnit, kMaxUnits> busUnits_{};
     std::array<uint8_t, 256> rom_{};
     /// True when a hand-assembled ROM region did not fit its budget. Always
     /// false in a correct build; pinned by `smartport_rom_layout`, which is

@@ -473,7 +473,7 @@ void IWMDevice::controlAccess(int offset, uint8_t data)
 
     // Mode register / data register write (MAME line 248-254).
     if ((control_ & 0xC0) == 0xC0 && (offset & 1)) {
-        if (active_) dataW(data);
+        if (active_) { if (!busCapture_) dataW(data); }
         else         modeW(data);
     }
 }

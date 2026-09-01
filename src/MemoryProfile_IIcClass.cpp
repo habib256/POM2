@@ -16,6 +16,8 @@
 
 #include "MemoryProfile_IIcClass.h"
 
+#include "SmartPortBusPort.h"
+
 #include "IWMDevice.h"
 #include "SmartPortHub.h"
 
@@ -64,8 +66,31 @@ bool IIcClassProfile::romBankToggle()
     return true;
 }
 
+void IIcClassProfile::onResetSoftSwitches()
+{
+    romBank_ = false;
+    // A reset mid-transaction leaves the external drive waiting for bytes
+    // that will never come; it starts over with the machine.
+    if (extPort_) extPort_->reset();
+}
+
+bool IIcClassProfile::servesExternalSmartPort()
+{
+    // The plain 32 KB //c, with a device on its port. Its bank-0 $C500 page
+    // is the real controller firmware (the Liron's, byte for byte) and its
+    // bank 1 the SmartPort bus code; with something answering on the bus,
+    // that firmware enumerates and boots the drive itself, and the
+    // host-served substitute must stay out of its way.
+    return hasAltBank_ && !isPlus_ && extPort_ && extPort_->live();
+}
+
 bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
 {
+    // Plain //c: the external SmartPort port answers its own traffic and
+    // nothing else (see IIcExternalSmartPort). The machine's shared IWM
+    // stays untouched here — `iic_diskii_no_iwm_conflict` pins why.
+    if (hasAltBank_ && !isPlus_ && extPort_)
+        return extPort_->read(static_cast<uint8_t>(addr & 0xF), cyc, out);
     // $C0E0-$C0EF on-board IWM (MAME wires A2BUS_IWM at sl6 for 32 KB
     // //c-class — see `apple2e.cpp:5249-5272` + `:6281-6291`). The
     // slot-6 DiskIICard still observes the access for motor sound /
@@ -111,6 +136,10 @@ bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
 
 void IIcClassProfile::ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc)
 {
+    if (hasAltBank_ && !isPlus_ && extPort_) {
+        extPort_->write(static_cast<uint8_t>(addr & 0xF), value, cyc);
+        return;
+    }
     // //c+ only — see the rationale in ioReadIWM above.
     if (!hasAltBank_ || !iwm_ || !isPlus_) return;
     iwm_->tick(cyc);
@@ -275,6 +304,7 @@ void IIcClassProfile::appendSnapshotState(std::vector<uint8_t>& out) const
 
 size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
 {
+    if (extPort_) extPort_->reset();   // not part of the blob; start clean
     if (data == nullptr || n < kMigBlobBytes) return 0;
     if (std::memcmp(data, kMigBlobMagic, 4) != 0) return 0;
     // migRead/migWrite index `migRam_[migPage_ + (offset & 0x1F)]`, so a
