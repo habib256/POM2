@@ -38,10 +38,12 @@ boots when entered directly and keeps that path.
 
 **3. The `liron` catalog entry was unreachable from Slot Config**: the
 rebuild dispatch had no branch for it, the live column no mapping. Both
-added (`plugLiron`, `liveCardKey`, multi-instance). What remains is media
-persistence: `StorageCoordinator` restores 3.5" units through
-`SmartPortCard` only, so a Liron's bays start empty on each launch and are
-mounted through the media panel — recorded in TODO.
+added (`plugLiron`, `liveCardKey`, multi-instance), and its media now
+persists: `StorageCoordinator` restored 3.5" units through `SmartPortCard`
+only, so a Liron's bays started empty on every launch. Cards with bays but
+no keyspace of their own go through generic `media_slotN_bayK_path /
+_writeback` keys — mount, write-back, eject-all and restore, pinned in
+`storage_coordinator`.
 
 **5. `LironCard` never armed bus capture on its IWM**: packet bytes reached
 the shifter, "write underrun" on every packet, and with write-back on a

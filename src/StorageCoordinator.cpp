@@ -110,6 +110,25 @@ void appendDiskIIDriveSettingUpdates(
     }
 }
 
+/// A MountableMediaCard with no keyspace of its own (today: `LironCard`).
+/// The SmartPort, CFFA and HDV cards keep theirs — those keys are on disk in
+/// every user's settings — and this generic one only covers what they do
+/// not, so a card never answers under two names.
+MountableMediaCard* genericMediaCard(SlotPeripheral* peripheral)
+{
+    if (!peripheral) return nullptr;
+    if (dynamic_cast<SmartPortCard*>(peripheral) ||
+        dynamic_cast<CffaCard*>(peripheral) ||
+        dynamic_cast<ProDOSHardDiskCard*>(peripheral))
+        return nullptr;
+    return dynamic_cast<MountableMediaCard*>(peripheral);
+}
+
+std::string genericBayKey(int slot, int bay)
+{
+    return "media_slot" + std::to_string(slot) + "_bay" + std::to_string(bay);
+}
+
 bool appendMediaBaySettingUpdates(
     std::vector<SettingUpdate>& updates, SlotPeripheral& peripheral,
     int slot, int bay, int autoHdvSlot, int autoSmartPortSlot)
@@ -148,6 +167,15 @@ bool appendMediaBaySettingUpdates(
         appendStringSetting(updates, "hdv_path", card->getImagePath());
         appendBoolSetting(
             updates, "hdv_writeback", card->isWriteBackEnabled());
+        return true;
+    }
+    if (auto* media = genericMediaCard(&peripheral)) {
+        if (bay < 0 || bay >= media->bayCount()) return false;
+        const MediaBayInfo info = media->bayInfo(bay);
+        const std::string base = genericBayKey(slot, bay);
+        appendStringSetting(updates, base + "_path",
+                            info.loaded ? info.path : std::string());
+        appendBoolSetting(updates, base + "_writeback", info.writeBackEnabled);
         return true;
     }
     return false;
@@ -1141,6 +1169,25 @@ StorageCoordinator::EjectAllResult StorageCoordinator::ejectAllMedia(
                 }
             }
         }
+        for (int slot = 1; slot < SlotBus::kSlotCount; ++slot) {
+            auto* peripheral = bus.peripheral(slot);
+            auto* media = genericMediaCard(peripheral);
+            if (!media) continue;
+            for (int bay = 0; bay < media->bayCount(); ++bay) {
+                if (!media->bayInfo(bay).loaded) continue;
+                if (media->ejectBay(bay)) {
+                    result.changed = true;
+                    (void)appendMediaBaySettingUpdates(
+                        updates, *peripheral, slot, bay,
+                        autoHdvSlot_, autoSmartPortSlot_);
+                } else {
+                    result.failures.push_back(
+                        "slot " + std::to_string(slot) + " bay " +
+                        std::to_string(bay + 1) + ": " +
+                        media->bayInfo(bay).lastError);
+                }
+            }
+        }
         onboardDisk35Loaded[0] = controller.disk35Internal().isLoaded();
         onboardDisk35Loaded[1] = controller.disk35External().isLoaded();
     }
@@ -1271,6 +1318,40 @@ StorageCoordinator::restoreMediaFromSettings(
                     ": persisted path not found: " + path);
             }
             card->setUnit(bay, std::move(unit));
+        }
+    }
+
+    // Cards with bays but no keyspace of their own (the Liron): the same
+    // cwd anchors as the SmartPort units, the same warnings.
+    for (int slot = 1; slot < SlotBus::kSlotCount; ++slot) {
+        auto* media = genericMediaCard(bus.peripheral(slot));
+        if (!media) continue;
+        for (int bay = 0; bay < media->bayCount(); ++bay) {
+            const std::string base = genericBayKey(slot, bay);
+            media->setBayWriteBack(bay, settings.getBool(base + "_writeback", false));
+            const std::string path = settings.getString(base + "_path", "");
+            if (path.empty()) continue;
+            std::string resolved;
+            std::error_code error;
+            for (const std::string& candidate : {
+                     path, std::string("../") + path,
+                     std::string("../../") + path}) {
+                if (std::filesystem::is_regular_file(candidate, error)) {
+                    resolved = candidate;
+                    break;
+                }
+                error.clear();
+            }
+            std::string err;
+            if (resolved.empty()) {
+                result.warnings.push_back(
+                    "slot " + std::to_string(slot) + " bay " +
+                    std::to_string(bay + 1) + ": persisted path not found: " + path);
+            } else if (!media->mountBay(bay, resolved, err)) {
+                result.warnings.push_back(
+                    "slot " + std::to_string(slot) + " bay " +
+                    std::to_string(bay + 1) + ": " + err);
+            }
         }
     }
     return result;

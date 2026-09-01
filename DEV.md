@@ -2964,6 +2964,13 @@ checksum fails gets no reply, while any change in which units hold media
 resets the protocol (`live()` compares a media mask) — a stale half-frame
 must never be spliced with the next transaction.
 
+**Media persistence for cards without a keyspace** (`LironCard` today):
+`StorageCoordinator::genericMediaCard` picks any `MountableMediaCard` that is
+not a SmartPort, CFFA or HDV card — those keep their own keys, which are on
+disk in every user's settings — and persists its bays under
+`media_slotN_bayK_path` / `_writeback`, restored with the same cwd anchors
+as the SmartPort units.
+
 **The 16 KB //c (ROM 255)** has no SmartPort firmware: its `$C500` is not a
 disk page (`FF 20 4D CE …`), so nothing on that machine can speak to an
 intelligent drive — historically the reason for the ROM 0 upgrade. Its rear
