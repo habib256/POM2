@@ -142,20 +142,19 @@ bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
     return false;
 }
 
-void IIcClassProfile::ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc)
+bool IIcClassProfile::ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc)
 {
-    if (hasAltBank_ && !isPlus_ && extPort_) {
-        extPort_->write(static_cast<uint8_t>(addr & 0xF), value, cyc);
-        return;
-    }
+    if (hasAltBank_ && !isPlus_ && extPort_)
+        return extPort_->write(static_cast<uint8_t>(addr & 0xF), value, cyc);
     // //c+ only — see the rationale in ioReadIWM above.
-    if (!hasAltBank_ || !iwm_ || !isPlus_) return;
+    if (!hasAltBank_ || !iwm_ || !isPlus_) return false;
     iwm_->tick(cyc);
     const bool forBus = extPort_ && extPort_->sharedWantsWrite(*iwm_);
     iwm_->setBusCapture(forBus);
     iwm_->write(static_cast<uint8_t>(addr & 0xF), value);
     if (extPort_) extPort_->sharedAfterWrite(*iwm_, static_cast<uint8_t>(addr & 0xF),
                                              value, forBus);
+    return forBus;
 }
 
 bool IIcClassProfile::internalRomRead(uint16_t addr, uint8_t floatBus, uint8_t& out)

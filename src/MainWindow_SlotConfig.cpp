@@ -76,6 +76,7 @@
 #include "SlotConfigurationCoordinator.h"
 #include "SlotRebuildCoordinator.h"
 #include "SmartPort35Unit.h"
+#include "LironCard.h"
 #include "SmartPortCard.h"
 #include "SmartPortHdvUnit.h"
 #include "SoftCardZ80.h"
@@ -568,6 +569,22 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         st.memory().slotBus().plug(s, std::move(made.card));
     };
 
+    auto plugLiron = [&](int s) {
+        // The same controller as silicon: real EPROM, real IWM, its drives
+        // answered as intelligent devices on the SmartPort bus. The factory
+        // gates it on roms/liron.rom and leaves the slot empty otherwise.
+        auto made = slotCardFactory_->create(
+            { "liron", s, cpuIsCmosForSlots, activeProfile });
+        if (!made) {
+            if (!made.warning.empty())
+                pom2::log().warn(made.warningCategory.c_str(), made.warning);
+            return;
+        }
+        auto* card = static_cast<pom2::LironCard*>(made.card.get());
+        card->setFloppySound(&controller->floppySound35());
+        st.memory().slotBus().plug(s, std::move(made.card));
+    };
+
     auto plugMouse = [&](int s) {
         // MAME-faithful 68705P3 + 6821 PIA. Both Apple ROMs are required —
         // without them the card has no firmware and refuses to plug, which is
@@ -632,6 +649,7 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         else if (kind == "uthernet")    plugUthernet(s);
         else if (kind == "uthernet2")   plugUthernetII(s);
         else if (kind == "smartport35") plugSmartPort35(s);
+        else if (kind == "liron")       plugLiron(s);
         else if (kind == "fujinet")     plugFujiNet(s);
         else {
             pom2::log().warn("Slots",

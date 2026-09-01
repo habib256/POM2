@@ -65,7 +65,7 @@ public:
 
     bool live() override;
     bool read(uint8_t offset, uint64_t cycles, uint8_t& out) override;
-    void write(uint8_t offset, uint8_t value, uint64_t cycles) override;
+    bool write(uint8_t offset, uint8_t value, uint64_t cycles) override;
     void reset() override;
 
     // ── The //c+ path: the machine's own IWM carries the bus ─────────────
@@ -106,6 +106,7 @@ private:
     bool answer(uint8_t control, uint8_t iwmValue, uint8_t& out);
     void takeByte(const IWMDevice& iwm, uint8_t offset, uint8_t value);
     uint8_t lastPhases_ = 0;
+    unsigned mediaMask_ = 0;   // which units held media at the last look
 };
 
 }  // namespace pom2

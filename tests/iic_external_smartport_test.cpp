@@ -63,6 +63,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -90,6 +91,9 @@ std::string scrapeTextPage(Memory& mem)
 }
 
 struct Outcome {
+    uint64_t diskIIFlushes = 0;      // bus traffic must never become 5.25" flux
+    bool     diskIIDirty   = false;
+    bool     plusBootRule  = false;  // Memory::iicPlusBootsSlot5ByReset()
     bool prodosSeen = false;
     bool slot5Drive1 = false, slot5Drive2 = false;
     bool slot6Drive1 = false;
@@ -116,11 +120,22 @@ Outcome run(const std::string& rom, const std::string& disk525,
     if (!mem.loadAppleIIRom(rom.c_str(), /*pickLowerHalf=*/true)) return o;
 
     auto d2 = std::make_unique<DiskIICard>(6);
+    DiskIICard* diskII = d2.get();
     const std::string bootRom = pom2::findResource("roms/disk2.rom");
     const std::string lssRom  = pom2::findResource("roms/diskii_p6.rom");
     if (!bootRom.empty()) d2->loadBootRom(bootRom);
     if (!lssRom.empty())  d2->loadLssRom(lssRom);
     d2->insertDisk(disk525);
+    // Drive 2 holds a writable scratch copy with write-back ON: on a real //c
+    // the bus traffic selects drive 2 (the rear connector) and enables the
+    // motor — bytes the Disk II must never see as flux.
+    const std::filesystem::path scratch =
+        std::filesystem::temp_directory_path() / "pom2_iic_ext_sp_d2.po";
+    std::error_code ec;
+    std::filesystem::copy_file(disk525, scratch,
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    if (!ec) d2->insertDisk(1, scratch.string());
+    d2->setWriteBackEnabled(true);
     d2->setIWM(&iwm);
     mem.slotBus().plug(6, std::move(d2));
 
@@ -166,6 +181,9 @@ Outcome run(const std::string& rom, const std::string& disk525,
         }
     }
     o.bus = port.device().progress();
+    o.diskIIFlushes = diskII->getWriteFlushCount();
+    o.diskIIDirty   = diskII->hasUnsavedChanges(0) || diskII->hasUnsavedChanges(1);
+    o.plusBootRule  = mem.iicPlusBootsSlot5ByReset();
     return o;
 }
 
@@ -192,7 +210,22 @@ Outcome runPlus(const std::string& rom, const std::string& internal35,
     mem.setSmartPortHub(&hub);
     pom2::IIcExternalSmartPort port(&mem.slotBus());
     mem.setExternalSmartPort(&port);
-    mem.slotBus().plug(6, std::make_unique<DiskIICard>(6));
+    auto d2 = std::make_unique<DiskIICard>(6);
+    DiskIICard* diskII = d2.get();
+    {
+        // A writable 5.25" in drive 1 with write-back on: on the //c+ the
+        // bus traffic shares this IWM, and the Disk II must not see it.
+        const std::string disk525 = pom2::findResource("disks_5.4/dsk/ProDOS_2_4_3.po");
+        const std::filesystem::path scratch =
+            std::filesystem::temp_directory_path() / "pom2_iicp_ext_sp_d1.po";
+        std::error_code ec;
+        if (!disk525.empty())
+            std::filesystem::copy_file(disk525, scratch,
+                                       std::filesystem::copy_options::overwrite_existing, ec);
+        if (!disk525.empty() && !ec) d2->insertDisk(0, scratch.string());
+        d2->setWriteBackEnabled(true);
+    }
+    mem.slotBus().plug(6, std::move(d2));
     auto sp = std::make_unique<pom2::SmartPortCard>(5);
     sp->setUnit(0, std::make_unique<pom2::SmartPort35Unit>());
     sp->setUnit(1, std::make_unique<pom2::SmartPort35Unit>());
@@ -236,16 +269,21 @@ Outcome runPlus(const std::string& rom, const std::string& internal35,
         }
     }
     o.bus = port.device().progress();
+    o.diskIIFlushes = diskII->getWriteFlushCount();
+    o.diskIIDirty   = diskII->hasUnsavedChanges(0) || diskII->hasUnsavedChanges(1);
+    o.plusBootRule  = mem.iicPlusBootsSlot5ByReset();
     return o;
 }
 
 void dump(const char* label, const Outcome& o)
 {
     std::printf("--- %s: prodos=%d devcnt=%d S5D1=%d S5D2=%d S6D1=%d bus{tx=%d "
-                "read=%d cmd=$%02X}\n", label, o.prodosSeen ? 1 : 0, o.devcnt,
+                "read=%d cmd=$%02X} diskII{flushes=%llu dirty=%d} plusRule=%d\n",
+                label, o.prodosSeen ? 1 : 0, o.devcnt,
                 o.slot5Drive1 ? 1 : 0, o.slot5Drive2 ? 1 : 0,
                 o.slot6Drive1 ? 1 : 0, o.bus.transactions, o.bus.blocksRead,
-                o.bus.commandByte);
+                o.bus.commandByte, static_cast<unsigned long long>(o.diskIIFlushes),
+                o.diskIIDirty ? 1 : 0, o.plusBootRule ? 1 : 0);
     std::fflush(stdout);   // keep the dumps in order with a stderr bus trace
 }
 
@@ -273,6 +311,10 @@ int main()
         if (!o.slot5Drive2) fail("A: slot 5 drive 2 missing — the chain has two units");
         if (o.bus.transactions == 0)
             fail("A: no SmartPort bus transaction — the firmware never spoke to the port");
+        if (o.diskIIFlushes || o.diskIIDirty)
+            fail("A: the Disk II wrote flux during bus traffic — packet bytes reached "
+                 "the slot-6 card (Memory must drop a write the port claimed)");
+        if (o.plusBootRule) fail("A: the //c+ reset-boot rule fired on a plain //c");
         if (g_failures) std::printf("%s", o.screen.c_str());
     }
     // B. Boot the 3.5" through the real firmware.
@@ -281,6 +323,8 @@ int main()
         dump("B boot slot 5", o);
         if (!o.prodosSeen) fail("B: ProDOS 8 never reached the text page booting slot 5");
         if (o.bus.blocksRead == 0) fail("B: no block was read over the bus");
+        if (o.diskIIFlushes || o.diskIIDirty)
+            fail("B: the Disk II wrote flux during the 3.5\" boot");
         if (g_failures) std::printf("%s", o.screen.c_str());
     }
     // C. Nothing on the port: silence, and the 5.25" boot is untouched.
@@ -312,6 +356,11 @@ int main()
                 fail("D: the //c+ did not boot the external 3.5\" — its $F223 "
                      "scan found no device on the port");
             if (o.bus.blocksRead == 0) fail("D: no block was read over the bus");
+            if (o.diskIIFlushes || o.diskIIDirty)
+                fail("D: the //c+'s Disk II wrote flux during bus traffic");
+            if (!o.plusBootRule)
+                fail("D: Memory::iicPlusBootsSlot5ByReset() is false with a live port — "
+                     "bootFromSlot(5) would jump into the real $C500 and fail");
             if (g_failures) std::printf("%s", o.screen.c_str());
         }
         // E. Internal 3.5" boots (the MIG path, iicplus_boot35's case) with an
@@ -325,6 +374,8 @@ int main()
                      "drive was not enumerated next to the internal one");
             if (o.bus.transactions == 0)
                 fail("E: the firmware never spoke to the rear port");
+            if (o.diskIIFlushes || o.diskIIDirty)
+                fail("E: the //c+'s boot disk in drive 1 took flux from the bus");
             if (g_failures) std::printf("%s", o.screen.c_str());
         }
     }

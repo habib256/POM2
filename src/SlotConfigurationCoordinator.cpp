@@ -24,6 +24,7 @@
 #include "FujiNetCard.h"
 #include "GrapplerCard.h"
 #include "LeChatMauveCard.h"
+#include "LironCard.h"
 #include "Logger.h"
 #include "Mockingboard.h"
 #include "MouseCard.h"
@@ -63,6 +64,7 @@ std::string liveCardKey(const SlotPeripheral& peripheral)
     if (dynamic_cast<const pom2::CffaCard*>(&peripheral)) return "cffa";
     if (dynamic_cast<const pom2::SmartPortCard*>(&peripheral))
         return "smartport35";
+    if (dynamic_cast<const pom2::LironCard*>(&peripheral)) return "liron";
     if (dynamic_cast<const SuperSerialCard*>(&peripheral)) return "ssc";
     if (dynamic_cast<const PrinterCard*>(&peripheral)) return "printer";
     if (dynamic_cast<const GrapplerCard*>(&peripheral)) return "grappler";
@@ -93,7 +95,7 @@ bool SlotConfigurationCoordinator::isMultiInstance(
     const std::string& cardKey) noexcept
 {
     return cardKey == "diskii" || cardKey == "cffa" ||
-           cardKey == "smartport35";
+           cardKey == "smartport35" || cardKey == "liron";
 }
 
 const SlotConfigurationCoordinator::CardMap&

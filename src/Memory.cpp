@@ -2142,8 +2142,7 @@ inline uint8_t Memory::memReadSlowBody(uint16_t addr)
             // select I/O ($C0(8+s)0-$C0(8+s)F) is never masked — it reaches
             // the slot bus above. Used today by:
             //
-            //   sl5 SmartPort: host-served stub (16 KB //c, //c+ HDV); armed
-            //     by bootFromSlot only, off when the real firmware serves it.
+            //   sl5 SmartPort: host-served stub, armed by bootFromSlot only.
             //   sl4 AppleWin HLE mouse: PR#4 needs the EPROM at $C400 to
             //     reach the slot card's PIA at $C0C0. The //c's internal
             //     mouse firmware talks to on-board IOU hardware POM2
@@ -2350,7 +2349,8 @@ void Memory::memWriteSlow(uint16_t addr, uint8_t value)
         // so its slot-6 state stays in sync (phases, motor on/off,
         // sound + writeback gating).
         if (addr >= 0xC0E0 && addr <= 0xC0EF && iicProfile_) {
-            iicProfile_->ioWriteIWM(addr, value, cycleCounter);
+            // A write the external port claimed is not the Disk II's (flux!).
+            if (iicProfile_->ioWriteIWM(addr, value, cycleCounter)) return;
         }
         // Le Chat Mauve Eve registers — mirror of the memRead path so the
         // toggle reacts to STA $C0B9 and friends, not just LDA. Same

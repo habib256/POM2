@@ -514,6 +514,13 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   for the 16 KB //c and the //c+'s HDV.
 
   Left in this area, small and honest:
+  - 🟢 **`liron` media does not persist across launches.**
+    `StorageCoordinator::restoreMediaFromSettings` and the slot-5 alias
+    discover 3.5" units through `dynamic_cast<SmartPortCard*>` only; a
+    `LironCard` (a `MountableMediaCard`, so the media panel mounts into it
+    fine) starts every session with empty bays. Teach the coordinator the
+    generic `MountableMediaCard` bays, or give the Liron the same
+    `smartport_slotN_unitK_*` keyspace. *~2 h.*
   - 🟢 The port's IWM tracker and the bus state are not in snapshots — a
     restore abandons a transaction in flight (fine: the firmware retries).
   - 🟢 STATUS code 3 (DIB) reports a fixed name/type; GS/OS-style callers

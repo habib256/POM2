@@ -139,6 +139,14 @@ public:
         if (iicProfile_) iicProfile_->setExternalSmartPort(port);
     }
     pom2::SmartPortBusPort* getExternalSmartPort() const { return externalSmartPort_; }
+    /// True on a //c+ whose own firmware is serving the external SmartPort
+    /// device: an explicit boot of slot 5 must go through the ROM's reset
+    /// scan ($F223), because its $C500 page entered directly never probes
+    /// the port, and the host-served stub is withheld while the port is live.
+    bool iicPlusBootsSlot5ByReset() const {
+        return iicProfile_ && iicProfile_->isIIcPlus() &&
+               iicProfile_->servesExternalSmartPort();
+    }
 
     /// //c-class on-board SmartPort "armed" gate. The slot-5 SmartPort
     /// firmware stub is punched through the INTCXROM mask at $C500-$C5FF

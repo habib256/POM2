@@ -49,6 +49,7 @@
 #include <cctype>
 #include <filesystem>
 #include <string>
+#include <vector>
 #include <thread>
 
 #ifndef __EMSCRIPTEN__
@@ -392,6 +393,32 @@ int main(int argc, char* argv[])
         // its layout to a filesystem that does not survive a reload.
         if (const fs::path dir = pom2::userConfigDir(); !dir.empty()) {
             iniPath = (dir / "imgui.ini").string();
+            // Up to v0.8.5 this file lived at ~/.config/POM2/imgui.ini on
+            // every Unix (macOS included) and in the launch directory on
+            // Windows, while state.cfg already used the per-platform
+            // directory. Moving it under userConfigDir() would have left
+            // every existing user's dock layout behind, with nothing to
+            // re-seed it (ui_dock_seeded stays true in state.cfg) — every
+            // panel floating on the first launch after upgrade. Carry the
+            // old file over, once, when the new place is empty.
+            std::error_code ec;
+            if (!fs::exists(iniPath, ec)) {
+                std::vector<fs::path> legacy;
+#if defined(_WIN32)
+                legacy.emplace_back("imgui.ini");
+#else
+                if (const char* home = std::getenv("HOME"); home && *home)
+                    legacy.emplace_back(fs::path(home) / ".config" / "POM2" / "imgui.ini");
+#endif
+                for (const fs::path& old : legacy) {
+                    if (old.string() == iniPath || !fs::exists(old, ec)) continue;
+                    if (fs::copy_file(old, iniPath, ec) && !ec) {
+                        pom2::log().info("UI", "Migrated ImGui layout from " +
+                                         old.string() + " to " + iniPath);
+                        break;
+                    }
+                }
+            }
         } else if (const char* home = std::getenv("HOME"); home && *home) {
             iniPath = (fs::path(home) / ".pom2_imgui.ini").string();
         } else {

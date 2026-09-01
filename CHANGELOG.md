@@ -5,6 +5,69 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — Bug hunt 3: seven findings on the day's work, all confirmed, all fixed
+
+A five-lens hunt over `a6b2a03..HEAD` (bus protocol, //c port wiring,
+IWM/Liron/Sony, browser persistence, threads and lifetime), each finding put
+to an adversarial refuter. Eight raw, seven after dedup, seven confirmed,
+none refuted. In order of what they would have cost:
+
+**1. The bus's bytes were also fed to the Disk II** (`Memory.cpp`). The read
+side already kept a claimed access from the slot-6 card; the write side
+forwarded every `$C0Ex` write to it regardless. The firmware's packet
+sequence — drive 2, motor on, Q6+Q7, `STA $C0ED/$C0EF` — is exactly a Disk
+II write sequence, so the card entered write mode and spliced the packet as
+flux into the track under its head. With Disk II write-back on (opt-in):
+8 flushes on a plain //c 5.25" boot, 31 booting slot 5, 287 on a //c+ where
+the disk in question is the boot disk; `.woz`/`.nib` took the garbage to
+the file, sector images kept the file but lost track-0 sectors for the
+session. `ioWriteIWM` now returns whether the port claimed the write and
+`Memory` drops it from the slot bus when it did — the mirror of the read
+gate. Pinned: `iic_external_smartport` now runs every scenario with a
+writable scratch 5.25" in the shared drive and write-back on, asserting zero
+flushes; mutation-checked (the old code fails it with the measured 8 and 31).
+
+**2 + 4. `bootFromSlot(5)` on the //c+ jumped into the real `$C500` and
+failed** — two lenses found it independently. With a device on the port the
+stub is withheld, the real page carries a valid signature, and entered
+directly (not from reset) the //c+ firmware never scans the port: "UNABLE TO
+FIND A BOOTABLE DISK ONLINE". Its reset-time scan at `$F223` does find the
+device, so on a //c+ whose firmware serves the port an explicit boot of slot
+5 is now a reset (`Memory::iicPlusBootsSlot5ByReset`). The plain //c's page
+boots when entered directly and keeps that path.
+
+**3. The `liron` catalog entry was unreachable from Slot Config**: the
+rebuild dispatch had no branch for it, the live column no mapping. Both
+added (`plugLiron`, `liveCardKey`, multi-instance). What remains is media
+persistence: `StorageCoordinator` restores 3.5" units through
+`SmartPortCard` only, so a Liron's bays start empty on each launch and are
+mounted through the media panel — recorded in TODO.
+
+**5. `LironCard` never armed bus capture on its IWM**: packet bytes reached
+the shifter, "write underrun" on every packet, and with write-back on a
+track decode per block over garbage. Mirrors the port's write path now.
+
+**6. `imgui.ini` moved without its owner.** Up to v0.8.5 it lived at
+`~/.config/POM2/` on every Unix and in the launch directory on Windows;
+`userConfigDir()` put it next to `state.cfg`, whose `ui_dock_seeded=true`
+then stopped any re-seed — every panel floating on the first launch after
+upgrade. The legacy file is carried over once when the new place is empty.
+
+**7. The checksum was computed and not enforced.** A frame spliced from two
+transactions (an eject mid-WRITE, a mount, the retried command appended
+behind the stale `$C3`) could decode as a data packet and write a block of
+garbage. A bad checksum now gets no reply (the firmware retries), and any
+change in which units hold media resets the protocol. Pinned on the bench:
+`smartport_bus_device` (frames built by hand — host-assigned numbers,
+refused checksum, two-packet WRITE, STATUS bytes).
+
+**One outside the diff, from CI rather than the hunt**: `sp_over_slip_link`
+aborted once on a macOS runner — `isConnected()` had gone false while
+`deviceCount()` still said 2. `peerLostLocked` dropped the socket before
+clearing the devices; the two are read under different locks, so the order
+was the only thing between an observer and "not connected, two devices".
+Devices first now.
+
 ## 2026-09-01 — The rear connector on the //c+ too, and what the 16 KB //c cannot do
 
 "The external port exists on the //c+ and the 16 KB //c as well." It does,

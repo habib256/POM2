@@ -177,7 +177,8 @@ private:
         Disk35Image* img_ = nullptr;
     };
     bool busEnabled_ = true;
-    SmartPortBusDevice           bus_;
+    mutable SmartPortBusDevice   bus_;
+    mutable unsigned             busMediaMask_ = 0;   // which bays held media last look
     std::array<ImageUnit, kDrives> busUnits_;
 
     /// Enabled, and a bay holds media — the device is on the port.

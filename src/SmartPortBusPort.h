@@ -50,8 +50,10 @@ public:
     virtual bool read(uint8_t offset, uint64_t cycles, uint8_t& out) = 0;
 
     /// A write of $C0E0 + offset. Always observed (the tracker must see
-    /// every phase and control change); acted on only while live.
-    virtual void write(uint8_t offset, uint8_t value, uint64_t cycles) = 0;
+    /// every phase and control change); acted on only while live. Returns
+    /// true when the byte was the bus's — the caller then keeps it from the
+    /// machine's other controller on those addresses.
+    virtual bool write(uint8_t offset, uint8_t value, uint64_t cycles) = 0;
 
     /// Machine reset, or a state restore the port's own state was not part
     /// of: abandon any transaction in flight.

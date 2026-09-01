@@ -642,6 +642,17 @@ endif()
 add_test(NAME sony35_iwm_read_path COMMAND test_sony35_iwm_read_path)
 set_tests_properties(sony35_iwm_read_path PROPERTIES TIMEOUT 120)
 
+# ─── The SmartPort bus responder on the bench ────────────────────────────
+# Frames built by hand, no firmware: host-assigned chain numbers (a //c+
+# starts at 2), a bad checksum gets no reply, the two-packet WRITE, STATUS.
+add_executable(test_smartport_bus_device
+    smartport_bus_device_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
+)
+target_include_directories(test_smartport_bus_device PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME smartport_bus_device COMMAND test_smartport_bus_device)
+set_tests_properties(smartport_bus_device PROPERTIES TIMEOUT 10)
+
 
 # ─── The //c's external 3.5", by the //c's own firmware ───────────────────
 # A 32 KB //c talks to its rear-port drive as an intelligent SmartPort device

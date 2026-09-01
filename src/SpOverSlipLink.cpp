@@ -373,12 +373,21 @@ void SpOverSlipLink::peerLostLocked()
     }
 
     consecutiveTimeouts_ = 0;      // a replacement peer starts with a clean slate
+    // Devices first, socket second. isConnected() reads the transport and
+    // deviceCount() reads devices_ under a different mutex, so the order
+    // here is the only thing that keeps an observer from seeing "not
+    // connected, two devices" in between — which the panel would show, and
+    // which sp_over_slip_link caught once on a slow macOS runner (the
+    // worker's dropPeer() landed, the test's poll saw it, and the clear was
+    // still a few instructions away).
+    {
+        std::lock_guard<std::mutex> lk(stateMtx_);
+        devices_.clear();
+    }
     if (transport_) transport_->dropPeer();
     // Bytes from the dead peer must not glue themselves to the first packet
     // of the next one.
     rx_.reset();
-    std::lock_guard<std::mutex> lk(stateMtx_);
-    devices_.clear();
 }
 
 void SpOverSlipLink::notePeerConnected()
