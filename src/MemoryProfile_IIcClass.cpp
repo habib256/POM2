@@ -311,11 +311,15 @@ void IIcClassProfile::appendSnapshotState(std::vector<uint8_t>& out) const
     out.push_back(romBank_     ? 1 : 0);
     out.push_back(migIntDrive_ ? 1 : 0);
     out.push_back(migHdSel_    ? 1 : 0);
+    // v1.2 tail: the external SmartPort port — its private IWM (plain //c)
+    // and the bus transaction in flight. Self-identifying, so a blob
+    // without it (or a machine without a port) is the v1.1 layout.
+    if (extPort_) extPort_->appendSnapshotState(out);
 }
 
 size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
 {
-    if (extPort_) extPort_->reset();   // not part of the blob; start clean
+    if (extPort_) extPort_->reset();   // re-filled below when the blob has it
     if (data == nullptr || n < kMigBlobBytes) return 0;
     if (std::memcmp(data, kMigBlobMagic, 4) != 0) return 0;
     // migRead/migWrite index `migRam_[migPage_ + (offset & 0x1F)]`, so a
@@ -334,7 +338,10 @@ size_t IIcClassProfile::loadSnapshotState(const uint8_t* data, size_t n)
         romBank_     = data[kMigBlobBytes]     != 0;
         migIntDrive_ = data[kMigBlobBytes + 1] != 0;
         migHdSel_    = data[kMigBlobBytes + 2] != 0;
-        return kMigBlobBytes + kMigBlobTail;
+        size_t used = kMigBlobBytes + kMigBlobTail;
+        if (extPort_ && n > used)
+            used += extPort_->loadSnapshotState(data + used, n - used);
+        return used;
     }
     return kMigBlobBytes;
 }

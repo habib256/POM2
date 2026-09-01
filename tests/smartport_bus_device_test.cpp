@@ -158,6 +158,40 @@ int main()
         assert((r[i + 10] & 0x7F) == 4 && "block count low byte");
     }
 
+    // Snapshot in the middle of a transaction: the command is in, the ack
+    // given, REQ not yet released. A restored device must still put the
+    // reply on the wire when REQ drops — the rewind ring lands here.
+    {
+        d.reqChanged(true);
+        for (uint8_t b : frame(2, 0x00, {0x01, 0x03, 0x00, 0x08, 0x01, 0x00, 0x00, 0x00, 0x00}))
+            d.hostWrote(b);
+        assert(!d.sense());
+        std::vector<uint8_t> blob;
+        d.appendSnapshotState(blob);
+
+        pom2::SmartPortBusDevice restored;
+        restored.setUnit(0, &u0); restored.setUnit(1, &u1); restored.setUnitCount(2);
+        assert(restored.loadSnapshotState(blob.data(), blob.size()) == blob.size());
+        assert(!restored.sense() && "mid-transaction: ACK still low");
+        restored.reqChanged(false);
+        assert(restored.sense());
+        restored.reqChanged(true);
+        std::vector<uint8_t> reply; uint8_t rb;
+        while (restored.hostReads(rb)) reply.push_back(rb);
+        restored.reqChanged(false);
+        assert(replyStatus(reply) == 0x00 && "the READ armed before the snapshot is served after it");
+        // the chain numbers travelled too: device 3 is still u1
+        assert(replyStatus(transact(restored,
+            frame(3, 0x00, {0x00, 0x03, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00}))) == 0x00);
+        // and a truncated blob is refused cleanly
+        pom2::SmartPortBusDevice bad;
+        assert(bad.loadSnapshotState(blob.data(), blob.size() / 2) == 0);
+        // finish the original's transaction so the device below starts idle
+        d.reqChanged(false); d.reqChanged(true);
+        while (d.hostReads(rb)) {}
+        d.reqChanged(false);
+    }
+
     // A bus reset forgets the numbers: device 1 is assignable again.
     d.busReset();
     assert(replyStatus(transact(d, frame(1, 0x00, {0x05, 0x02}))) == 0x00);
@@ -165,6 +199,6 @@ int main()
     assert(replyStatus(r) == 0x00);
 
     std::printf("smartport_bus_device: OK — host-assigned numbers, checksum "
-                "enforced, two-packet WRITE, STATUS bytes\n");
+                "enforced, two-packet WRITE, STATUS bytes, snapshot mid-transaction\n");
     return 0;
 }

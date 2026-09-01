@@ -5,6 +5,30 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The bus survives a rewind, and the DIB says what it is
+
+Two notes bug hunt 3 had left in TODO as "small and honest", closed.
+
+**The port's state is in snapshots now.** The rewind ring snapshots every
+frame and a 3.5" block transfer spans several, so "start clean on restore"
+was not the harmless choice it read as: a rewind landing inside a READ
+handed the firmware an empty reply and, after its retries, an I/O error the
+guest never earned. `SmartPortBusDevice` serialises the frame being
+received, the reply being read and where in it, the REQ/ACK state, the
+pending WRITE and the host-assigned chain numbers; `IIcExternalSmartPort`
+adds its private IWM (behind a length — that blob is opaque and variable)
+and its line bytes, riding as a self-identifying `XSP1` tail on the
+//c-class profile's blob; `LironCard` carries the same for its own IWM and
+bus (`LIR1`). Older blobs, and machines without a port, are the previous
+layout and start the port clean. A truncated tail is refused as a whole,
+not half-applied. Pinned on the bench: a device snapshotted between the
+ack and REQ's release serves the armed reply after restore, with its chain
+numbers.
+
+**The DIB names the device it is.** STATUS code 3 answered "UniDisk 3.5,
+type $01" for everything; an HDV on the bus is a hard disk (type $02,
+subtype $80 — extended calls, not removable) and says so.
+
 ## 2026-09-01 — Bug hunt 3: seven findings on the day's work, all confirmed, all fixed
 
 A five-lens hunt over `a6b2a03..HEAD` (bus protocol, //c port wiring,

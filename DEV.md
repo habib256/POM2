@@ -2935,8 +2935,13 @@ profiles plug there — so the media panel is unchanged: what the user mounts
 on "slot 5" is what the firmware finds on the port. `SmartPortBusPort.h` is
 the MACHINE↔DEVICES contract; `EmulationController` owns the port and hands
 it to `Memory`, which forwards it to each //c-class profile it builds. The
-port's state is not in snapshots: a restore, like a reset, abandons any
-transaction in flight.
+port travels in snapshots as a self-identifying tail of the //c-class
+profile's blob (`XSP1`: its private IWM behind a length, the bus state,
+the two line bytes), and `LironCard` carries the same for its own IWM and
+bus (`LIR1`). The rewind ring snapshots every frame and a block transfer
+spans several, so "start clean on restore" had meant a rewind landing
+inside one handed the firmware an empty reply; a blob without the tail
+still restores and starts the port clean.
 
 **The //c+** has the same connector and its own SmartPort implementation
 (bank 1, trampolined through page 3; the bus send at `$C895` with the Liron's

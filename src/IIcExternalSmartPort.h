@@ -67,6 +67,8 @@ public:
     bool read(uint8_t offset, uint64_t cycles, uint8_t& out) override;
     bool write(uint8_t offset, uint8_t value, uint64_t cycles) override;
     void reset() override;
+    void appendSnapshotState(std::vector<uint8_t>& out) const override;
+    std::size_t loadSnapshotState(const uint8_t* data, std::size_t n) override;
 
     // ── The //c+ path: the machine's own IWM carries the bus ─────────────
     // On the //c+ the shared IWM already owns the port (MIG-routed Sony

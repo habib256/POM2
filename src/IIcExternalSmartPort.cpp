@@ -18,6 +18,8 @@
 #include "SlotBus.h"
 #include "SlotPeripheral.h"
 
+#include <cstring>
+
 namespace pom2 {
 
 IIcExternalSmartPort::IIcExternalSmartPort(SlotBus* slots, int slot)
@@ -155,6 +157,53 @@ bool IIcExternalSmartPort::sharedAfterRead(const IWMDevice& iwm, uint8_t iwmValu
     if (!live()) return false;
     if (!addressed(iwm.phases(), iwm.control()) && !bus_.active()) return false;
     return answer(iwm.control(), iwmValue, out);
+}
+
+namespace {
+constexpr uint8_t kPortBlobMagic[4] = { 'X', 'S', 'P', '1' };
+void put32(std::vector<uint8_t>& o, std::size_t v)
+{
+    for (int k = 0; k < 4; ++k) o.push_back(static_cast<uint8_t>(v >> (8 * k)));
+}
+std::size_t get32(const uint8_t* p)
+{
+    std::size_t v = 0;
+    for (int k = 0; k < 4; ++k) v |= static_cast<std::size_t>(p[k]) << (8 * k);
+    return v;
+}
+}  // namespace
+
+void IIcExternalSmartPort::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    // The private IWM's blob is opaque and variable in size, so it travels
+    // behind its own length; the bus blob is self-delimiting; then the two
+    // line-state bytes the port keeps for itself.
+    out.insert(out.end(), kPortBlobMagic, kPortBlobMagic + 4);
+    std::vector<uint8_t> iwm;
+    regs_.appendSnapshotState(iwm);
+    put32(out, iwm.size());
+    out.insert(out.end(), iwm.begin(), iwm.end());
+    bus_.appendSnapshotState(out);
+    out.push_back(lastPhases_);
+    out.push_back(static_cast<uint8_t>(mediaMask_));
+}
+
+std::size_t IIcExternalSmartPort::loadSnapshotState(const uint8_t* data, std::size_t n)
+{
+    reset();
+    if (!data || n < 8 || std::memcmp(data, kPortBlobMagic, 4) != 0) return 0;
+    std::size_t i = 4;
+    const std::size_t iwmLen = get32(data + i); i += 4;
+    if (iwmLen > n - i) return 0;
+    if (iwmLen && !regs_.loadSnapshotState(data + i, iwmLen)) { reset(); return 0; }
+    i += iwmLen;
+    const std::size_t busLen = bus_.loadSnapshotState(data + i, n - i);
+    if (busLen == 0) { reset(); return 0; }
+    i += busLen;
+    if (i + 2 > n) { reset(); return 0; }
+    lastPhases_ = data[i++];
+    mediaMask_  = data[i++];
+    return i;
 }
 
 void IIcExternalSmartPort::reset()

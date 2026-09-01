@@ -27,7 +27,9 @@
 #ifndef POM2_SMARTPORT_BUS_PORT_H
 #define POM2_SMARTPORT_BUS_PORT_H
 
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 namespace pom2 {
 
@@ -58,6 +60,13 @@ public:
     /// Machine reset, or a state restore the port's own state was not part
     /// of: abandon any transaction in flight.
     virtual void reset() = 0;
+
+    /// Snapshot / rewind: the port's own registers and the transaction in
+    /// flight. Absent from a blob → the port starts clean (the pre-snapshot
+    /// behaviour); `loadSnapshotState` returns the bytes consumed, 0 if none.
+    virtual void appendSnapshotState(std::vector<uint8_t>& /*out*/) const {}
+    virtual std::size_t loadSnapshotState(const uint8_t* /*data*/, std::size_t /*n*/)
+    { return 0; }
 
     // ── When the machine's own IWM carries the bus (the //c+) ────────────
     // The caller performs the access on that IWM and lets the port watch the

@@ -369,12 +369,18 @@ void SmartPortBusDevice::serveCommand(const std::array<uint8_t, 7>& header,
         st[2] = static_cast<uint8_t>((blocks >> 8) & 0xFF);
         st[3] = static_cast<uint8_t>((blocks >> 16) & 0xFF);
         if (code == 0x03) {
-            // Device Information Block: name, type, subtype, firmware.
-            static const char kName[16] = "POM2 UNIDISK3.5";
-            st[4] = 15;
-            std::memcpy(st + 5, kName, 16);
-            st[21] = 0x01;                        // 3.5" disk
-            st[22] = 0xC0;                        // removable, extended
+            // Device Information Block: name (Pascal string in 16 bytes),
+            // type, subtype, firmware version. An 800K unit is a UniDisk
+            // 3.5 (type $01, subtype $C0 — extended calls, disk-switched
+            // errors); anything else on this bus is a hard disk (type $02,
+            // subtype $80 — extended calls, not removable).
+            const bool floppy = (blocks == 1600) || !media;
+            static const char kFloppy[16] = "POM2 UNIDISK3.5";
+            static const char kHard[16]   = "POM2 HARDDISK  ";
+            st[4] = floppy ? 15 : 13;
+            std::memcpy(st + 5, floppy ? kFloppy : kHard, 16);
+            st[21] = floppy ? 0x01 : 0x02;
+            st[22] = floppy ? 0xC0 : 0x80;
             st[23] = 0x00; st[24] = 0x01;         // firmware 1.0
             buildReply(0x00, st, 25, false);
         } else {
@@ -469,6 +475,74 @@ void SmartPortBusDevice::buildReply(uint8_t status, const uint8_t* contents,
     if (trace())
         std::fprintf(stderr, "[SPBUS] reply armed: status=$%02X contents=%zu "
                      "(%zu wire bytes)\n", status, n, reply_.size());
+}
+
+namespace {
+constexpr uint8_t kBusBlobMagic[4] = { 'S', 'P', 'B', '1' };
+void put16(std::vector<uint8_t>& o, std::size_t v)
+{ o.push_back(static_cast<uint8_t>(v)); o.push_back(static_cast<uint8_t>(v >> 8)); }
+std::size_t get16(const uint8_t* p) { return p[0] | (static_cast<std::size_t>(p[1]) << 8); }
+}  // namespace
+
+void SmartPortBusDevice::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.insert(out.end(), kBusBlobMagic, kBusBlobMagic + 4);
+    put16(out, rx_.size());
+    out.insert(out.end(), rx_.begin(), rx_.end());
+    put16(out, reply_.size());
+    out.insert(out.end(), reply_.begin(), reply_.end());
+    put16(out, replyPos_);
+    uint8_t flags = 0;
+    if (replyArmed_)   flags |= 0x01;
+    if (replyExposed_) flags |= 0x02;
+    if (sense_)        flags |= 0x04;
+    if (req_)          flags |= 0x08;
+    if (pendingWrite_) flags |= 0x10;
+    out.push_back(flags);
+    out.push_back(pendingUnit_);
+    out.push_back(pendingCmd_);
+    out.push_back(static_cast<uint8_t>(pendingBlock_));
+    out.push_back(static_cast<uint8_t>(pendingBlock_ >> 8));
+    out.push_back(static_cast<uint8_t>(pendingBlock_ >> 16));
+    out.push_back(static_cast<uint8_t>(pendingBlock_ >> 24));
+    out.push_back(static_cast<uint8_t>(assigned_));
+    for (int i = 0; i < kMaxUnits; ++i) out.push_back(ids_[static_cast<std::size_t>(i)]);
+}
+
+std::size_t SmartPortBusDevice::loadSnapshotState(const uint8_t* data, std::size_t n)
+{
+    busReset();
+    if (!data || n < 4 || std::memcmp(data, kBusBlobMagic, 4) != 0) return 0;
+    std::size_t i = 4;
+    auto need = [&](std::size_t k) { return i + k <= n; };
+    if (!need(2)) return 0;
+    const std::size_t rxLen = get16(data + i); i += 2;
+    if (rxLen > 1024 || !need(rxLen)) return 0;
+    rx_.assign(data + i, data + i + rxLen); i += rxLen;
+    if (!need(2)) return 0;
+    const std::size_t replyLen = get16(data + i); i += 2;
+    if (replyLen > 1024 || !need(replyLen)) return 0;
+    reply_.assign(data + i, data + i + replyLen); i += replyLen;
+    if (!need(2 + 1 + 1 + 1 + 4 + 1 + kMaxUnits)) { busReset(); return 0; }
+    replyPos_ = get16(data + i); i += 2;
+    if (replyPos_ > reply_.size()) replyPos_ = reply_.size();
+    const uint8_t flags = data[i++];
+    replyArmed_   = flags & 0x01;
+    replyExposed_ = flags & 0x02;
+    sense_        = flags & 0x04;
+    req_          = flags & 0x08;
+    pendingWrite_ = flags & 0x10;
+    pendingUnit_  = data[i++];
+    pendingCmd_   = data[i++];
+    pendingBlock_ = static_cast<uint32_t>(data[i]) |
+                    (static_cast<uint32_t>(data[i + 1]) << 8) |
+                    (static_cast<uint32_t>(data[i + 2]) << 16) |
+                    (static_cast<uint32_t>(data[i + 3]) << 24);
+    i += 4;
+    assigned_ = data[i++];
+    if (assigned_ > kMaxUnits) assigned_ = kMaxUnits;
+    for (int k = 0; k < kMaxUnits; ++k) ids_[static_cast<std::size_t>(k)] = data[i++];
+    return i;
 }
 
 bool SmartPortBusDevice::hostReads(uint8_t& out)

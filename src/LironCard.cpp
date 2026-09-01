@@ -22,6 +22,7 @@
 
 #include <cstdio>
 #include <array>
+#include <cstring>
 #include <cstdlib>
 #include <fstream>
 
@@ -224,6 +225,48 @@ void LironCard::onReset()
     bus_.reset();
     iwm_.setBusCapture(false);
     busMediaMask_ = 0;
+    retargetIwm();
+}
+
+// ── Snapshot / rewind ────────────────────────────────────────────────────
+// The IWM's registers and state machine, and the bus transaction in flight.
+// The Sony mechanisms are not carried: while the responder is live they are
+// bypassed, and a dumb-drive session through this card has nothing to
+// resume that the firmware does not re-establish on its next access.
+
+namespace {
+constexpr uint8_t kLironBlobMagic[4] = { 'L', 'I', 'R', '1' };
+}
+
+void LironCard::appendSnapshotState(std::vector<uint8_t>& out) const
+{
+    out.insert(out.end(), kLironBlobMagic, kLironBlobMagic + 4);
+    std::vector<uint8_t> iwm;
+    iwm_.appendSnapshotState(iwm);
+    for (int k = 0; k < 4; ++k) out.push_back(static_cast<uint8_t>(iwm.size() >> (8 * k)));
+    out.insert(out.end(), iwm.begin(), iwm.end());
+    bus_.appendSnapshotState(out);
+    out.push_back(static_cast<uint8_t>(active_ + 1));   // -1 → 0
+    out.push_back(static_cast<uint8_t>(busMediaMask_));
+}
+
+void LironCard::loadSnapshotState(const uint8_t* data, std::size_t len)
+{
+    onReset();
+    if (!data || len < 8 || std::memcmp(data, kLironBlobMagic, 4) != 0) return;
+    std::size_t i = 4, iwmLen = 0;
+    for (int k = 0; k < 4; ++k) iwmLen |= static_cast<std::size_t>(data[i + k]) << (8 * k);
+    i += 4;
+    if (iwmLen > len - i) return;
+    if (iwmLen && !iwm_.loadSnapshotState(data + i, iwmLen)) { onReset(); return; }
+    i += iwmLen;
+    const std::size_t busLen = bus_.loadSnapshotState(data + i, len - i);
+    if (busLen == 0) { onReset(); return; }
+    i += busLen;
+    if (i + 2 > len) { onReset(); return; }
+    const int act = static_cast<int>(data[i++]) - 1;
+    active_ = (act >= 0 && act < kDrives) ? act : -1;
+    busMediaMask_ = data[i++];
     retargetIwm();
 }
 

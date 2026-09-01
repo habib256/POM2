@@ -513,13 +513,8 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   punched over it while media is mounted. The host-served `$C500` stub stays
   for the 16 KB //c and the //c+'s HDV.
 
-  Left in this area, small and honest:
-  - 🟢 The port's IWM tracker and the bus state are not in snapshots — a
-    restore abandons a transaction in flight (fine: the firmware retries).
-  - 🟢 STATUS code 3 (DIB) reports a fixed name/type; GS/OS-style callers
-    that key on it are not a //c concern.
-  - 🟢 The UniDisk 3.5 **drive-side** 65C02 firmware stays out of scope; the
-    protocol is the contract and both firmwares boot through it.
+  Deliberately out of scope: the UniDisk 3.5 **drive-side** 65C02 firmware —
+  the protocol is the contract and both firmwares boot through it.
 
 ### [Cards] slot cards & peripherals
 

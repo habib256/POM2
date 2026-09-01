@@ -137,6 +137,18 @@ public:
     };
     const Progress& progress() const { return progress_; }
 
+    // ── Snapshot / rewind ────────────────────────────────────────────────
+    /// Everything a transaction in flight needs to resume after a restore:
+    /// the frame being received, the reply being read and where in it, the
+    /// REQ/ACK state, the pending WRITE, the host-assigned chain numbers.
+    /// The rewind ring snapshots every frame and a block transfer spans
+    /// several, so "start clean on restore" meant a rewind landing inside
+    /// one handed the firmware an empty reply and an I/O error.
+    void   appendSnapshotState(std::vector<uint8_t>& out) const;
+    /// Returns the bytes consumed, 0 when the blob is absent or malformed
+    /// (state is left reset in that case).
+    std::size_t loadSnapshotState(const uint8_t* data, std::size_t n);
+
     static bool trace();
 
 private:
