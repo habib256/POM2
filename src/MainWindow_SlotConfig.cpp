@@ -208,9 +208,14 @@ void MainWindow::plugSlotsFromSettings(const pom2::StateAccess& st)
         // a slotted machine defaults to the Féline; `chatmauve_variant`
         // (feline | iic | eve | video7) overrides either.
         using Variant = LeChatMauveCard::Variant;
-        Variant variant = pom2::profileConfig(activeProfile).noPhysicalSlots
-                              ? Variant::IIcAdapter : Variant::Feline;
-        if (settings) {
+        // A //c-class machine has no aux slot: its DB-15 takes the
+        // Adaptateur IIc and nothing else — there the model is hardware,
+        // not a setting. Slotted profiles read `chatmauve_variant` (the
+        // Slot Config window's "model" combo, or the Chat Mauve panel).
+        Variant variant = Variant::Feline;
+        if (pom2::profileConfig(activeProfile).noPhysicalSlots) {
+            variant = Variant::IIcAdapter;
+        } else if (settings) {
             Variant parsed;
             if (LeChatMauveCard::parseVariant(
                     settings->getString("chatmauve_variant", ""), parsed))

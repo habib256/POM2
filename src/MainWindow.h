@@ -820,6 +820,11 @@ private:
     // re-seeds the draft from the freshly-rebuilt slotCards[]; otherwise the
     // panel shows — and Apply persists — the previous profile's stale slots.
     bool slotDraftInited_ = false;
+    /// Staged Chat Mauve model (Slot Config): seeded with the slot draft,
+    /// counted as a pending change, persisted as `chatmauve_variant` on
+    /// Apply. //c-class connectors take only the Adaptateur IIc and never
+    /// stage it.
+    std::string chatMauveVariantDraft_;
 
     bool showAbout = false;
     // Welcome / Quick Start panel. Opened from Help → Welcome, and

@@ -92,7 +92,7 @@ Eve's switch byte and CPREG; the pixel rules live in `Apple2Display`.
 | COL280A/B | the 560 stream in **2-dot cells** (code = dot + 2·next), palettes in the manual's order — read off Purplesoft's `& PLOT` bytes (§ 6) | smoke § 10, goldens `cm/eve/dhgr-hr*-col280*` |
 | SPEC1 / SPEC2 | 5-dot window: `11011` → black (SPEC1), plus `00100` → white (SPEC2); alternating runs stay coloured | goldens `cm/eve/hgr-spec*` (rule from the manual's prose, to confirm against the PLA in P3) |
 | DASH | rendered as HRAPPLE — P3 | — |
-| Variant selection | one catalog key; `chatmauve_variant` setting (`feline` \| `iic` \| `eve` \| `video7`), default //c-class → `iic`, else `feline`; combo in the Chat Mauve panel, which also shows the eight switches (clickable = `STA $C0Bx`) and CPREG | — |
+| Variant selection | one catalog key; `chatmauve_variant` setting (`feline` \| `iic` \| `eve` \| `video7`). Chosen in **Slot Configuration** (a "model" combo under the card's row, staged + applied with the slots) or live in the Chat Mauve panel; //c-class connectors are hardware-fixed to the Adaptateur IIc at plug time | — |
 | Snapshot | blob v3 = latch + switch byte + CPREG; v2's two toggles map onto TXT16 / TXTGREEN | smoke § 12 |
 
 Not done yet: the dot-clock tap (P6 — mid-line switches still land per
@@ -324,6 +324,94 @@ The plan's Eve decoder is that PLA evaluated per dot (a 64 K-entry truth
 table, trivially fast), with the pin roles pinned by consistency against
 table IX-1 and the demo disks. That is as LLE as an Eve can get without
 the board schematic, which is not public.
+
+### 3.5.1 The fuse map, decoded (2026-09-01 evening)
+
+`docs/Chat_Mauve_eve_PLA.jed` is in the tree now, and `tools/decode_eve_pla.py`
+regenerates this table. Layout: QF1928 = **48 rows of 40 fuses** (16 input
+pairs — fuse 0 = intact = connected, even fuse = true, odd = complement —
+then 8 OR fuses, 0 = term feeds the output), plus 8 polarity fuses
+`[0,0,0,0,0,0,1,1]` (F6, F7 active-low). The convention is pinned by
+structure: it is the one that yields 48 clean terms, each driving a small
+output set, with the short TEXT-side terms quoted below.
+
+```
+T 0: I6·I8·/I9·/I12·/I13                       -> F2      ┐ eight symmetric terms:
+T 1: /I4·I7·I8·/I9·/I12·/I13                   -> F4      │ {I2,I3,I6,I7} × I9 phase,
+T 2: I3·/I4·I8·/I9·/I12·/I13                   -> F5      │ gated I8, mode /I12·/I13
+T 3: I2·/I4·I8·/I9·/I12·/I13                   -> F1      │ — one output each of
+T 4: I3·/I4·I8·I9·/I12·/I13                    -> F2      │ F1/F2/F4/F5. The shape
+T 5: I2·/I4·I8·I9·/I12·/I13                    -> F4      │ of a 2-dot-cell decoder
+T 6: /I4·I6·I8·I9·/I12·/I13                    -> F5      │ (COL280A/B, two palettes
+T 7: /I4·I7·I8·I9·/I12·/I13                    -> F1      ┘ by I9 = cell phase?)
+T 8: /I4·/I12·I13                              -> F3      ─ F3 = the mono/560 line?
+T 9: /I4·/I8·/I12·/I13                         -> F3
+T10: /I1·/I2·/I4·I6·I7·/I9·I12·/I14            -> F2,F4   ┐
+T11: /I1·/I2·/I4·I6·I7·I9·I12·/I14             -> F1,F5   │
+T12: /I2·/I4·/I6·I7·/I9·I12·/I14               -> F4,F5   │ HGR family (I12·/I14):
+T13: /I2·/I4·/I6·I7·I9·I12·/I14                -> F1,F2   │ pixel windows over
+T14: I2·/I4·I7·I12·/I14                        -> F1,F2,F4,F5   I1,I2,I5,I6,I7 with
+T15: I1·/I4·I7·I12·/I14                        -> F1,F2,F4,F5   I9 = colour phase and
+T16: I1·I2·/I4·I5·/I6·/I7·I9·/I11·I12·/I14     -> F2,F4   │ /I10, /I11 variants —
+T17: I1·I2·/I4·I5·/I6·/I7·I9·/I10·I12·/I14     -> F2,F4   │ the widened window the
+T18: I1·I2·/I4·I5·/I6·/I7·/I9·/I11·I12·/I14    -> F1,F5   │ SPEC modes need (two
+T19: I1·I2·/I4·I5·/I6·/I7·/I9·/I10·I12·/I14    -> F1,F5   │ don't-care neighbours
+T20: I2·/I4·I5·I6·/I7·I9·/I11·I12·/I14         -> F4,F5   │ per case)
+T21: I2·/I4·I5·I6·/I7·I9·/I10·I12·/I14         -> F4,F5   │
+T22: I2·/I4·I5·I6·/I7·/I9·/I11·I12·/I14        -> F1,F2   │
+T23: I2·/I4·I5·I6·/I7·/I9·/I10·I12·/I14        -> F1,F2   │
+T24: I1·I2·/I4·I5·/I6·/I7·I9·I12·/I14·/I15     -> F2,F4   │
+T25: I1·I2·/I4·I5·/I6·/I7·/I9·I12·/I14·/I15    -> F1,F5   │
+T26: I2·/I4·I5·I6·/I7·I9·I12·/I14·/I15         -> F4,F5   │
+T27: I2·/I4·I5·I6·/I7·/I9·I12·/I14·/I15        -> F1,F2   ┘
+T28: I0·/I1·/I2·I7·/I10·/I11·I12·/I14          -> F1,F2,F4,F5   (white case)
+T29: I0·/I4·/I5·I12·/I14·/I15                  -> F0,F1,F2,F4,F5
+T30: /I0·I1·/I4·I5·I12·I14·/I15                -> F4,F6   ┐
+T31: /I0·/I4·I5·I6·I12·I14·/I15                -> F5,F6   │ I12·I14 family —
+T32: /I0·/I4·I5·I7·I12·I14·/I15                -> F1,F6   │ /I15: four bits
+T33: /I0·I3·/I4·I5·I12·I14·/I15                -> F2,F6   │ {I1,I6,I7,I3} each to
+T34: /I0·/I4·I5·/I9·I12·I14·/I15               -> F3,F6   │ one of F4/F5/F1/F2 —
+T35: /I0·I1·/I4·I5·/I6·I12·I14·I15             -> F1,F2,F6      the shape of a 4-bit
+T36: /I0·/I1·/I4·I5·I6·I12·I14·I15             -> F1,F5,F6      COL140 code fanned to
+T37: /I0·I1·/I4·I5·I6·I12·I14·I15              -> F1,F2,F4,F5,F6  RGBI; I15 flips to a
+T38: I0·I1·/I4·I5·/I6·I12·I14·/I15             -> F2,F4,F5,F6   second interpretation
+T39: I0·/I1·/I4·I5·I6·I12·I14·/I15             -> F1,F2,F4,F6   (CP280? fg/bg from
+T40: I0·I1·/I4·I5·I6·I12·I14·/I15              -> F1,F2,F5,F6   nibble halves)
+T41: /I4·I5·I12·I14                            -> F6      ─ F6 active-low, always on
+T42: I0·/I4·/I5·I12·I14·/I15                   -> F0,F1,F2,F4,F5,F6   in this family
+T43: I0·/I4·/I5·I12·I14·I15                    -> F0,F7   ┘
+T44: I0·I4                                     -> F0,F7   ┐ TEXT side (I4):
+T45: /I0·I4·/I15                               -> F0,F1,F2,F4,F5  I0 = the dot,
+T46: /I0·I4·I15                                -> F0,F1,F5      I15 = a text mode bit
+T47: I4·I9                                     -> F0,F3   ┘ (TXTGREEN? F1·F5 = green?)
+```
+
+First reading (to be pinned by simulation against known modes, the actual
+P3 work): **F1/F2/F4/F5 are the colour outputs** (plausibly R/G plus two of
+B/I — T28's "all four" = white, T46's F1·F5 pair = a green for `/I0·I4·I15`
+≈ "text dot off, TEXT side, mode bit 15" fits TXTGREEN's green background…
+or its inverse); **F0/F7** (F7 active-low) travel together on the
+bright/text cases — intensity and/or a path select; **F3** stands alone on
+the mono-ish rows (T8/T9/T34/T47); **F6** (active-low) is asserted by every
+term of the I12·I14 family and by nothing else — a family-wide strobe
+(latch-load or burst gate). Mode bits: **I4** (TEXT side), **I12/I13/I14/
+I15** (graphics families: /I12·/I13 → the 2-dot-cell block, I12·/I14 → the
+HGR block, I12·I14 → the 4-bit block), **I5/I8** gate within families;
+window dots live among I0-I3, I6-I11 with **I9** as the cell phase. One
+sobering observation before the fit is even attempted: T0-T7 pair two
+dot-inputs per I9 phase with their outputs SWAPPED between phases (I2→F1,
+I7→F4 at /I9; I2→F4, I7→F1 at I9 — same for I3/I6 on F5/F2), and a 2-dot
+COL280 code that asserts one or two of those lines cannot be finished RGBI
+(code 3 = white needs three colour lines). So the PLA's outputs look like
+**intermediate code lines feeding the LS parts downstream** (which the
+board photo shows in quantity: LS273/LS374 latches, LS399 selectors after
+the N82S100N), with F6 as the family strobe — not the final RGB. That
+caps what P3 can extract from the fuse map alone: pin the input roles by
+simulating against the modes whose behaviour is measured (COL140 / BW560 /
+COL280, the latter now known from Purplesoft's `& PLOT` bytes), use the
+result to cross-check SPEC1/2/DASH hypotheses, and accept that the exact
+output encoding needs the schematic or a board trace. The measured-
+behaviour models stay the reference.
 
 ### 3.6 The RVB Graph (II / II+)
 

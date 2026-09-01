@@ -172,6 +172,8 @@ void MainWindow::renderSlotConfigPanel()
         auto& draft = slotConfigCoordinator_->draft();
         if (!slotDraftInited_) {
             slotConfigCoordinator_->resetDraft();
+            chatMauveVariantDraft_ =
+                settings->getString("chatmauve_variant", "feline");
             slotDraftInited_ = true;
         }
 
@@ -282,6 +284,11 @@ void MainWindow::renderSlotConfigPanel()
                                        "(one adapter only)");
                     anyDuplicate = true;
                 }
+                if (draft[s] == "chatmauve") {
+                    slotLabel("");
+                    ImGui::TextDisabled(
+                        "model: Adaptateur IIc — fixed by the DB-15 connector");
+                }
                 continue;
             }
 
@@ -334,6 +341,30 @@ void MainWindow::renderSlotConfigPanel()
                 ImGui::EndCombo();
             }
             if (dup) ImGui::PopStyleColor();
+
+            // Which Chat Mauve: the family is ONE catalog key, the model is
+            // the `chatmauve_variant` card setting (docs/chatmauve_plan.md —
+            // Féline / Adaptateur //c / Eve / Video-7 decide which registers
+            // exist and which modes fall back). Staged like the slot itself;
+            // Apply persists it and the rebuild plugs the chosen model.
+            if (draft[s] == "chatmauve") {
+                using CmVariant = LeChatMauveCard::Variant;
+                CmVariant cur;
+                if (!LeChatMauveCard::parseVariant(chatMauveVariantDraft_, cur))
+                    cur = CmVariant::Feline;
+                slotLabel("  model");
+                if (ImGui::BeginCombo("##cmvariant",
+                                      LeChatMauveCard::variantLabel(cur))) {
+                    for (int vi = 0; vi < LeChatMauveCard::kVariantCount; ++vi) {
+                        const auto v = static_cast<CmVariant>(vi);
+                        if (ImGui::Selectable(LeChatMauveCard::variantLabel(v),
+                                              v == cur))
+                            chatMauveVariantDraft_ =
+                                LeChatMauveCard::variantKey(v);
+                    }
+                    ImGui::EndCombo();
+                }
+            }
 
             // Slot 3 on a //e-class machine is where the built-in 80-column
             // firmware keeps OURCH/OURCV — the screen holes at $x78+3 are
@@ -436,6 +467,14 @@ void MainWindow::renderSlotConfigPanel()
             if (draft[s] != slotCards[s]) ++pending;
         }
 
+        // The staged Chat Mauve model counts as a pending change too (it is
+        // persisted and applied by the same cold-boot). //c-class profiles
+        // never stage it — the connector fixes the model.
+        if (!profileCfg.noPhysicalSlots &&
+            chatMauveVariantDraft_ !=
+                settings->getString("chatmauve_variant", "feline"))
+            ++pending;
+
         if (pending > 0) {
             ImGui::TextColored(
                 ImGui::ColorConvertU32ToFloat4(pom2::palette().accent),
@@ -472,11 +511,22 @@ void MainWindow::renderSlotConfigPanel()
                 changed[s] = true;
                 settings->setString(key, draft[s]);
             }
+            std::string prevCmVariant;
+            bool cmVariantChanged = false;
+            if (!profileCfg.noPhysicalSlots &&
+                chatMauveVariantDraft_ !=
+                    settings->getString("chatmauve_variant", "feline")) {
+                prevCmVariant = settings->getString("chatmauve_variant", "");
+                settings->setString("chatmauve_variant", chatMauveVariantDraft_);
+                cmVariantChanged = true;
+            }
             if (!settings->save()) {
                 for (int s = 1; s <= 7; ++s) {
                     if (changed[s]) settings->setString(
                         "slot_" + std::to_string(s) + "_card", previous[s]);
                 }
+                if (cmVariantChanged)
+                    settings->setString("chatmauve_variant", prevCmVariant);
                 tapeStatusMessage = "Slot changes not applied — settings could not be saved.";
                 tapeStatusUntil = lastFrameTime + 8.0;
                 pom2::log().warn("Slots", tapeStatusMessage);
@@ -488,6 +538,8 @@ void MainWindow::renderSlotConfigPanel()
                     if (changed[s]) settings->setString(
                         "slot_" + std::to_string(s) + "_card", previous[s]);
                 }
+                if (cmVariantChanged)
+                    settings->setString("chatmauve_variant", prevCmVariant);
                 if (!settings->save())
                     pom2::log().error("Slots",
                         "Could not persist the previous slot mapping after a refused rebuild.");
@@ -515,8 +567,11 @@ void MainWindow::renderSlotConfigPanel()
                 "Internal Disks & Media has already taken effect.");
         ImGui::SameLine();
         ImGui::BeginDisabled(pending == 0);
-        if (ImGui::Button("Revert"))
+        if (ImGui::Button("Revert")) {
             slotConfigCoordinator_->resetDraft();
+            chatMauveVariantDraft_ =
+                settings->getString("chatmauve_variant", "feline");
+        }
         ImGui::EndDisabled();
         if (pending > 0 && ImGui::IsItemHovered())
             ImGui::SetTooltip("Discard the %d staged slot change%s.\n"

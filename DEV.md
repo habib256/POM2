@@ -704,9 +704,14 @@ unplug).
 land on TXT16 / TXTGREEN (they were those switches under wrong labels). The
 variant and `invertBit7` are user settings and stay out.
 
-**UI**: the Chat Mauve panel shows the variant (combo), the latch, what the
-card decodes, and on the Eve the eight switches (a click is a `STA $C0Bx`)
-with CPREG and whether the aux shadow is armed.
+**UI**: the model is chosen in **Slot Configuration** — a "model" combo
+under any slot row set to Le Chat Mauve, staged and applied like the slot
+itself (persists `chatmauve_variant`); on a //c-class profile the row says
+the model is fixed by the DB-15 connector (Adaptateur IIc — enforced at plug
+time, whatever the setting says). The Chat Mauve panel also shows a live
+variant combo, plus the latch, what the card decodes, and on the Eve the
+eight switches (a click is a `STA $C0Bx`) with CPREG and whether the aux
+shadow is armed.
 
 **Not yet** (plan P3-P6): the Eve's decoder from its PLS100 fuse map, the RVB
 Graph, the //c adapter's inferred-80COL quirk, and the dot-clock tap that
