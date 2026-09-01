@@ -5,6 +5,37 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — The 6522 T1 read-back was one cycle low, and DIX rasters crawled
+
+TODO "Next up" §2, run to ground with the real demo. TRIBU (DIX anthology)
+chains five VIA T1 IRQs per PAL frame, each handler re-arming from the
+free-running counter (`ADC $C404 … STA $C405`) with constants the author
+tuned on AppleWin and a real Apple //e. That release-tuned `DELAY = 24`
+fixes the T1 counter read-back line at `written + 1 - elapsed`; POM2 used
+MAME's `-IFR_DELAY` bias (one lower), so every link lost a cycle — measured
+-5 cycles/frame: the whole raster layout crawled left one character cell
+every ~3 frames, which is exactly the "edges off by a cell" symptom filed
+as a mid-scanline placement bug. `Via6522.h` read-back bias is now -1
+(armed and free-running alike, the line continuous through the underflow);
+the continuous auto-reload period stays latch+2 (MAD EFFECT's pin). With
+the fix TRIBU's arms lock to scanlines 0/64/88/176/184 — the demo's design
+— and the frame is 20280 cycles on the nose. Pinned by `via_t1_rearm_chain`
+(read-back line + the exact TRIBU arithmetic drift-free over 40 frames);
+`dix_menu_raster_probe` (built, not a ctest) boots any DIX-family disk and
+dumps per-frame events, T1 arms and PPM frames. 237/237 green — the 4am
+Mockingboard detectors never pinned the ±1, and no golden moved.
+
+## 2026-09-02 — Beam-racing gets its own translation unit (and CI gets green)
+
+The 2026-09-01 push tripped CI twice: `-Werror` unused `iie80` (orphaned by
+the Chat Mauve early-return in `usesLegacyPath`) and the file-size ratchet
+(`Apple2Display.cpp` +42 over its 2486 ceiling). Fixed the variable, and
+honoured the ratchet the intended way: the beam-raced replay
+(`usesLegacyPath`, `renderInternalSegment`, `forEachBeamSegment`,
+`renderBeamRacing`) moved to `src/Apple2Display_Beam.cpp` — same shape as
+the Chat Mauve painters' split. `Apple2Display.cpp` 2528 → 2294, ceiling
+lowered 2486 → 2294.
+
 ## 2026-09-02 — DIX rasters under the Chat Mauve: one frame, one buffer
 
 User report: beam-raced DIX effects run clean on the composite pipelines but

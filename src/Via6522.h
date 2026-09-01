@@ -231,13 +231,33 @@ struct Via6522
         // counter == -1 → 0xFFFF). A bare read of the biased counter
         // returned N+2 right after a T1CH write — absolute-value
         // detectors (write $12xx, read back expecting $12) saw $13.
+        // T1 counter read-back bias is -1, NOT MAME's -IFR_DELAY (-2 on
+        // our +2-biased counter): the visible line is `written + 1 -
+        // elapsed` — the 6522 loads the counter on the phi2 AFTER the
+        // T1C-H write, so a read e cycles later shows N-(e-1). Measured,
+        // not assumed: French Touch's TRIBU (DIX anthology, GPLv3
+        // sources in disks_5.4/demo/unreeeal_superhero_3_tribute/)
+        // phase-locks five chained T1 IRQs per PAL frame by reading the
+        // free-running counter mid-handler (`ADC $C404 … STA $C405`,
+        // 21 cycles read→write) and re-arming with `TIMERn + readback`,
+        // every TIMERn carrying "DELAY = 24 ; value FOR APPLEWIN / REAL
+        // APPLE II". Per-link period = TIMERn + 21 + 1 + bias-line: the
+        // -1 bias holds the chain at exactly 20280 cycles/frame (drift
+        // 0, as released on hardware); with MAME's -2 every link lost
+        // one cycle — POM2 measured -5 cycles/frame on the real disk,
+        // every raster edge crawling left one character cell every ~3
+        // frames. The continuous auto-reload period stays latch+2
+        // (`via_t1_continuous_period`, MAD EFFECT); the same -1 applies
+        // disarmed (one-shot fired, counter free-running) so the line
+        // is continuous through the underflow. Pinned by
+        // `via_t1_rearm_chain`.
         case VIA_T1CL: {
             ifr &= ~IFR_T1;
-            const int32_t rb = t1FireArmed ? t1Counter - 2 : t1Counter;
+            const int32_t rb = t1Counter - 1;
             return static_cast<uint8_t>(rb & 0xFF);
         }
         case VIA_T1CH: {
-            const int32_t rb = t1FireArmed ? t1Counter - 2 : t1Counter;
+            const int32_t rb = t1Counter - 1;
             return static_cast<uint8_t>((rb >> 8) & 0xFF);
         }
         case VIA_T1LL:   return static_cast<uint8_t>(t1Latch & 0xFF);

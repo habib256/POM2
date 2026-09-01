@@ -20,8 +20,9 @@ effort in *italics*. File/line in `backticks`.
 5. [Backlog](#backlog) — everything else, by subsystem.
 
 **What to do next, in order (2026-09-01):** the three items under
-[Next up](#next-up) — Le Chat Mauve at the silicon, the mid-scanline raster
-offset French Touch's DIX exposes, and the Best1a.nib finding. The 3.5"
+[Next up](#next-up) — Le Chat Mauve at the silicon, the raster "offset" DIX exposed
+(closed 2026-09-02 — it was the 6522 T1 read-back bias), and the Best1a.nib
+finding. The 3.5"
 campaign that used to sit here (//c+, Liron card, plain //c over the SmartPort
 bus) closed on 2026-09-01; the
 [hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
@@ -107,51 +108,32 @@ latch RWTS polls before `$C0E9`. The legacy path now models the analog card's
 Purplesoft prompt went from 115 s to under 10 s of machine time. Pinned
 `diskii_motor_coast`.
 
-### 2 · 🟠 Mid-scanline switch lands one character cell off — DIX's rays
+### 2 · 🟢 "Mid-scanline raster offset" — was the 6522 T1 read-back, fixed 2026-09-02
 
-**Symptom** (2026-09-01, `DIX-fix.po`, `Apple //e Enhanced PAL`, composite
-OE): the French Touch raster part where horizontal purple/white bars pass
-*behind* the TV frame. Where a bar is hidden by the frame, the hidden span
-starts about **7 dots too early on the left and ends about 7 dots too late on
-the right** — one character cell each side, in the direction that widens the
-hidden span. Vertically the effect is exact, so this is the horizontal
-placement of a mid-line soft-switch, not the scanline.
+**What it really was.** The symptom filed here on 2026-09-01 (raster bars vs
+the frame art, edges off by about a character cell, seen on DIX) was NOT the
+horizontal placement of the mid-line soft-switch — it was the whole raster
+**crawling**. TRIBU (DIX's Unreeeal Superhero 3 tribute, GPLv3 sources in
+`disks_5.4/demo/unreeeal_superhero_3_tribute/`) phase-locks five chained VIA
+T1 IRQs per PAL frame, each handler re-arming with `TIMERn - IntL + counter
+read-back` (`ADC $C404 … STA $C405`, 21 cycles read→write, `DELAY = 24 ;
+value FOR APPLEWIN / REAL APPLE II`). POM2's T1 read-back used MAME's
+`-IFR_DELAY` bias; the release-tuned constant fixes the hardware line at
+`written + 1 - elapsed` — one cycle higher. Each link lost one cycle,
+measured -5 cycles/frame on the real disk: every switch column drifted left
+one character cell every ~3 frames, through HBL and onto the previous line.
+Fixed in `Via6522.h` (read-back bias -1, armed and free-running alike; the
+continuous period stays latch+2). Pinned by `via_t1_rearm_chain`; measured
+drift-free on TRIBU by `dix_menu_raster_probe` (arms locked to scanlines
+0/64/88/176/184, the demo's design). The DIX menu's own rasters
+(T2-timed, HBL-placed) were already exact — `frameCycleToPos`'s hpos-24
+mapping survives MAD EFFECT, the menu AND TRIBU untouched.
 
-**Where the placement is decided**: `Memory::pushVideoEventLocked` stamps the
-switch with `cycleCounter + cpu->getCurrentInstructionCycles()`, and
-`Apple2Display::frameCycleToPos` maps it to `byteCol = clamp((emuCycle % 65)
-− 25, 0, 40)` — "visually correct at the column boundary; the exact transition
-cycle within a character clock is a later refinement" (`Apple2Display.cpp`
-next to `frameCycleToPos`). Both replays (RGBA `renderInternalSegment`,
-composite `paintSignalBand`) consume that column through
-`forEachBeamSegment`, so the fix is in one place.
-
-**Why one cell, and why both ways**: two candidate causes, not exclusive.
-(a) The stamp is taken *inside* the instruction — the write of an `STA $C0xx`
-happens in its **last** cycle, and the exact cycle the switch is honoured is
-the one that decides the column; being a cycle early or late at a 65-cycle
-line is at most one cell. (b) The hardware pipeline: the byte fetched during
-cycle *n* is **displayed during the following cycle** (the video latch, UtA2e
-ch. 8 / Sather's timing diagrams), and a mode switch reaches the display side
-one character after the fetch side — a fetch-side switch (page flip) and a
-display-side one (TEXT/HGR, 80COL) do **not** land on the same column for the
-same cycle. A hidden span that opens with one kind of switch and closes with
-the other would widen by one cell on each side — exactly the symptom. DIX's
-MODPAGE trick mixes both kinds on one line.
-
-**How to settle it, then fix it** (*1-2 d*): (1) a synthetic test that throws
-each kind of switch (`$C050/51`, `$C054/55`, `$C00C/0D`, `$C05E/5F`) at a
-known cycle on a known scanline and asserts the dot column of the change,
-with the expected column derived from the hardware timing rather than from
-POM2's current mapping; (2) AppleWin as oracle — its `NTSC_VideoUpdateCycles`
-path is per-cycle and documented, so the same DIX screen in AppleWin
-(RGB or NTSC) gives the reference frame; MAME is **not** an oracle here (its
-Apple II video is per-scanline and does not model mid-line switches);
-(3) `frameCycleToPos` then gains the per-kind one-cell offset (or the stamp
-moves to the write cycle), the existing `horizontal_split*` goldens are
-re-derived, and DIX's raster screen becomes a golden. Related, and closed
-by the same work: the residual "mid-scanline split — exact transition cycle at
-character-clock" line under [Display](#display-hgr--dhgr--80-col).
+**Still open, now decoupled**: the residual "mid-scanline split — exact
+transition cycle at character-clock" refinement under
+[Display](#display-hgr--dhgr--80-col) (per-kind fetch-side vs display-side
+one-cycle offsets). No known title exhibits it since the T1 fix; revisit
+only with a measured case.
 
 ### 3 · 🟡 `Best1a.nib` did not boot — a write-back had eaten 20 bytes (fixed 2026-09-01, cause open)
 
