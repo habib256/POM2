@@ -81,7 +81,11 @@ bool IIcClassProfile::servesExternalSmartPort()
     // bank 1 the SmartPort bus code; with something answering on the bus,
     // that firmware enumerates and boots the drive itself, and the
     // host-served substitute must stay out of its way.
-    return hasAltBank_ && !isPlus_ && extPort_ && extPort_->live();
+    // …and the //c+ as well: its own firmware probes the rear connector for
+    // an intelligent device at boot ($F223 in bank 1, the same 50-poll
+    // scan), and boots or lists what answers. With a device answering, the
+    // real $C500 must run, not the substitute.
+    return hasAltBank_ && extPort_ && extPort_->live();
 }
 
 bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
@@ -123,6 +127,10 @@ bool IIcClassProfile::ioReadIWM(uint16_t addr, uint64_t cyc, uint8_t& out)
     // MAME's single-controller model (apple2e.cpp recalc_active_device
     // hands m_cur_floppy to ONE iwm): each drive class keeps the
     // controller that owns it.
+    // The rear connector's SmartPort device, on the //c+'s own IWM: while
+    // the firmware addresses the bus (or a transaction is in flight) the
+    // port answers; the Sony drives never see those bytes.
+    if (extPort_ && extPort_->sharedAfterRead(*iwm_, v, out)) return true;
     if (iwmAuthoritative_ && hub_ && hub_->active35Selected()) {
         out = v;
         return true;
@@ -143,7 +151,11 @@ void IIcClassProfile::ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc)
     // //c+ only — see the rationale in ioReadIWM above.
     if (!hasAltBank_ || !iwm_ || !isPlus_) return;
     iwm_->tick(cyc);
+    const bool forBus = extPort_ && extPort_->sharedWantsWrite(*iwm_);
+    iwm_->setBusCapture(forBus);
     iwm_->write(static_cast<uint8_t>(addr & 0xF), value);
+    if (extPort_) extPort_->sharedAfterWrite(*iwm_, static_cast<uint8_t>(addr & 0xF),
+                                             value, forBus);
 }
 
 bool IIcClassProfile::internalRomRead(uint16_t addr, uint8_t floatBus, uint8_t& out)

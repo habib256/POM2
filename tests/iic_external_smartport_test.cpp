@@ -40,6 +40,13 @@
 // The DiskIICard stays the 5.25" controller throughout — the port carries its
 // own register tracker and claims only the bus's accesses. Pinned separately
 // by `iic_diskii_no_iwm_conflict`.
+//
+// Then the //c+, whose shared IWM carries the bus and whose firmware numbers
+// the external chain from 2 (its MIG drive is device 1):
+//   D. empty internal bay, 3.5" on the rear port: the boot scan finds it and
+//      ProDOS 8 comes up off it over the bus;
+//   E. internal 3.5" boots (iicplus_boot35's case) with an external device
+//      present: ProDOS lists both slot-5 units.
 
 #include "DiskIICard.h"
 #include "IIcExternalSmartPort.h"
@@ -50,6 +57,9 @@
 #include "SlotBus.h"
 #include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
+#include "SmartPortHub.h"
+#include "Sony35Drive.h"
+#include "Disk35Image.h"
 
 #include <cstdio>
 #include <cstring>
@@ -159,6 +169,76 @@ Outcome run(const std::string& rom, const std::string& disk525,
     return o;
 }
 
+// The //c+: the machine's shared IWM carries the bus (MIG-routed Sony
+// drives on the same chip), so the port rides along instead of tracking
+// registers of its own. `internal35` fills the internal bay the way
+// iicplus_boot35 does; `disk35` goes on the slot-5 card = the rear port.
+Outcome runPlus(const std::string& rom, const std::string& internal35,
+                const std::string& disk35, bool bootSlot5)
+{
+    Outcome o;
+    Memory mem;
+    M6502  cpu(&mem);
+    mem.setCpu(&cpu);
+    pom2::IWMDevice    iwm;
+    pom2::SmartPortHub hub;
+    pom2::Disk35Image  imgInt, imgExt;
+    pom2::Sony35Drive  drvInt, drvExt;
+    drvInt.setImage(&imgInt);
+    drvExt.setImage(&imgExt);
+    hub.attach(&iwm);
+    hub.setSony35(&drvInt, &drvExt);
+    mem.setIWM(&iwm);
+    mem.setSmartPortHub(&hub);
+    pom2::IIcExternalSmartPort port(&mem.slotBus());
+    mem.setExternalSmartPort(&port);
+    mem.slotBus().plug(6, std::make_unique<DiskIICard>(6));
+    auto sp = std::make_unique<pom2::SmartPortCard>(5);
+    sp->setUnit(0, std::make_unique<pom2::SmartPort35Unit>());
+    sp->setUnit(1, std::make_unique<pom2::SmartPort35Unit>());
+    if (!disk35.empty()) {
+        std::string err;
+        if (!sp->mountBay(0, disk35, err)) std::printf("mount: %s\n", err.c_str());
+    }
+    mem.slotBus().plug(5, std::move(sp));
+    mem.setIIEMode(true);
+    mem.clearRam();
+    mem.resetSoftSwitches();
+    if (!mem.loadAppleIIRom(rom.c_str(), /*pickLowerHalf=*/true)) return o;
+    if (!internal35.empty()) {
+        if (imgInt.loadFile(internal35)) drvInt.notifyMediaChange();
+    }
+    cpu.setCpuMode(M6502::CpuMode::CMOS);
+    cpu.hardReset();
+    if (bootSlot5) { mem.setIicSmartPortArmed(true); cpu.setProgramCounter(0xC500); }
+
+    constexpr long kBudget = 60'000'000;
+    for (long total = 0; total < kBudget; ) {
+        total += cpu.run(4096);
+        if (!o.prodosSeen && (total % (1 << 20)) < 4096) {
+            if (scrapeTextPage(mem).find("ProDOS") != std::string::npos)
+                o.prodosSeen = true;
+        }
+    }
+    o.screen = scrapeTextPage(mem);
+    if (!o.prodosSeen && o.screen.find("ProDOS") != std::string::npos)
+        o.prodosSeen = true;
+    const uint8_t devcnt = mem.memRead(0xBF31);
+    o.devcnt = devcnt;
+    if (devcnt < 14) {
+        for (int i = 0; i <= devcnt; ++i) {
+            const uint8_t d = mem.memRead(static_cast<uint16_t>(0xBF32 + i));
+            const int  slot = (d >> 4) & 7;
+            const bool dr2  = (d & 0x80) != 0;
+            if (slot == 5 && !dr2) o.slot5Drive1 = true;
+            if (slot == 5 &&  dr2) o.slot5Drive2 = true;
+            if (slot == 6 && !dr2) o.slot6Drive1 = true;
+        }
+    }
+    o.bus = port.device().progress();
+    return o;
+}
+
 void dump(const char* label, const Outcome& o)
 {
     std::printf("--- %s: prodos=%d devcnt=%d S5D1=%d S5D2=%d S6D1=%d bus{tx=%d "
@@ -166,6 +246,7 @@ void dump(const char* label, const Outcome& o)
                 o.slot5Drive1 ? 1 : 0, o.slot5Drive2 ? 1 : 0,
                 o.slot6Drive1 ? 1 : 0, o.bus.transactions, o.bus.blocksRead,
                 o.bus.commandByte);
+    std::fflush(stdout);   // keep the dumps in order with a stderr bus trace
 }
 
 }  // namespace
@@ -213,6 +294,39 @@ int main()
             fail("C: the port took a command with no media — an empty chain "
                  "must be silence, or the firmware boots an absent disk");
         if (g_failures) std::printf("%s", o.screen.c_str());
+    }
+
+    // ── The //c+ ─────────────────────────────────────────────────────────
+    const std::string romPlus = pom2::findResource("roms/apple2cp.rom");
+    if (romPlus.empty()) {
+        std::printf("NOTE: no roms/apple2cp.rom — the //c+ half is skipped\n");
+    } else {
+        const std::string psDisk =
+            pom2::findResource("disks_3.5/The New Print Shop 800K.po");
+        // D. Nothing in the internal bay, an 800K on the rear port: the
+        //    firmware's boot scan finds the external device and boots it.
+        {
+            const Outcome o = runPlus(romPlus, "", disk35, /*bootSlot5=*/false);
+            dump("D //c+ empty bay + external 3.5, cold boot", o);
+            if (!o.prodosSeen)
+                fail("D: the //c+ did not boot the external 3.5\" — its $F223 "
+                     "scan found no device on the port");
+            if (o.bus.blocksRead == 0) fail("D: no block was read over the bus");
+            if (g_failures) std::printf("%s", o.screen.c_str());
+        }
+        // E. Internal 3.5" boots (the MIG path, iicplus_boot35's case) with an
+        //    external device present: both must end up in ProDOS's list.
+        if (!psDisk.empty()) {
+            const Outcome o = runPlus(romPlus, disk35, psDisk, /*bootSlot5=*/false);
+            dump("E //c+ internal boot + external 3.5", o);
+            if (!o.prodosSeen) fail("E: ProDOS did not boot from the internal bay");
+            if (!o.slot5Drive1 || !o.slot5Drive2)
+                fail("E: ProDOS lists fewer than two slot-5 units — the external "
+                     "drive was not enumerated next to the internal one");
+            if (o.bus.transactions == 0)
+                fail("E: the firmware never spoke to the rear port");
+            if (g_failures) std::printf("%s", o.screen.c_str());
+        }
     }
 
     if (g_failures) return 1;

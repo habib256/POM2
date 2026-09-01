@@ -140,6 +140,13 @@ public:
 private:
     std::array<SmartPortBusUnit*, kMaxUnits> units_{};
     int unitCount_ = 0;
+    // Chain numbers are ASSIGNED by the host: each INIT it sends names the
+    // next device down the chain, and the number it carries is whatever the
+    // host's own scan reached — 1 on a Liron or a //c, 2 on a //c+ whose
+    // internal MIG drive is device 1. A device does not know its number
+    // until told, so neither does this one.
+    std::array<uint8_t, kMaxUnits> ids_{};   // 0 = not yet assigned
+    int assigned_ = 0;
 
     // Receive side: raw wire bytes since the last packet boundary. The frame
     // is delimited by its own counts — $C8 can also be a data byte ($48 with

@@ -32,6 +32,17 @@
 // built-in SmartPort the //c profiles plug there — through
 // `SlotPeripheral::smartPortBusUnit`, so the media panel is unchanged: what
 // the user mounts on "slot 5" is what the firmware finds on the port.
+//
+// The //c+ has the same connector and probes it the same way (its bank-1
+// scan at $F223, fifty SENSE polls with SEL on drive 2), but there the
+// machine's shared IWM already owns the port for the MIG-routed Sony drives,
+// so this port rides along on that chip instead of tracking registers of its
+// own — the `shared*` half of the contract. Its firmware numbers the external
+// chain from 2, its internal drive being device 1; the responder takes the
+// numbers the host assigns. The 16 KB //c (ROM 255) has no SmartPort
+// firmware at all — its $C500 is not a disk page — so on that machine the
+// rear connector carries a second 5.25" (`DiskIICard` drive 2) and a 3.5"
+// is reachable only through the host-served substitute.
 
 #ifndef POM2_IIC_EXTERNAL_SMARTPORT_H
 #define POM2_IIC_EXTERNAL_SMARTPORT_H
@@ -57,6 +68,21 @@ public:
     void write(uint8_t offset, uint8_t value, uint64_t cycles) override;
     void reset() override;
 
+    // ── The //c+ path: the machine's own IWM carries the bus ─────────────
+    // On the //c+ the shared IWM already owns the port (MIG-routed Sony
+    // drives), so the port does not track registers of its own there: the
+    // caller performs the access on that IWM and lets the port watch the
+    // lines around it. Same claim rule, same answers.
+    /// Before a write: true when the byte is the bus's — the caller then
+    /// sets `setBusCapture(true)` on the IWM so it stays out of the shifter.
+    bool sharedWantsWrite(const IWMDevice& iwm) override;
+    /// After the IWM took the write.
+    void sharedAfterWrite(const IWMDevice& iwm, uint8_t offset, uint8_t value,
+                          bool forBus) override;
+    /// After the IWM answered a read with `iwmValue`: true with the port's
+    /// byte when the access was the bus's.
+    bool sharedAfterRead(const IWMDevice& iwm, uint8_t iwmValue, uint8_t& out) override;
+
     void setEnabled(bool on) { enabled_ = on; }
     bool enabled() const { return enabled_; }
 
@@ -72,7 +98,14 @@ private:
 
     /// Refresh the unit list from the slot card. True when a card offers any.
     bool bind();
-    bool addressed() const;
+    static bool addressed(uint8_t phases, uint8_t control);
+    /// PH0 is REQ; PH0 + PH2 together is the bus reset ($C9E5 in the Liron
+    /// dump). Own-IWM mode gets this from the phases callback, shared mode
+    /// from a look at the lines after each access.
+    void syncLines(uint8_t phases);
+    bool answer(uint8_t control, uint8_t iwmValue, uint8_t& out);
+    void takeByte(const IWMDevice& iwm, uint8_t offset, uint8_t value);
+    uint8_t lastPhases_ = 0;
 };
 
 }  // namespace pom2

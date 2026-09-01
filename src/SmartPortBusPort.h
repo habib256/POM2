@@ -31,6 +31,8 @@
 
 namespace pom2 {
 
+class IWMDevice;
+
 class SmartPortBusPort {
 public:
     virtual ~SmartPortBusPort() = default;
@@ -54,6 +56,20 @@ public:
     /// Machine reset, or a state restore the port's own state was not part
     /// of: abandon any transaction in flight.
     virtual void reset() = 0;
+
+    // ── When the machine's own IWM carries the bus (the //c+) ────────────
+    // The caller performs the access on that IWM and lets the port watch the
+    // lines around it: same claim rule, same answers, no second tracker.
+    /// Before a write: true when the byte is the bus's — the caller then
+    /// sets `setBusCapture(true)` on the IWM so it stays out of the shifter.
+    virtual bool sharedWantsWrite(const IWMDevice& /*iwm*/) { return false; }
+    /// After the IWM took the write.
+    virtual void sharedAfterWrite(const IWMDevice& /*iwm*/, uint8_t /*offset*/,
+                                  uint8_t /*value*/, bool /*forBus*/) {}
+    /// After the IWM answered a read with `iwmValue`: true with the port's
+    /// byte when the access was the bus's.
+    virtual bool sharedAfterRead(const IWMDevice& /*iwm*/, uint8_t /*iwmValue*/,
+                                 uint8_t& /*out*/) { return false; }
 };
 
 }  // namespace pom2
