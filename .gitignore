@@ -12,6 +12,8 @@ DIST/
 imgui/
 *.o
 *.obj
+# A coverage-instrumented binary run from the repo root drops one here.
+*.profraw
 .cache/
 .claude/
 compile_commands.json

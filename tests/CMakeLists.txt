@@ -509,6 +509,12 @@ add_test(NAME smartport_35_smoke COMMAND test_smartport_35)
 set_tests_properties(smartport_35_smoke PROPERTIES TIMEOUT 5)
 
 
+# smartport_bus_handshake's 120 s is not padding. It drives real firmware to
+# completion, and the coverage leg builds Debug + instrumented: measured at
+# 3.0 s in this Release tree and 16.6 s in that configuration, against the
+# 30 s it used to carry — and that leg then runs the suite at -j(nproc) on a
+# shared runner. The two boot tests below have 5x headroom at their 60 s in
+# the same measurement, so they keep it.
 # ─── The SmartPort BUS protocol, as far as POM2 speaks it ────────────────
 # `liron_boot35` below pins the card with its bus responder OFF (a Liron with
 # an empty port, which is what ships). This one pins it ON: the firmware sees
@@ -539,7 +545,7 @@ endif()
 add_test(NAME smartport_bus_handshake
          COMMAND test_smartport_bus_handshake
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(smartport_bus_handshake PROPERTIES TIMEOUT 30)
+set_tests_properties(smartport_bus_handshake PROPERTIES TIMEOUT 120)
 
 
 # ─── The Liron card, and the wall it hits ─────────────────────────────────

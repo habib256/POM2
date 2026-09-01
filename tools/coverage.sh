@@ -108,7 +108,16 @@ echo "coverage: running the suite"
 CTEST_RC=$?
 if [ "$CTEST_RC" -ne 0 ]; then
     echo "coverage: the suite is not green — measure on a green tree" >&2
-    grep -E "tests passed|FAILED" "$BUILD_DIR/ctest.log" >&2
+    # ctest names the casualties as "  N - name (Failed)" / "(Timeout)" —
+    # lower-case, so a grep for FAILED prints the "The following tests
+    # FAILED:" banner and then nothing. CI's log is all anyone gets (this
+    # build tree is not uploaded), so a red run that does not name the test
+    # is a run nobody can act on. Print the banner AND what follows it, plus
+    # the failing tests' own output.
+    grep -E "tests passed|\(Failed\)|\(Timeout\)|\(Subprocess aborted\)" \
+         "$BUILD_DIR/ctest.log" >&2
+    echo "--- last 80 lines of ctest.log ---" >&2
+    tail -80 "$BUILD_DIR/ctest.log" >&2
     exit 1
 fi
 

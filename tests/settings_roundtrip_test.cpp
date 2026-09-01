@@ -57,6 +57,16 @@ int main()
     fs::remove_all(home);
     fs::create_directories(home);
     ::setenv("HOME", home.string().c_str(), 1);
+    // HOME alone does not pin the config directory on Linux/BSD:
+    // userConfigDir() prefers XDG_CONFIG_HOME whenever it is set, and a
+    // GitHub runner sets it. Left alone, this test resolved to the machine's
+    // REAL ~/.config/POM2 — which it then truncates with a 4 MB junk file to
+    // exercise the oversize guard — and the "does not cache" check below
+    // compared a sandbox path against a machine path and aborted. Both
+    // variables point into the sandbox for the whole run.
+#if !defined(_WIN32) && !defined(__APPLE__)
+    ::setenv("XDG_CONFIG_HOME", (home / "config").string().c_str(), 1);
+#endif
 
     const std::string kHash   = "/home/u/My#Disks/game.dsk";   // '#' mid-value
     const std::string kLeadHash = "#literal-hash-start";        // '#' at value start
@@ -198,7 +208,9 @@ int main()
         assert(pom2::userConfigDir() != dir &&
                "userConfigDir must not cache its first answer");
         ::setenv("HOME", home.string().c_str(), 1);
-        ::unsetenv("XDG_CONFIG_HOME");
+#  if !defined(__APPLE__)
+        ::setenv("XDG_CONFIG_HOME", (home / "config").string().c_str(), 1);
+#  endif
         assert(pom2::userConfigDir() == dir);
 #endif
     }
