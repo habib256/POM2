@@ -59,12 +59,13 @@ out as the maker drew them.
 
 **What is left, in order** (plan § 5):
 
-- 🟠 **Pin the Purplesoft screens** — `DEMO GR16K` modes 6-10 and `DEMO
-  TEXTE` screens 1-6 as golden hashes (the probe is deterministic: same boot,
-  same RND seed; ~1 s of wall time for 400 s of machine). Needs the disk in
-  the tree: `disks_5.4/chatmauve/` is **untracked** today — decide whether
-  the ten Purplesoft / Purple Pascal images (1.4 MB) join `disks_5.4/gist/`
-  under git. A test that SKIPs when the disk is absent is the usual shape.
+- ✅ **Pin the Purplesoft screens** — done 2026-09-01 evening:
+  `purplesoft_eve_screens` boots the demos disk (tracked since `7c8eba4`),
+  runs both demos and freezes every STABLE screen (switch state + frame hash
+  unchanged for 2 s of machine time = the demo's `FOR T` pauses): 6 GR16K
+  screens (COL140 / COL280A / COL280B / CP280 / BW560 / final prompt) + 7
+  TEXTE screens. ~4 s of wall time; SKIPs without the disk; regenerate with
+  `POM2_GOLDEN_RECORD=1` after an intentional timing change.
 - 🟠 **P3 — the Eve's pixel rules from the PLA** (`Chat_Mauve_eve_PLA.jed`,
   48 terms decoded): SPEC1 / SPEC2 are modelled from the manual's prose (5-dot
   window: `11011` → black, `00100` → white), DASH renders as HRAPPLEII, HR3

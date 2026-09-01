@@ -2983,6 +2983,37 @@ endif()
 add_test(NAME diskii_motor_coast COMMAND test_diskii_motor_coast)
 set_tests_properties(diskii_motor_coast PROPERTIES TIMEOUT 10)
 
+# Purplesoft demo screens on an Eve, frozen (docs/chatmauve_plan.md P2 pin):
+# boots the maker's demos disk, runs DEMO GR16K (table IX-1's five AN3-off
+# modes) and DEMO TEXTE (the six text screens), hashes every stable screen.
+# Regenerate with POM2_GOLDEN_RECORD=1 after an intentional timing or
+# decode change. SKIPs when roms/ or the demos disk is absent.
+add_executable(test_purplesoft_eve_screens
+    purplesoft_eve_screens_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_ChatMauve.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_purplesoft_eve_screens PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_purplesoft_eve_screens PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_purplesoft_eve_screens PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_purplesoft_eve_screens PRIVATE winmm)
+endif()
+add_test(NAME purplesoft_eve_screens COMMAND test_purplesoft_eve_screens
+         WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+set_tests_properties(purplesoft_eve_screens PROPERTIES TIMEOUT 120)
+
 # Purplesoft-on-an-Eve probe (diagnostic executable, no add_test): boots the
 # card maker's demo disk with a Le Chat Mauve Eve, types a RUN, logs the Eve
 # switch changes against what the card decodes, writes PPM frames.

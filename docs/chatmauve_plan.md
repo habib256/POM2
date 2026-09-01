@@ -432,8 +432,9 @@ adapter behaviours).
 **P2 — The Eve's switches and CPREG (1½ d). ✅ 2026-09-01** — everything
 listed, the variant as a card setting rather than four catalog keys (see
 `LeChatMauveCard.h`), table IX-1 corrected from Purplesoft's tables.
-Purplesoft `DEMO GR16K` / `DEMO TEXTE` run through `purplesoft_eve_probe`;
-their screens as goldens are the next step.
+Purplesoft `DEMO GR16K` / `DEMO TEXTE` run through `purplesoft_eve_probe`,
+and their stable screens are frozen by `purplesoft_eve_screens` (6 + 7
+ordered switch-state + frame-hash pairs).
 
 *As planned:* Full `$C0B0-$C0BF` decode,
 CPREG latch on every write, the auto-write hook in `Memory`, TXT16 with
