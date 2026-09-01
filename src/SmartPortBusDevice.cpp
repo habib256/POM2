@@ -134,6 +134,13 @@ bool SmartPortBusDevice::anyMedia() const
     return false;
 }
 
+bool SmartPortBusDevice::unitHasMedia(int index) const
+{
+    if (index < 0 || index >= unitCount_) return false;
+    const SmartPortBusUnit* u = units_[static_cast<std::size_t>(index)];
+    return u && u->hasMedia();
+}
+
 SmartPortBusUnit* SmartPortBusDevice::unitFor(uint8_t chainNumber) const
 {
     for (int i = 0; i < unitCount_; ++i)
@@ -277,10 +284,13 @@ void SmartPortBusDevice::onPacketComplete()
 
     rx_.clear();
     // The ack: the host is polling for SENSE LOW at $C943 before it drops
-    // REQ. A frame that failed to decode gets no reply; the firmware's retry
-    // loop re-sends, which is the right recovery for a garbled packet.
+    // REQ. A frame that failed to decode — or whose checksum does not match
+    // — gets no reply; the firmware's retry loop re-sends, which is the
+    // right recovery for a garbled packet. Serving it instead would let a
+    // frame spliced from two transactions write a block of garbage.
     sense_ = false;
-    if (!ok || !endOk) return;
+    if (got != checksum) ++progress_.badChecksums;
+    if (!ok || !endOk || got != checksum) return;
 
     const uint8_t type = header[2];
     if (type == kTypeCommand) {

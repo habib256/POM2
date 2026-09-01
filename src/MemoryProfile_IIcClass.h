@@ -46,7 +46,7 @@ public:
     bool romBankToggle() override;
 
     bool ioReadIWM (uint16_t addr, uint64_t cyc, uint8_t& out) override;
-    void ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc) override;
+    bool ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc) override;
 
     bool internalRomRead (uint16_t addr, uint8_t floatBus, uint8_t& out) override;
     bool internalRomWrite(uint16_t addr, uint8_t value) override;
@@ -57,6 +57,7 @@ public:
     void setIwmAuthoritative(bool on) override            { iwmAuthoritative_ = on; }
     void setExternalSmartPort(pom2::SmartPortBusPort* port) override { extPort_ = port; }
     bool servesExternalSmartPort() override;
+    bool isIIcPlus() const override { return isPlus_; }
 
     /// //c+ MIG state (page pointer + 2 KB RAM) for snapshot / rewind.
     /// Without these the MIG falls out of a rewind and the IWM freezes

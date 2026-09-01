@@ -2953,6 +2953,17 @@ every //c+ READ with `$2F`. `SmartPortBusDevice` now assigns on INIT and
 forgets on bus reset. Pinned in `iic_external_smartport` (D: empty bay boots
 the external 3.5"; E: internal boot lists both units).
 
+**Three rules bug hunt 3 added** (2026-09-01). A `$C0Ex` write the port
+claims is dropped from the slot bus (`ioWriteIWM` returns the claim; the
+read side already did this) — the packet bytes are the exact shape of a Disk
+II write sequence and the card spliced them as flux. On a //c+ whose
+firmware serves the port, `EmulationController::bootFromSlot(5)` is a reset
+(`Memory::iicPlusBootsSlot5ByReset`): the real `$C500` entered directly never
+scans the port, the reset-time scan at `$F223` does. And a frame whose
+checksum fails gets no reply, while any change in which units hold media
+resets the protocol (`live()` compares a media mask) — a stale half-frame
+must never be spliced with the next transaction.
+
 **The 16 KB //c (ROM 255)** has no SmartPort firmware: its `$C500` is not a
 disk page (`FF 20 4D CE …`), so nothing on that machine can speak to an
 intelligent drive — historically the reason for the ROM 0 upgrade. Its rear

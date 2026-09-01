@@ -98,6 +98,7 @@ public:
     /// presence poll with silence, so the firmware reports $28 and a //c
     /// autostart falls through to its internal drive.
     bool anyMedia() const;
+    bool unitHasMedia(int index) const;
 
     // ── Bus-side events, from whoever owns the IWM registers ─────────────
     /// Machine reset, or the bus reset the firmware issues before an INIT
@@ -132,6 +133,7 @@ public:
         int         transactions = 0;     // replies armed
         int         blocksRead   = 0;
         int         blocksWritten = 0;
+        int         badChecksums = 0;    // frames refused for their checksum
     };
     const Progress& progress() const { return progress_; }
 

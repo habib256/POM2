@@ -45,7 +45,19 @@ bool IIcExternalSmartPort::bind()
 
 bool IIcExternalSmartPort::live()
 {
-    return enabled_ && bind() && bus_.anyMedia();
+    const bool bound = bind();
+    // Media changing under a transaction (eject mid-WRITE, a mount right
+    // after) must not leave half a frame in the responder to be spliced
+    // with the next one: any change in which units hold media starts the
+    // protocol over.
+    unsigned mask = 0;
+    for (int i = 0; i < SmartPortBusDevice::kMaxUnits && i < bus_.unitCount(); ++i)
+        if (bus_.unitHasMedia(i)) mask |= 1u << i;
+    if (mask != mediaMask_) {
+        mediaMask_ = mask;
+        bus_.busReset();
+    }
+    return enabled_ && bound && mask != 0;
 }
 
 bool IIcExternalSmartPort::addressed(uint8_t phases, uint8_t control)
@@ -109,7 +121,7 @@ bool IIcExternalSmartPort::read(uint8_t offset, uint64_t cycles, uint8_t& out)
     return answer(regs_.control(), v, out);
 }
 
-void IIcExternalSmartPort::write(uint8_t offset, uint8_t value, uint64_t cycles)
+bool IIcExternalSmartPort::write(uint8_t offset, uint8_t value, uint64_t cycles)
 {
     regs_.tick(cycles);
     // Decided BEFORE the access: the byte that establishes write mode
@@ -121,6 +133,7 @@ void IIcExternalSmartPort::write(uint8_t offset, uint8_t value, uint64_t cycles)
     regs_.setBusCapture(forBus);
     regs_.write(static_cast<uint8_t>(offset & 0xF), value);
     if (forBus) takeByte(regs_, offset, value);
+    return forBus;
 }
 
 bool IIcExternalSmartPort::sharedWantsWrite(const IWMDevice& iwm)
@@ -149,6 +162,7 @@ void IIcExternalSmartPort::reset()
     regs_.reset();
     bus_.reset();
     lastPhases_ = 0;
+    mediaMask_  = 0;
 }
 
 }  // namespace pom2

@@ -101,7 +101,18 @@ bool LironCard::busAddressed() const
 
 bool LironCard::busLive() const
 {
-    return busEnabled_ && bus_.anyMedia();
+    // A bay changing state under a transaction (eject mid-WRITE, a mount
+    // right after) must not leave half a frame in the responder to be
+    // spliced with the next one: any change in which bays hold media starts
+    // the protocol over.
+    unsigned mask = 0;
+    for (int i = 0; i < kDrives; ++i)
+        if (images_[static_cast<std::size_t>(i)].isLoaded()) mask |= 1u << i;
+    if (mask != busMediaMask_) {
+        busMediaMask_ = mask;
+        bus_.busReset();
+    }
+    return busEnabled_ && mask != 0;
 }
 
 uint8_t LironCard::deviceSelectRead(uint8_t low4)
@@ -165,16 +176,21 @@ void LironCard::deviceSelectWrite(uint8_t low4, uint8_t v)
     // access completed the Q6+Q7 pair, and that includes the packet's first
     // bytes: the sender establishes write mode with `STA $C08F,X` carrying
     // the first sync byte.
+    // Decided BEFORE the access, on the state the byte arrives in: the
+    // firmware establishes write mode with `STA $C08F,X` carrying the first
+    // sync byte, so the state after the access is what tells a data write
+    // from a mode write (the IWM's own test), but whether the byte is the
+    // BUS's is known before it — PH1 + LSTRB up, or a transaction in flight.
+    // Capture keeps it out of the shifter: bus bytes are not flux, and left
+    // in they raised "write underrun" on every packet and, with write-back
+    // on, ran a track decode per block over garbage (bug hunt 3).
+    const bool forBus = busLive() && (busAddressed() || bus_.active());
+    iwm_.setBusCapture(forBus);
     iwm_.write(low4, v);
-    // …and only while the drive is enabled. The IWM makes the same test —
-    // an odd-offset write with Q6+Q7 is a DATA byte when the device is
-    // active and the MODE register otherwise — and mistaking the mode write
-    // for a command byte poisons the packet before it starts, which then
-    // reads as "the probe failed". The address gate keeps a Sony GCR write
-    // (same register, same mode, no bus handshake) out of the packet buffer.
-    if (busLive() && !iwm_.isIdle() &&
-        (iwm_.control() & 0xC0) == 0xC0 && (low4 & 1) &&
-        (busAddressed() || bus_.active()))
+    // …and only while the drive is enabled: an odd-offset write with Q6+Q7 is
+    // a DATA byte when the device is active and the MODE register otherwise.
+    if (forBus && !iwm_.isIdle() &&
+        (iwm_.control() & 0xC0) == 0xC0 && (low4 & 1))
         bus_.hostWrote(v);
 }
 
@@ -206,6 +222,8 @@ void LironCard::onReset()
     for (auto& d : drives_) d.reset();
     active_ = -1;
     bus_.reset();
+    iwm_.setBusCapture(false);
+    busMediaMask_ = 0;
     retargetIwm();
 }
 

@@ -54,7 +54,11 @@ public:
     // shadow mode or with no media/IWM (caller falls back to the slot-6
     // LSS byte). Write: dispatches the byte to the IWM.
     virtual bool ioReadIWM (uint16_t addr, uint64_t cyc, uint8_t& out) = 0;
-    virtual void ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc) = 0;
+    /// Returns true when the external SmartPort port CLAIMED the write —
+    /// Memory then keeps it from the slot-6 Disk II, exactly as on the read
+    /// side: the bus's packet bytes are not flux, and a DiskIICard that
+    /// saw them spliced them into the 5.25" under its head (bug hunt 3).
+    virtual bool ioWriteIWM(uint16_t addr, uint8_t value, uint64_t cyc) = 0;
 
     // $C100-$CFFF under INTCXROM. Returns true + `out` for //c+ MIG
     // windows ($CC00/$CE00) or alt-firmware bank 1; false ⇒ caller
@@ -80,6 +84,8 @@ public:
     /// firmware at all). Optional: with none set, the //c keeps the
     /// host-served $C500 substitute. See SmartPortBusPort.h.
     virtual void setExternalSmartPort(pom2::SmartPortBusPort* /*port*/) {}
+    /// The //c+ (MIG + shared IWM), as opposed to the plain //c.
+    virtual bool isIIcPlus() const { return false; }
     /// True while the machine's own firmware is serving slot 5 over that
     /// port — Memory must then leave the real $C500 page alone.
     virtual bool servesExternalSmartPort() { return false; }

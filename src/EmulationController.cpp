@@ -638,6 +638,23 @@ bool EmulationController::bootFromSlot(int slot)
     const uint8_t b5 = mem.memRead(static_cast<uint16_t>(cnxx + 5));
     const bool hasBootDispatch =
         (b1 == 0x20) && (b3 == 0x00) && (b5 == 0x03);
+    // //c+ with a device answering on its rear connector: the real $C500
+    // carries a valid signature but, entered here rather than from reset,
+    // never scans the port — it reports UNABLE TO FIND A BOOTABLE DISK.
+    // Its reset-time scan ($F223) does find the device and boots it, so an
+    // explicit boot of slot 5 is a reset there (bug hunt 3). The plain //c's
+    // $C500 boots when entered directly and keeps this path.
+    if (slot == 5 && mem.iicPlusBootsSlot5ByReset()) {
+        pom2::log().info("Emul",
+            "Slot 5 on a //c+ is served by its own firmware over the "
+            "SmartPort bus — booting through the ROM's reset scan");
+        mem.setIicSmartPortArmed(false);
+        processor.hardReset();
+        workerParked_.store(false);
+        mode.store(Mode::Running);
+        wakeCv.notify_all();
+        return true;
+    }
     if (!hasBootDispatch) {
         pom2::log().warn("Emul",
             "Slot " + std::to_string(slot) +
