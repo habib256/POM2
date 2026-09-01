@@ -273,7 +273,6 @@ set(SOURCES
     src/ProDOSHardDiskCard.cpp
     src/ProDOSVolume.cpp
     src/ResourcePaths.cpp
-    src/RomLoader.cpp
     src/FloppyEmuDevice.cpp
     src/FloppyEmu_ImGui.cpp
     src/Settings.cpp
@@ -622,7 +621,6 @@ set(POM2_RUNTIME_SOURCES
     src/PrinterScreenDump.cpp
     src/PrinterSoundDevice.cpp
     src/RewindBuffer.cpp
-    src/RomLoader.cpp
     src/SlirpNetworkBackend.cpp
     src/SpOverSlipLink.cpp
     src/SpSerialTransport.cpp
@@ -1174,7 +1172,6 @@ set(POM2_CORE_SOURCES
     src/ProDOSHardDiskCard.cpp
     src/ProDOSVolume.cpp
     src/ResourcePaths.cpp
-    src/RomLoader.cpp
     src/FloppyEmuDevice.cpp
     src/Settings.cpp
     src/SlotBus.cpp
@@ -1353,7 +1350,6 @@ add_executable(pom2_headless
     src/NoSlotClock.cpp
     src/ResourcePaths.cpp
     src/RewindBuffer.cpp
-    src/RomLoader.cpp
     src/SlotBus.cpp
     src/SnapshotIO.cpp
     src/SpeakerDevice.cpp
@@ -1423,7 +1419,6 @@ add_executable(pom2_bench
     src/MemoryProfile_IIcClass.cpp
     src/NoSlotClock.cpp
     src/ResourcePaths.cpp
-    src/RomLoader.cpp
     src/SlotBus.cpp
     src/SmartPortHub.cpp
     src/SnapshotIO.cpp

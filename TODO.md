@@ -134,7 +134,7 @@ paths mutation-checked.
 
 | # | Item | Why |
 | - | ---- | --- |
-| 2-5 | 🟡 **`RomLoader.cpp` and `CharRomCatalog.cpp` at 0 %** — every profile's ROM probe order and the character-ROM locale fallback, with no test at all. | The path every single boot takes, and the one that decides whether the machine you asked for is the machine you got. |
+| 2-5 | ✅ **`RomLoader.cpp` and `CharRomCatalog.cpp` at 0 %** — *landed 2026-09-01, and the premise was wrong a fourth time.* `RomLoader` was not untested, it was **dead**: zero call sites anywhere in the tree (cards keep their ROM in their own byte array and serve it from the slot bus; nobody has flashed a card ROM into `Memory` for a long time), yet it was compiled into the app and nine test binaries. Deleted. `CharRomCatalog` got the test it was actually missing (`char_rom_catalog`), both new assertions mutation-checked. | — |
 | 2-6 | 🟢 **The three host transports at 0 %** — `SlirpNetworkBackend`, `SpSerialTransport`, `SuperSerialTcpTransport`. | Seams exist for all three now (`ssc_transport_seam`, `fujinet_link_seam`), so these are testable in a way they were not before the 2026-08-27 seam work. |
 | 2-3b | 🟢 **Extend `-Werror` to the GCC leg** — it is on for macOS/AppleClang (2026-08-28). GCC's warning set is not clang's and nobody has cleaned it, so turning it on blind would red `main`. Build the Linux job once with it, fix what it names, then wire it. | The leg that catches what clang does not — transitive includes, and its own `-Wmaybe-uninitialized` family. |
 

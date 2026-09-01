@@ -5,6 +5,51 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-01 — The 0 % file that was dead, and the one that held a contract
+
+P2-5 said "`RomLoader.cpp` and `CharRomCatalog.cpp` are at 0 %, write tests".
+Half of that was the wrong instruction, in the same shape as the three other
+premises the 2026-08-28 pass got wrong: **`RomLoader` had no callers at all.**
+Not one, in `src/` or `tests/` — the single test that `#include`d the header
+never called a function from it. Its API flashes a ROM into `Memory` and
+restores the write-protect bitmap; cards stopped doing that when they started
+keeping their ROM in their own byte array and answering the slot bus from
+there (`GrapplerCard`, `SmartPortCard`, `ClockCard` each open their own
+`ifstream`). So the coverage number was not naming an untested boot path, it
+was naming 83 lines of code that had quietly fallen out of the machine while
+staying in six source lists in `CMakeLists.txt`, nine test targets, and every
+binary POM2 ships. Deleted rather than tested: a test would have pinned an
+API nothing calls, and made the file *look* alive to the next reader of the
+coverage table.
+
+Worth stating as a rule, because the coverage floor will keep producing this
+question: **a 0 % file is a fork, not a task.** Either something needs it and
+the test is missing, or nothing needs it and the test would be the only thing
+keeping it. Check the call sites before writing the test.
+
+`CharRomCatalog` was the other half and it was the real one — 0 % because it
+is reachable only from three UI translation units, while what it holds is a
+**persistence contract**: `state.cfg` stores the locale as a string key, and
+that mapping is written out three times over (the catalog vector, the enum→key
+`switch`, the key→enum `if` chain). The drift that costs the user something is
+silent by construction: a locale added to the first two and missed in the
+third reads back as `ProfileDefault`, so a French //e quietly reverts to the
+stock US font on the next launch with no error anywhere. `char_rom_catalog`
+pins the round-trip for all fourteen locales, the key strings **verbatim**
+(they are on disk in every user's settings; renaming one is a migration, not
+a refactor), the unknown-key and out-of-range fallbacks, the profile partition
+in both directions (a 2 KB part is never offered to a //e, a 4 KB one never
+to a II+, and every profile keeps exactly one reachable "Default"), and the
+two 342-0274-A entries selecting **different banks** of the one 8 KB dump —
+both on bank 0 would draw identical glyphs in the picker. Both of those last
+two were mutation-checked by breaking the source and watching the test fail.
+
+One incident from doing it, since it wastes an hour when it happens: restoring
+a mutated source with `cp` gave the file the **same mtime second** as its
+object, `make` declared the target up to date, and the full `ctest` run failed
+on a binary built from the mutation that no longer existed in the tree. `touch`
+the file after any such restore.
+
 ## 2026-09-01 — TransWarp: the accelerator POM2 could model as a clock, not a CPU
 
 Applied Engineering's **TransWarp** (catalog `transwarp`), ported from MAME

@@ -82,7 +82,6 @@ set(POM2_TEST_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
     ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
     ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
     ${CMAKE_SOURCE_DIR}/src/SnapshotIO.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
@@ -1599,7 +1598,6 @@ add_executable(test_diskii_lss
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
     ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
 )
@@ -3976,7 +3974,6 @@ add_executable(test_mockingboard
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4022,7 +4019,6 @@ add_executable(test_mockingboard_audio_quality
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_audio_quality PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4072,7 +4068,6 @@ add_executable(test_mockingboard_sync
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_sync PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4120,7 +4115,6 @@ add_executable(test_mockingboard_4am_detect
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_4am_detect PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4169,7 +4163,6 @@ add_executable(test_mockingboard_irq_delivery
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_irq_delivery PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -4218,7 +4211,6 @@ add_executable(test_mockingboard_iie_irq
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_iie_irq PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -5415,7 +5407,6 @@ add_executable(test_mockingboard_timeline
     ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
     ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
-    ${CMAKE_SOURCE_DIR}/src/RomLoader.cpp
     ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
 )
 target_include_directories(test_mockingboard_timeline PRIVATE ${CMAKE_SOURCE_DIR}/src)
@@ -6075,6 +6066,25 @@ set_property(TEST pom2_core_sdk_consumer APPEND PROPERTY LABELS slow)
 # failures are REACHABLE. Every card test can only assert its layout flag is
 # clear, which an assembler whose finish() was `return true` would also
 # satisfy.
+# ─── The character-ROM catalog: keys, banks, and the profile partition ────
+# 0 % covered until 2026-09-01 — reachable only from the UI, yet what it
+# holds is a persistence contract (state.cfg stores the string key) written
+# out three times: the catalog vector, the enum→key switch, the key→enum
+# chain. A locale missing from the third reads back as ProfileDefault, so
+# the user's localised char ROM silently reverts on the next launch.
+
+add_executable(test_char_rom_catalog
+    char_rom_catalog_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_char_rom_catalog PRIVATE ${CMAKE_SOURCE_DIR}/src)
+add_test(NAME char_rom_catalog
+         COMMAND test_char_rom_catalog
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(char_rom_catalog PROPERTIES TIMEOUT 10)
+
+
 add_executable(test_slot_rom_asm slot_rom_asm_test.cpp)
 target_include_directories(test_slot_rom_asm PRIVATE ${CMAKE_SOURCE_DIR}/src)
 add_test(NAME slot_rom_asm COMMAND test_slot_rom_asm)

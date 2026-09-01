@@ -444,7 +444,7 @@ public:
         if (src && length) std::memcpy(mem.data(), src, length);
     }
 
-    /// Bulk ROM load — bypasses the writable[] bitmap. Used by RomLoader
+    /// Bulk ROM load — bypasses the writable[] bitmap. Used by the ROM-flashing paths
     /// (and by future cards) to flash their ROM image into protected
     /// regions without having to flip ROM-protect manually. `addr +
     /// length` must be ≤ $10000.
