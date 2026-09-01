@@ -5,6 +5,21 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — DIX rasters under the Chat Mauve: one frame, one buffer
+
+User report: beam-raced DIX effects run clean on the composite pipelines but
+fall apart with the Féline. Root cause: the Chat Mauve is the ONE mode where
+graphics render 560-wide (`frame80`) while the machine sits in 40 columns —
+so a raster frame mixing TEXT/GR bands with Féline HGR painted half its
+segments into the 280-wide `frame` and half into `frame80`, and the
+presented buffer was whichever the last segment happened to set (the
+documented "mixed 280/560 split is undefined" v1 scope-out, now closed).
+Fix: under the card the whole frame is 560-domain — `usesLegacyPath` says
+so, and the legacy 280 tail pixel-doubles its band into `frame80` during a
+replay (`bandLatch_ >= 0`), so every segment composes in the same buffer.
+Static frames keep the native 280 render: no golden moved (236/236 green).
+Pinned by `chatmauve_latch_split` section 4 (TEXT40 ⇄ Féline HGR split).
+
 ## 2026-09-02 — The slot picker says silicon or service
 
 Every card in Slot Configuration's combo now carries its emulation level —

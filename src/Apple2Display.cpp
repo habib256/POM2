@@ -306,6 +306,16 @@ void Apple2Display::renderInternalBandImpl(Memory& mem, const Memory::DisplaySta
         if (state.mixedMode && bandRows(scanY0, scanY1, 20, 24, &tLo, &tHi))
             renderText(mem, state, tLo, tHi, 0, 40, scanY0, scanY1);
     }
+
+    // Beam-raced replay under the Chat Mauve (bandLatch_ >= 0 only inside
+    // renderBeamRacing's paint): bridge this 280-wide band into frame80 so
+    // it shares a buffer with the card's 560-wide segments — DIX rasters
+    // mix TEXT/GR bands with Féline HGR inside one frame. Static frames
+    // keep the native 280 render (goldens untouched).
+    if (cm && bandLatch_ >= 0) {
+        upscaleFrameToFrame80(scanY0, scanY1);
+        setUseFrame80(true);
+    }
 }
 
 Apple2Display::RasterPos Apple2Display::frameCycleToPos(uint64_t emuCycle,
@@ -367,10 +377,17 @@ bool Apple2Display::usesLegacyPath(Memory& mem, const Memory::DisplayState& stat
     // text / hi-res / lo-res path. The 560-wide Chat Mauve and IIe 80-col /
     // DHGR modes paint full width (v1 horizontal-split scope-out).
     const bool cm = chatMauveActive();
+    // Under the card the WHOLE frame is 560-domain: the legacy tail of
+    // renderInternalBandImpl pixel-doubles its 280 band into frame80 during
+    // a replay, so every segment — text, lo-res, single HGR — composes in
+    // the SAME buffer. Before this, a DIX-style TEXT⇄HGR beam-raced frame
+    // painted half its segments into `frame` and half into `frame80`, and
+    // the presented buffer was whichever the LAST segment happened to set —
+    // rasters that run clean on the composite pipelines fell apart on the
+    // Chat Mauve one (the only mode where graphics are 560 while the
+    // machine sits in 40 columns).
+    if (cm) return false;
     const bool iie80 = mem.isIIE() && state.eightyCol;
-    const bool chatMauveHGR =
-        cm && state.hiRes && !state.textMode && !(iie80 && state.dhgr);
-    if (chatMauveHGR) return false;
 
     const bool chatMauveText =
         cm && mem.isIIE() && state.textMode && auxRam != nullptr &&

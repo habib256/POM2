@@ -31,6 +31,11 @@
 //   2. The reverse clocking (BW560 → COL140 mid-frame).
 //   3. A frame with events but no latch clock still renders uniformly
 //      (regression guard for the segment merge).
+//   4. TEXT40 ⇄ Chat Mauve HGR beam split (the DIX raster shape): before
+//      2026-09-02 the text band painted into the 280-wide `frame` while
+//      the HGR band painted into `frame80` — two buffers, last segment
+//      wins, half the picture lost. Every band under the card now lands
+//      in frame80 (the legacy band is pixel-doubled during a replay).
 
 #include "Apple2Display.h"
 #include "LeChatMauveCard.h"
@@ -188,6 +193,45 @@ int main()
             assert(rowEqual(plain, col140, y) && "no clock → no split");
     }
 
-    std::printf("chatmauve latch split: OK (COL140/BW560 split both ways, no-clock guard)\n");
+    // 4. TEXT40 ⇄ Chat Mauve HGR split — the DIX raster shape.
+    {
+        auto mkRig = []() {
+            auto r = std::make_unique<Rig>();
+            r->mem.memWrite(IIE_80COL_OFF, 0);   // 40 columns, as DIX runs
+            r->mem.memRead(DHIRES_OFF);          // AN3 on: single Féline HGR
+            for (uint16_t a = 0x0400; a < 0x0800; ++a)
+                r->mem.memWrite(a, static_cast<uint8_t>(0xA0 + (a & 0x3F)));
+            return r;
+        };
+        std::vector<uint32_t> hgr560;
+        { auto r = mkRig(); hgr560 = r->frame(); }
+        std::vector<uint32_t> text560(static_cast<size_t>(W) * 192);
+        {
+            auto r = mkRig();
+            r->mem.memRead(0xC051);              // SET TEXT, whole frame
+            r->disp.render(r->mem);
+            assert(r->disp.width() == 280 && "static 40-col text stays native 280");
+            const uint32_t* p = r->disp.pixels();
+            for (int y = 0; y < 192; ++y)
+                for (int x = 0; x < 280; ++x) {
+                    const uint32_t px = p[static_cast<size_t>(y) * 280 + x];
+                    text560[static_cast<size_t>(y) * W + 2 * x]     = px;
+                    text560[static_cast<size_t>(y) * W + 2 * x + 1] = px;
+                }
+        }
+        auto r = mkRig();
+        r->mem.setCycleCounter(0);
+        r->mem.beginVideoEventFrame();
+        r->mem.setCycleCounter(static_cast<uint64_t>(kSplitRow) * 65 + 2);
+        r->mem.memRead(0xC051);                  // TEXT from row 96 down
+        auto split = r->frame();                 // asserts width == 560
+        for (int y : { 0, 40, kSplitRow - 1 })
+            assert(rowEqual(split, hgr560, y) && "top band must be Chat Mauve HGR");
+        for (int y : { kSplitRow, 130, 191 })
+            assert(rowEqual(split, text560, y) &&
+                   "bottom band must be the 40-col text, in the SAME buffer");
+    }
+
+    std::printf("chatmauve latch split: OK (COL140/BW560 split both ways, no-clock guard, TEXT/HGR buffer split)\n");
     return 0;
 }
