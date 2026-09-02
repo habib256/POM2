@@ -616,36 +616,57 @@ static std::string slurp(const fs::path& p)
 static void testHostNewerFilePreserved()
 {
     const fs::path dir = makeTempDir("hostnewer");
-    writeFile(dir / "NOTES.TXT", {'o', 'l', 'd'});
+    writeFile(dir / "NOTES.txt", {'o', 'l', 'd'});
 
     std::vector<std::uint8_t> img;
     assert(pom2::buildVolumeFromFolder(dir.string(), "HOST", img).ok);
 
-    // The user edits the file on the host AFTER the mount snapshot.
-    writeFile(dir / "NOTES.TXT", {'n', 'e', 'w', 'e', 'r'});
+    // Guard the round-trip name EXPLICITLY (the reason this test used to fail
+    // only on case-sensitive Linux): decode the volume into a fresh, empty
+    // directory and require the file it writes back to be exactly "NOTES.txt".
+    // A case-sensitive FS is what makes a mismatch fatal, so name it directly
+    // rather than trust the case-insensitive host to hide it.
+    {
+        const fs::path fresh = makeTempDir("hostnewer_rt");
+        auto rr = pom2::decodeVolumeToFolder(img, fresh.string(), nullptr);
+        assert(rr.ok);
+        assert(fs::exists(fresh / "NOTES.txt") &&
+               "ProDOS name round-trip must reproduce the exact host filename");
+        std::error_code ec;
+        fs::remove_all(fresh, ec);
+    }
 
-    // Derive the mount stamp from the edited file's OWN recorded mtime, backed
-    // off 24 h. This must not (a) mix `file_time_type::clock::now()` with
-    // FS-read mtimes — libc++ aliases the two clocks, libstdc++ does not — nor
-    // (b) rely on the `last_write_time` SETTER, which is ineffective on some
-    // libstdc++ builds (the coverage leg): combined with a coarse-granularity
-    // CI filesystem where the "old" and "newer" writes land on the same second,
-    // a failed set left `dest_mtime == newerThan` and nothing was skipped. Both
-    // sides of the `dest_mtime > newerThan` compare now read the same on-disk
-    // timestamp, so the skip is guaranteed on every toolchain.
+    // The user edits the file on the host AFTER the mount snapshot.
+    writeFile(dir / "NOTES.txt", {'n', 'e', 'w', 'e', 'r'});
+
+    // The filename must round-trip through the ProDOS name normalisation
+    // UNCHANGED, or the skip cannot match the on-disk file. sanitiseProDOSName
+    // uppercases the base and strips a known extension into the file_type;
+    // decode re-adds it via extFromFileType, which is LOWERCASE (".txt"). So
+    // "NOTES.TXT" comes back as "NOTES.txt" — a no-op on a case-insensitive FS
+    // (macOS), but on a case-sensitive one (Linux CI) `last_write_time(dest)`
+    // then misses the file, sets its error_code, and the newer-file skip never
+    // runs (filesSkipped stays 0). "NOTES.txt" is already the round-trip form,
+    // so dest == the host file on every FS. (This, not any clock/mtime issue,
+    // is why the test failed only on Linux.)
+    //
+    // Derive the mount stamp from the edited file's OWN recorded mtime backed
+    // off 24 h — no `now()` clock mixing (libc++ aliases the file clock,
+    // libstdc++ does not) and no `last_write_time` setter — so both sides of
+    // the `dest_mtime > newerThan` compare read the same on-disk timestamp.
     const auto newerThan =
-        fs::last_write_time(dir / "NOTES.TXT") - std::chrono::hours(24);
+        fs::last_write_time(dir / "NOTES.txt") - std::chrono::hours(24);
 
     auto r = pom2::decodeVolumeToFolder(img, dir.string(), &newerThan);
     assert(r.ok);
     assert(r.filesSkipped >= 1);
-    assert(slurp(dir / "NOTES.TXT") == "newer" &&
+    assert(slurp(dir / "NOTES.txt") == "newer" &&
            "write-back reverted a host-newer file to the mount snapshot");
 
     // Legacy callers (no stamp) keep the overwrite-everything behaviour.
     r = pom2::decodeVolumeToFolder(img, dir.string(), nullptr);
     assert(r.ok);
-    assert(slurp(dir / "NOTES.TXT") == "old");
+    assert(slurp(dir / "NOTES.txt") == "old");
 
     std::error_code ec;
     fs::remove_all(dir, ec);
