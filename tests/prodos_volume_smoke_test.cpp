@@ -620,12 +620,19 @@ static void testHostNewerFilePreserved()
 
     std::vector<std::uint8_t> img;
     assert(pom2::buildVolumeFromFolder(dir.string(), "HOST", img).ok);
-    const auto mountTime = fs::file_time_type::clock::now();
+    // Take the mount reference from the filesystem's OWN clock, not
+    // `file_time_type::clock::now()`. libc++ aliases that clock to the one
+    // `last_write_time` returns, but libstdc++ does not — mixing a `now()`
+    // stamp with FS-read mtimes made the `mtime > newerThan` compare unstable
+    // on Linux (host-newer file not skipped). Reading the reference back from
+    // disk keeps both sides of the compare in the same clock domain, and the
+    // 24 h gap is immune to any FS timestamp-resolution difference.
+    const auto mountTime = fs::last_write_time(dir / "NOTES.TXT");
 
     // The user edits the file on the host AFTER the mount snapshot.
     writeFile(dir / "NOTES.TXT", {'n', 'e', 'w', 'e', 'r'});
     fs::last_write_time(dir / "NOTES.TXT",
-                        mountTime + std::chrono::seconds(2));
+                        mountTime + std::chrono::hours(24));
 
     auto r = pom2::decodeVolumeToFolder(img, dir.string(), &mountTime);
     assert(r.ok);
