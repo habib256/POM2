@@ -173,7 +173,15 @@ static int beamColForEvent(const Memory::VideoEvent& e, VideoStandard vstd)
 {
     int col = Apple2Display::frameCycleToPos(e.emuCycle, vstd).byteCol;
     switch (e.kind) {
-        case Memory::VideoEventKind::HiRes:   // $C056/$C057  (lo/hi-res)
+        // ONLY the DHIRES/AN3 colour clock ($C05E/$C05F) lands one column
+        // left. OLDSKOOL FORT ET VERT's raster bands are AN3-driven (its
+        // colour comes from the DHIRES artifact clock), and that is what the
+        // -25 fixes — user-confirmed in both RGB and composite. HiRes
+        // ($C056/$C057) does NOT get shifted: it is a graphics-MODE/address
+        // switch, and MAD EFFECT flips lo/hi-res mid-line to place its
+        // beam-raced picture — shifting HiRes pulled those regions one column
+        // too far left (user report 2026-09-02). So HiRes stays with PAGE2 /
+        // TextMode on the fetch-side -24.
         case Memory::VideoEventKind::Dhgr:    // derived DHIRES state
         case Memory::VideoEventKind::An3:     // $C05E/$C05F  (AN3/DHIRES)
             col -= 1;                       // display-side: effect one col left

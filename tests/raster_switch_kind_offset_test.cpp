@@ -183,14 +183,26 @@ int main()
                   "PAGE2 mid-line split must stay on hpos-24 (col 21)");
     std::printf("  PAGE2 (fetch-side) splits at col 21\n");
 
-    // ── HI-RES (display-side): one column LEFT — col 20. ──────────────────
+    // ── HI-RES: NOT shifted — splits at the SAME column as PAGE2 (21). ────
     // Left = HIRES (black), right = LORES (non-black), same scanline.
+    // $C056/$C057 is a graphics-MODE/address switch, fetch-side like PAGE2;
+    // MAD EFFECT flips lo/hi-res mid-line to place its beam-raced picture, and
+    // pulling HiRes one column left dragged those regions too far left (user
+    // report 2026-09-02). Only the DHIRES/AN3 colour clock gets the -1.
     const auto beamHires = beamSplit(CLR_HIRES, SET_HIRES, CLR_PAGE2);
-    assertSplitAt(beamHires, refHiresBlack, refLores, 20,
-                  "HIRES mid-line split must be one column LEFT of PAGE2 "
-                  "(col 20) — the OLDSKOOL FORT ET VERT calibration");
-    std::printf("  HIRES (display-side) splits at col 20 (= PAGE2 - 1)\n");
+    assertSplitAt(beamHires, refHiresBlack, refLores, 21,
+                  "HIRES mid-line split must stay on hpos-24 (col 21), same as "
+                  "PAGE2 — it is NOT the display-side -25 kind");
+    std::printf("  HIRES splits at col 21 (= PAGE2, unshifted)\n");
 
-    std::printf("raster_switch_kind_offset: OK\n");
+    // The -25 shift is scoped to DHIRES/AN3 ($C05E/$C05F, the DHGR colour
+    // clock): OLDSKOOL FORT ET VERT's raster bands are AN3-driven and align
+    // one column left, user-confirmed in RGB and composite. That is validated
+    // against the live demo rather than pinned synthetically here — a clean
+    // AN3/DHGR mid-line split needs a full double-res frame; the beamColForEvent
+    // switch (An3/Dhgr get col-1, HiRes/Page2/Text do not) is the unit under
+    // test and this file locks the HiRes/PAGE2 half of it.
+
+    std::printf("raster_switch_kind_offset: OK (HiRes = PAGE2; AN3/DHGR -1)\n");
     return 0;
 }
