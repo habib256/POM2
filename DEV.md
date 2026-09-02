@@ -555,6 +555,21 @@ lives in [`docs/graphics_modes_comparison.md`](docs/graphics_modes_comparison.md
 
 ### Character generators, and the Videx LOWER CASE CHIP
 
+**French Touch custom char ROM + AN2 dual-bank** (2026-09-02): the Unenhanced
+//e the French Touch corpus targets has no MouseText, so demos that draw block
+art bring their own character generator. "Block ASCII Anthology" ships
+`eprom2164.bin` (8 KB) and uses TWO fonts — a normal-text intro and block-glyph
+art — switching between them at runtime the way a localized //e does: the char
+ROM's A12 is wired to **annunciator 2**, so `$C05C` (AN2 off) / `$C05D` (AN2
+on) flips the whole font (apple2history.org ch.12; the Japanese katakana toggle
+is the canonical case). `Memory::loadCharRom` with a sentinel `bank = -1` keeps
+both 4 KB sets (each normalised); `charRomActiveData()` / `charRomActiveSize()`
+return the live set from the AN2 state, and the text renderer + frame-cache key
+follow it so an AN2 flip re-renders. Catalog entry `//e — French Touch (Block
+ASCII custom)` (key `iie_ft_block`, `roms/apple2e_char_ft_blockascii.rom`).
+A plain 4 KB ROM leaves AN2 a no-op (as on a US //e); the 342-0274-A FR/US
+entries stay single-bank (`bank` 0/1). Pinned by `char_rom_catalog`.
+
 Text glyphs come from a dumped character ROM (`Memory::loadCharRom`,
 selectable per locale from `CharRomCatalog`). Two properties of a dump are
 NOT knowable from its size, and POM2 used to guess both from it:

@@ -74,6 +74,8 @@ const std::vector<CharRomEntry>& catalogStorage()
           "//e — Français 342-0274-A (banque FR)", "roms/342-0274-a.e9",                true, 0 },
         { CharRomLocale::AppleIIeFrench8k_US,
           "//e — Français 342-0274-A (banque US)", "roms/342-0274-a.e9",                true, 1 },
+        { CharRomLocale::AppleIIeFrenchTouchBlock,
+          "//e — French Touch (Block ASCII custom)", "roms/apple2e_char_ft_blockascii.rom", true, -1 },
     };
     return all;
 }
@@ -134,6 +136,7 @@ const char* charRomLocaleKey(CharRomLocale l)
         case CharRomLocale::AppleIIeGermanImproved:              return "iie_de_improved";
         case CharRomLocale::AppleIIeFrench8k_FR:                 return "iie_fr8k_fr";
         case CharRomLocale::AppleIIeFrench8k_US:                 return "iie_fr8k_us";
+        case CharRomLocale::AppleIIeFrenchTouchBlock:            return "iie_ft_block";
     }
     return "default";
 }
@@ -177,6 +180,7 @@ CharRomLocale charRomLocaleFromKey(const std::string& key)
     if (key == "iie_de_improved")   return CharRomLocale::AppleIIeGermanImproved;
     if (key == "iie_fr8k_fr")       return CharRomLocale::AppleIIeFrench8k_FR;
     if (key == "iie_fr8k_us")       return CharRomLocale::AppleIIeFrench8k_US;
+    if (key == "iie_ft_block")      return CharRomLocale::AppleIIeFrenchTouchBlock;
     return CharRomLocale::ProfileDefault;
 }
 

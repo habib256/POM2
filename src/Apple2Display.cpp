@@ -143,9 +143,13 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     // character set can reuse the same heap block, so a pointer+size compare
     // could report "unchanged" across an actual glyph change and freeze the
     // old font on screen. A few KB more memcmp is not worth that risk.
-    const std::vector<uint8_t>& crom = mem.charRom();
-    k.charRom     = crom.data();
-    k.charRomSize = crom.size();
+    // The ACTIVE 4 KB set (an 8 KB dual-bank ROM's live half, chosen by AN2 —
+    // charRomActiveData). The pointer differs between banks, so keying on it
+    // makes an AN2 font switch invalidate the cached text frame.
+    const uint8_t* cromData = mem.charRomActiveData();
+    const std::size_t cromSize = mem.charRomActiveSize();
+    k.charRom     = cromData;
+    k.charRomSize = cromSize;
     // Le Chat Mauve state the guest can move without touching DisplayState and
     // without emitting a video event ($C0B8-$C0BB, see the header). currentMode
     // also rides along: it is driven by the $C05E/$C05F FIFO, which DOES emit
@@ -154,11 +158,11 @@ bool Apple2Display::staticTextFrameUnchanged(Memory& mem,
     k.chatMauve = chatMauve;
     k.chatMauveState =
         chatMauve ? static_cast<int>(chatMauve->renderStateKey()) : -1;
-    k.vram.resize(kLen * 2 + crom.size());
+    k.vram.resize(kLen * 2 + cromSize);
     std::memcpy(k.vram.data(),            mainRam + kBase, kLen);
     std::memcpy(k.vram.data() + kLen,     auxBytes + kBase, kLen);
-    if (!crom.empty())
-        std::memcpy(k.vram.data() + kLen * 2, crom.data(), crom.size());
+    if (cromData && cromSize)
+        std::memcpy(k.vram.data() + kLen * 2, cromData, cromSize);
 
     const TextFrameKey& p = textFrameKey_;
     const bool same =
@@ -1048,8 +1052,7 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
     // cell as 7 actual pixels from the ROM (bit 0 = leftmost). 2 KB ROM
     // = II/II+ standard (no mousetext); 4 KB+ = IIe (second bank holds
     // mousetext glyphs, used when ALTCHAR=on).
-    const auto& charRom    = mem.charRom();
-    const bool useCharRom  = charRom.size() >= 2048;
+    const bool useCharRom  = mem.charRomActiveSize() >= 2048;
     const bool altCharSet  = state.altChar;
 
     for (int row = firstRow; row < lastRow; ++row) {
@@ -1059,7 +1062,7 @@ void Apple2Display::renderText(Memory& mem, const Memory::DisplayState& state,
             const int cellX = col * 7;
             const int cellY = row * 8;
 
-            const auto rows = glyphRows7(src, charRom.data(), charRom.size(), mem.charRomHasLowercase(),
+            const auto rows = glyphRows7(src, mem.charRomActiveData(), mem.charRomActiveSize(), mem.charRomHasLowercase(),
                                          useCharRom, altCharSet, flashPhase);
             for (int gy = 0; gy < 8; ++gy) {
                 const int y = cellY + gy;
@@ -1091,8 +1094,7 @@ void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
     const uint8_t* aux = auxRam ? auxRam : ram;
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
 
-    const auto& charRom    = mem.charRom();
-    const bool  useCharRom = charRom.size() >= 2048;
+    const bool  useCharRom = mem.charRomActiveSize() >= 2048;
     const bool  altCharSet = state.altChar;
 
     for (int row = firstRow; row < lastRow; ++row) {
@@ -1112,7 +1114,7 @@ void Apple2Display::renderTextChatMauveFgBg(Memory& mem,
             // Resolve the glyph into a uniform 7-bit row (bit i = pixel i,
             // bit 0 = leftmost, 1 = lit) with invert/flash already applied,
             // so the 14-dot widening below is shared by both font paths.
-            const auto glyphRows = glyphRows7(src, charRom.data(), charRom.size(), mem.charRomHasLowercase(),
+            const auto glyphRows = glyphRows7(src, mem.charRomActiveData(), mem.charRomActiveSize(), mem.charRomHasLowercase(),
                                               useCharRom, altCharSet, flashPhase);
 
             for (int gy = 0; gy < 8; ++gy) {
@@ -1670,8 +1672,7 @@ void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
     const uint8_t* aux_  = auxRam ? auxRam : mem.data();
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
 
-    const auto& charRom   = mem.charRom();
-    const bool useCharRom = charRom.size() >= 2048;
+    const bool useCharRom = mem.charRomActiveSize() >= 2048;
 
     for (int row = firstRow; row < lastRow; ++row) {
         // 80STORE + PAGE2 already routes writes to aux at the memory
@@ -1687,7 +1688,7 @@ void Apple2Display::renderText80(Memory& mem, const Memory::DisplayState& state,
                 const int     cellX = col * 14 + half * 7;
                 const int     cellY = row * 8;
 
-                const auto rows = glyphRows7(src, charRom.data(), charRom.size(), mem.charRomHasLowercase(),
+                const auto rows = glyphRows7(src, mem.charRomActiveData(), mem.charRomActiveSize(), mem.charRomHasLowercase(),
                                              useCharRom, altCharSet, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = cellY + gy;
@@ -2031,8 +2032,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
     const uint8_t* ram = mem.data();
     const uint8_t* aux = auxRam ? auxRam : ram;
     const bool flashPhase = (frameCounter / kFlashHalfPeriodFrames) & 1u;
-    const auto& charRom    = mem.charRom();
-    const bool  useCharRom = charRom.size() >= 2048;
+    const bool  useCharRom = mem.charRomActiveSize() >= 2048;
     // NOTE: ALTCHAR is read as `state.altChar` inside each paint helper, not
     // hoisted here — `state` is reassigned per beam-race segment below, so a
     // mid-frame $C00E/$C00F flip must reach the glyph lookup (the RGBA path
@@ -2048,7 +2048,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
             const uint16_t rowAddr = textRowAddress(row, videoTextPage2(state));
             for (int col = col0; col < col1; ++col) {
                 const uint8_t src = ram[rowAddr + col];
-                const auto bytes = glyphRows7(src, charRom.data(), charRom.size(), mem.charRomHasLowercase(),
+                const auto bytes = glyphRows7(src, mem.charRomActiveData(), mem.charRomActiveSize(), mem.charRomHasLowercase(),
                                               useCharRom, state.altChar, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = row * 8 + gy;
@@ -2077,7 +2077,7 @@ bool Apple2Display::fillCompositeSignal(Memory& mem,
                 // (AppleWin scanner convention).
                 const uint8_t src = (col & 1) ? ram[rowAddr + (col >> 1)]
                                               : aux[rowAddr + (col >> 1)];
-                const auto bytes = glyphRows7(src, charRom.data(), charRom.size(), mem.charRomHasLowercase(),
+                const auto bytes = glyphRows7(src, mem.charRomActiveData(), mem.charRomActiveSize(), mem.charRomHasLowercase(),
                                               useCharRom, state.altChar, flashPhase);
                 for (int gy = 0; gy < 8; ++gy) {
                     const int y = row * 8 + gy;

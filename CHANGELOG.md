@@ -5,6 +5,32 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — Block ASCII Anthology: dual-bank char ROM switched by annunciator 2
+
+"Block ASCII Anthology" (French Touch) rendered as garbled letters/brackets:
+it is an Unenhanced-//e demo (the corpus machine — no MouseText) that ships
+its OWN 8 KB character generator (`eprom2164.bin`) to draw block art. But it
+uses TWO fonts and switches between them at runtime — a normal-text intro
+("HAVE YOU EVER SEEN BLOCK ASCII ART ON AN APPLE II ?") and the block-glyph
+art — so a single loaded font gets one screen right and the other wrong.
+
+The mechanism (found by research, apple2history.org ch.12): a localized //e
+fits a 2364-class 8 KB char ROM holding two 4 KB sets and wires the char
+ROM's A12 to **annunciator 2** — `$C05C` (AN2 off) / `$C05D` (AN2 on) — so
+software flips the whole font by poking AN2 (the Japanese j-Plus katakana
+toggle is the classic example). POM2 was swallowing AN2 with no effect and
+collapsing 8 KB dumps to one 4 KB bank at load time.
+
+Now `Memory::loadCharRom` with a sentinel bank of -1 keeps BOTH 4 KB sets
+(each normalised), and `charRomActiveData()` selects the live one from the
+AN2 state; the text renderer and its frame-cache key follow it, so an AN2
+font flip re-renders. Shipped as `roms/apple2e_char_ft_blockascii.rom`,
+catalog entry `//e — French Touch (Block ASCII custom)` (key `iie_ft_block`,
+bank -1 = dual-bank). Confirmed live on the Unenhanced-PAL machine: the
+normal-text intro AND the block art now BOTH render correctly as the demo
+toggles AN2. A plain 4 KB ROM leaves AN2 a no-op, as on a US machine; the
+existing 342-0274-A FR/US entries keep their single-bank behaviour. Pinned
+by `char_rom_catalog`; display/char suite green.
 ## 2026-09-02 — OLDSKOOL raster: per-kind mid-line switch column (the second half)
 
 Follow-up to the Unenhanced-PAL profile: the OLDSKOOL FORT ET VERT raster
