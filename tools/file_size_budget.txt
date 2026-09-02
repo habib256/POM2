@@ -43,11 +43,17 @@
 # page/band helpers in src/Apple2Display_Internal.h — the first time this
 # file's ceiling went DOWN.
 #
+# 2026-09-02: src/Memory.cpp 2429 -> 2442. The dual-bank character ROM
+# (annunciator-2 font switch, Block ASCII Anthology): loadCharRom keeps both
+# 4 KB banks and charRomActiveData()/charRomActiveSize() pick the live set
+# from an2. Small and localised; recorded at its exact size so the ratchet
+# still fails on the next line it gains.
+#
 # Regenerate with: tools/check_file_sizes.sh --update
 
 src/Apple2Display.cpp                    2294
 src/DiskImage.cpp                        2835
 src/ImageWriter.cpp                      2501
 src/M6502.cpp                            2159
-src/Memory.cpp                           2429
+src/Memory.cpp                           2442
 src/hgrpaint/HgrPaintEditor.cpp          2525
