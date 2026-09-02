@@ -164,7 +164,19 @@ public:
     /// prints a long job actually wait for the paper to move — exactly
     /// like a real Apple II wired to a real printer.
     /// Written by the UI thread, read by the CPU thread.
-    void setPrinterBusy(bool busy) { busy_.store(busy, std::memory_order_relaxed); }
+    ///
+    /// MAME raises the ACK IRQ on the printer's asynchronous /ACK edge
+    /// (`ack_latch_set`, grappler.cpp:811-819); POM2's equivalent edge is
+    /// BUSY clearing while a byte's ACK is latched, so the line is
+    /// re-derived on every transition — an IRQ-mode driver parked in WAI
+    /// must wake when the printer drains, not only on its next status
+    /// read. The caller (PrinterCoordinator::setGrapplerBusy) holds the
+    /// machine lock, which is what updateIrq's slot-IRQ wiring expects.
+    void setPrinterBusy(bool busy)
+    {
+        const bool prev = busy_.exchange(busy, std::memory_order_relaxed);
+        if (prev != busy) updateIrq();
+    }
     bool printerBusy() const { return busy_.load(std::memory_order_relaxed); }
 
     /// The ACK latch as the firmware sees it. `ackLatch_` is the MAME

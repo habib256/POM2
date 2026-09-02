@@ -273,6 +273,10 @@ bool Block512Backing::loadFromBytes(std::vector<uint8_t> bytes,
     dataLength_ = image_.size();
     synth_      = !hostFolder.empty();
     hostFolder_ = hostFolder;
+    // Stamp the snapshot: the write-back decode preserves host files whose
+    // mtime is later than this (edited on the host while mounted).
+    hasMountTime_ = synth_;
+    mountTime_    = std::filesystem::file_time_type::clock::now();
     supportsWriteBack_ = synth_;
     wpHeader_   = false;
     dirtyBlocks_.assign(blockCount(), false);
@@ -309,18 +313,20 @@ bool Block512Backing::saveDirty()
     PendingWriteBack pending = takeWriteBack();
     if (!pending.valid) return true;
 
+    // takeWriteBack() MOVED the dirty set out; keep the indices so a failed
+    // commit can put them back (pre-split behaviour: a failed save leaves
+    // the blocks dirty so the next attempt still has them).
+    const std::vector<uint32_t> captured = pending.dirtyIndices;
     std::string error;
     if (!commitWriteBack(std::move(pending), error)) {
         lastError_ = error;
+        restoreDirty(captured);
         return false;
     }
-    // Only on success, matching the pre-split behaviour: a failed save leaves
-    // the blocks dirty so the next attempt still has them.
-    clearDirty();
     return true;
 }
 
-Block512Backing::PendingWriteBack Block512Backing::takeWriteBack() const
+Block512Backing::PendingWriteBack Block512Backing::takeWriteBack()
 {
     PendingWriteBack out;
     if (!loaded_ || !anyDirty_ || !writeBack_
@@ -335,33 +341,48 @@ Block512Backing::PendingWriteBack Block512Backing::takeWriteBack() const
     out.dataOffset = dataOffset_;
     out.dataLength = dataLength_;
 
-    if (synth_) {
-        // The folder decode needs the whole volume, so it is copied. That is
-        // a memcpy of at most the image size — microseconds against the
-        // directory walk and the file writes phase 2 does.
-        out.synthImage = image_;
-        return out;
-    }
-
-    // The file case only needs the blocks that actually changed, which is
-    // normally a handful even on a 32 MiB image.
+    // Captured in BOTH cases: the file commit writes these blocks, and a
+    // failed commit restores them through `restoreDirty` either way.
     for (size_t b = 0; b < dirtyBlocks_.size(); ++b) {
         if (!dirtyBlocks_[b]) continue;
         out.dirtyIndices.push_back(static_cast<uint32_t>(b));
     }
-    out.dirtyBytes.resize(out.dirtyIndices.size() * kBlockBytes);
-    for (size_t i = 0; i < out.dirtyIndices.size(); ++i) {
-        std::memcpy(out.dirtyBytes.data() + i * kBlockBytes,
-                    image_.data() + out.dirtyIndices[i] * kBlockBytes,
-                    kBlockBytes);
+
+    if (synth_) {
+        // The folder decode needs the whole volume, so it is copied. That is
+        // a memcpy of at most the image size — microseconds against the
+        // directory walk and the file writes phase 2 does.
+        out.synthImage   = image_;
+        out.hasMountTime = hasMountTime_;
+        out.mountTime    = mountTime_;
+    } else {
+        // The file case only needs the blocks that actually changed, which
+        // is normally a handful even on a 32 MiB image.
+        out.dirtyBytes.resize(out.dirtyIndices.size() * kBlockBytes);
+        for (size_t i = 0; i < out.dirtyIndices.size(); ++i) {
+            std::memcpy(out.dirtyBytes.data() + i * kBlockBytes,
+                        image_.data() + out.dirtyIndices[i] * kBlockBytes,
+                        kBlockBytes);
+        }
     }
+
+    // The move half of "move out": retire what was captured, atomically
+    // under the caller's lock. A guest write landing while phase 2 runs
+    // unlocked re-marks its block; it is NOT in this payload, so its flag
+    // must survive for the eject's own inline flush (or the next save).
+    std::fill(dirtyBlocks_.begin(), dirtyBlocks_.end(), false);
+    anyDirty_ = false;
     return out;
 }
 
-void Block512Backing::clearDirty()
+void Block512Backing::restoreDirty(const std::vector<uint32_t>& indices)
 {
-    std::fill(dirtyBlocks_.begin(), dirtyBlocks_.end(), false);
-    anyDirty_ = false;
+    for (uint32_t b : indices) {
+        if (b < dirtyBlocks_.size()) {
+            dirtyBlocks_[b] = true;
+            anyDirty_ = true;
+        }
+    }
 }
 
 bool Block512Backing::commitWriteBack(PendingWriteBack&& pending,
@@ -370,8 +391,9 @@ bool Block512Backing::commitWriteBack(PendingWriteBack&& pending,
     if (!pending.valid) return true;
 
     if (pending.synth) {
-        pom2::ProDOSDecodeResult r =
-            pom2::decodeVolumeToFolder(pending.synthImage, pending.hostFolder);
+        pom2::ProDOSDecodeResult r = pom2::decodeVolumeToFolder(
+            pending.synthImage, pending.hostFolder,
+            pending.hasMountTime ? &pending.mountTime : nullptr);
         if (!r.ok) {
             error = r.error;
             pom2::log().warn("HDV", "Synth folder write-back failed: " + error);

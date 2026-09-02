@@ -112,6 +112,9 @@ bool parsePresetName(const std::string& raw, CliPreset& out)
     if (s == "iic+" || s == "iicplus" || s == "apple2cplus" ||
         s == "apple2cp" || s == "appleiicplus" ||
         s == "//c+")                        { out = CliPreset::AppleIIcPlus; return true; }
+    if (s == "iie-u-pal" || s == "iieupal" || s == "iie-unenh-pal" ||
+        s == "//e-u-pal" || s == "apple2e-1983-pal" ||
+        s == "frenchtouch")                 { out = CliPreset::AppleIIeUnenhancedPAL; return true; }
     if (s == "iie-pal" || s == "iiepal" || s == "apple2e-pal" ||
         s == "//e-pal")                     { out = CliPreset::AppleIIePAL; return true; }
     if (s == "iic-pal" || s == "iicpal" || s == "apple2c-pal" ||
@@ -148,7 +151,7 @@ void printUsage()
         "                             to the first free slot if 7 is taken.\n"
         "\n"
         "Phase-A boot options (consumed before MainWindow starts):\n"
-        "  -p, --preset <ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal>\n"
+        "  -p, --preset <ii|ii+|iie-u|iie|iic|iic+|iie-u-pal|iie-pal|iic-pal>\n"
         "                             System profile to boot into\n"
         "  --ii-plus                  Force II+ mode (ignore roms/apple2e.rom)\n"
         "  --speed <cycles/frame>     Override CPU pacing (1x = 17045)\n"

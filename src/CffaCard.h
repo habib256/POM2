@@ -76,7 +76,8 @@ public:
         out = b.takeWriteBack();
         return true;
     }
-    void clearDirtyBlocks() override { ata_.backing().clearDirty(); }
+    void restoreDirtyBlocks(const std::vector<uint32_t>& indices) override
+    { ata_.backing().restoreDirty(indices); }
     bool saveDirty() override;
 
     bool isImageLoaded()      const override { return ata_.backing().isLoaded(); }

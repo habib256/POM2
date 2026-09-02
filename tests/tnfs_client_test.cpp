@@ -101,6 +101,7 @@ struct Stub {
     std::vector<uint8_t> content = makeContent(1500);
     std::atomic<bool>    stop{false};
     std::atomic<bool>    splitNextRead{false};   ///< TCP: send in two segments
+    std::atomic<bool>    splitNextStat{false};   ///< TCP: split a STAT reply
     uint32_t             filePos = 0;
     int                  dirIndex = 0;
 
@@ -213,11 +214,22 @@ struct TcpStub {
                 const auto payload = s.handle(buf, static_cast<std::size_t>(r));
                 if (payload.empty()) continue;
                 const auto pkt = reply(buf, kSession, payload);
+                std::size_t cut = 0;
                 if (s.splitNextRead.load() && buf[3] == pom2::kTnfsRead) {
                     s.splitNextRead.store(false);
+                    cut = 9;
+                } else if (s.splitNextStat.load() &&
+                           buf[3] == pom2::kTnfsStat) {
+                    // Split INSIDE the fixed STAT payload (header + status
+                    // + 1 byte): only READ used to be reassembled, so this
+                    // runt failed fileSize AND stranded its 9-byte tail in
+                    // the socket buffer — session desync.
+                    s.splitNextStat.store(false);
+                    cut = 6;
+                }
+                if (cut) {
                     // Two segments, with a pause between: a legal TCP split
                     // that a one-recv reader would mistake for a whole packet.
-                    const std::size_t cut = 9;
                     ::send(c, pkt.data(), cut, 0);
                     std::this_thread::sleep_for(std::chrono::milliseconds(40));
                     ::send(c, pkt.data() + cut, pkt.size() - cut, 0);
@@ -360,6 +372,15 @@ int main()
         check(c.usingTcp(), "TCP is preferred when the server accepts it");
         stub.s.splitNextRead.store(true);
         exercise(c, expect, "tcp");
+
+        // A non-READ reply split across segments must be reassembled too —
+        // and must not leave its tail behind (the next requests below would
+        // then parse garbage headers: session desync until remount).
+        stub.s.splitNextStat.store(true);
+        uint32_t statSz = 0;
+        check(c.fileSize(std::string("/") + kFileName, statSz, err) &&
+              statSz == expect.size(), "a split STAT reply is reassembled");
+        exercise(c, expect, "tcp-after-split-stat");
         c.unmount();
         stub.shutdownStub();
     }

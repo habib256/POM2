@@ -108,7 +108,7 @@ latch RWTS polls before `$C0E9`. The legacy path now models the analog card's
 Purplesoft prompt went from 115 s to under 10 s of machine time. Pinned
 `diskii_motor_coast`.
 
-### 2 · 🟢 "Mid-scanline raster offset" — was the 6522 T1 read-back, fixed 2026-09-02
+### 2 · ✅ "Mid-scanline raster offset" — T1 read-back + per-kind column offset, both fixed 2026-09-02
 
 **What it really was.** The symptom filed here on 2026-09-01 (raster bars vs
 the frame art, edges off by about a character cell, seen on DIX) was NOT the
@@ -129,11 +129,62 @@ drift-free on TRIBU by `dix_menu_raster_probe` (arms locked to scanlines
 (T2-timed, HBL-placed) were already exact — `frameCycleToPos`'s hpos-24
 mapping survives MAD EFFECT, the menu AND TRIBU untouched.
 
-**Still open, now decoupled**: the residual "mid-scanline split — exact
-transition cycle at character-clock" refinement under
-[Display](#display-hgr--dhgr--80-col) (per-kind fetch-side vs display-side
-one-cycle offsets). No known title exhibits it since the T1 fix; revisit
-only with a measured case.
+**Still open, and now a title exhibits it (OLDSKOOL, below)**: the residual
+"mid-scanline split — exact transition cycle at character-clock" refinement
+under [Display](#display-hgr--dhgr--80-col) — a per-kind fetch-side vs
+display-side one-cycle offset in `frameCycleToPos` (`byteCol = hpos - 24`,
+calibrated ONLY on MAD EFFECT's `$C055`/PAGE2 mid-line switch).
+
+**A measured case arrived 2026-09-02 — OLDSKOOL — and it turned out to be
+TWO bugs stacked, only one of which is fixed.** User screenshot: OLDSKOOL
+FORT ET VERT (French Touch 2021, the SHADOW-party 8KB intro, also a DIX
+part) shows its side raster bands ~7 px (= one character cell) off — the
+TV-set art's left/right edges do not line up with the raster-band
+boundaries the demo draws to frame it.
+
+  1. **CPU cycle count (FIXED via the new profile).** The per-scanline
+     dispatcher is `LSR TBUFFER,X` — RMW abs,X, **7 cycles on the 6502,
+     6 on the 65C02** (real-hardware difference; `M6502::RmwAbsX` models
+     both). On a 65C02 every 65-cycle line loop runs in 64 and each mid-line
+     switch walks one cycle further left per line — a *staircase* (`tests/
+     oldskool_raster_probe`: NMOS = HIRES switch locked at hpos 26 on all
+     66 band lines; CMOS = hpos sweeping 26→25→24…). The `.nfo` says so:
+     "Apple IIe (not Enhanced), 6502 required". → the `Apple //e Unenhanced
+     PAL (50 Hz)` profile landed (key `iie-u-pal`, aliases `frenchtouch`/
+     `//e-u-pal`; NMOS + PAL + `apple2e_unenh` probes; menu slot between //c+
+     and Enhanced PAL; pinned by `system_profile_smoke` + `cli_kiosk`).
+
+  2. **Residual fixed 1-column offset (FIXED 2026-09-02).** With the
+     machine on the genuine-NMOS profile (verified live: `/status` →
+     `Apple //e Unenhanced PAL`, `cpu_mode: nmos`), the ~7 px offset
+     **persisted** — a *fixed* shift, not a staircase — so it was NOT the
+     CPU cycle count but the `frameCycleToPos` per-kind mapping. `hpos - 24`
+     was calibrated only on MAD EFFECT's `$C055` (PAGE2, *fetch-side*: it
+     picks the address the scanner reads NEXT, effect one byte later).
+     OLDSKOOL's mid-line switches are `$C056`/`$C057` (hi-res) and `$C05F`
+     (AN3/DHIRES), which are *display-side* — they re-interpret the byte
+     being fetched NOW, one character cell LEFT of a page flip on the same
+     cycle. `Apple2Display_Beam.cpp::beamColForEvent` now pulls HiRes / Dhgr
+     / An3 back one column (to `hpos-25`) while PAGE2 and everything else
+     stay on `hpos-24`. User-confirmed on the live demo, aligned in BOTH the
+     Chat Mauve RGB and OpenEmulator composite paths. (My earlier note here,
+     "POM2 is faithful for the machine selected", was WRONG — the machine
+     was necessary but the mapping was the second half.)
+
+**How it was fixed (scope kept to the evidence).** Only the kinds OLDSKOOL
+actually exercises — HiRes / Dhgr / An3 — were shifted; PAGE2 / 80Store stay
+fetch-side, and TextMode / MixedMode were LEFT at `-24` (no measured title
+flips them mid-line, and `$C050/$C051` changes the fetch region too, so their
+side is genuinely ambiguous — revisit only with a measured case). Result:
+OLDSKOOL aligns, and MAD EFFECT (`madef_phase_probe`), DROL
+(`drol_pageflip_render`), DIX (`dix_menu_raster_probe`) and the three
+`horizontal_split` pins (which flip TextMode mid-line) all stay green with no
+edits. New pin `raster_switch_kind_offset` locks the relationship: a mid-line
+HiRes split lands exactly one byte column LEFT of a PAGE2 split on the same
+cycle. Measurement blocker from the earlier note (the standalone `oldskool.
+dsk` crashes to DOS after its SHADOW intro; live-driving auto-cycles) was
+sidestepped: the direction was derived from the fetch/display pipeline and
+confirmed on the live DIX-packaged OLDSKOOL screen.
 
 ### 3 · 🟡 `Best1a.nib` did not boot — a write-back had eaten 20 bytes (fixed 2026-09-01, cause open)
 

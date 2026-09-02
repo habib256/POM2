@@ -131,6 +131,47 @@ int main()
         }
     }
 
-    std::printf("Speaker smoke: OK (silence, square synth, reset, mute)\n");
+    // ── Case 5: pause/resume — consumer-ahead re-anchor ─────────────────
+    // The audio callback keeps running while the machine is paused
+    // (Mode::Stopped parks the worker but nothing stops the ma_device), so
+    // the reconstruction cursor keeps consuming cycles while the CPU cycle
+    // counter freezes. On resume every toggle is stamped far behind the
+    // cursor; without the backward re-anchor in fillAudioBuffer the stale
+    // purge ate the whole resumed stream (a net parity flip per buffer) and
+    // speaker audio stayed clicks/silence for the rest of the session.
+    {
+        SpeakerDevice spk;
+        spk.setSampleRate(kSampleRate);
+
+        // A short burst before the pause, fully consumed.
+        driveToggles(spk, 1000.0, 0.02, 0);
+        runOneBuffer(spk, buf);
+        runOneBuffer(spk, buf);
+
+        // ~2 s pause: ~86 silent callbacks advance the cursor ~2M cycles
+        // while the producer's clock is frozen.
+        for (int b = 0; b < 86; ++b) runOneBuffer(spk, buf);
+
+        // Resume: the producer continues from its FROZEN cycle counter.
+        const uint64_t resumeCycle =
+            static_cast<uint64_t>(0.03 * POM2_CPU_CLOCK_HZ);
+        driveToggles(spk, 1000.0, 0.10, resumeCycle);
+
+        // kCatchUpSecs of re-anchor lead + 100 ms of tone ≈ 0.2 s → give it
+        // 12 buffers (~280 ms) and require a real square-wave swing.
+        bool sawPos = false, sawNeg = false;
+        for (int b = 0; b < 12; ++b) {
+            runOneBuffer(spk, buf);
+            for (float v : buf) {
+                if (v >  0.05f) sawPos = true;
+                if (v < -0.05f) sawNeg = true;
+            }
+        }
+        assert(sawPos && sawNeg &&
+               "resumed toggles were purged as stale after a pause");
+    }
+
+    std::printf("Speaker smoke: OK (silence, square synth, reset, mute, "
+                "pause/resume)\n");
     return 0;
 }

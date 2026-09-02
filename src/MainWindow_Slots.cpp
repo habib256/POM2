@@ -680,6 +680,17 @@ void MainWindow::renderMediaPanel()
         static std::array<std::array<bool, 2>, 8> mPrimed{};
         static std::array<std::array<std::array<char, 512>, 2>, 8> dBuf{};
         static std::array<std::array<bool, 2>, 8> dPrimed{};
+        // Re-prime everything after a slot rebuild: these statics survive
+        // applyProfile / restartEmulationFromSettings, and a stale primed
+        // path shown against a rebuilt card (SmartPort → CFFA, or a profile
+        // switch) is one enabled Mount button away from inserting the OLD
+        // card's image into the NEW card.
+        static uint32_t seedGen = 0;
+        if (seedGen != mediaPanelSeedGen_) {
+            seedGen = mediaPanelSeedGen_;
+            for (auto& row : mPrimed) row.fill(false);
+            for (auto& row : dPrimed) row.fill(false);
+        }
 
         bool any = false;
         // Unlocked on purpose, and one of the few places `memory()` is the
@@ -1184,7 +1195,8 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
         // cleared backing storage.
         if (p == pom2::SystemProfile::AppleIIe ||
             p == pom2::SystemProfile::AppleIIeUnenhanced ||
-            p == pom2::SystemProfile::AppleIIePAL) {
+            p == pom2::SystemProfile::AppleIIePAL ||
+            p == pom2::SystemProfile::AppleIIeUnenhancedPAL) {
             const int banks = settings->getInt("ramworks_banks", 1);
             st.memory().setRamWorksBanks(
                 static_cast<uint32_t>(banks > 0 ? banks : 1));
@@ -1275,8 +1287,10 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //    switches).
     plugSlotsFromSettings(st);
     // Force the Slot Config panel to re-seed its draft from the rebuilt
-    // slotCards[] on its next render (stale-draft-after-profile-switch fix).
+    // slotCards[] on its next render (stale-draft-after-profile-switch fix),
+    // and the Media panel to re-prime its path buffers from the new cards.
     slotDraftInited_ = false;
+    ++mediaPanelSeedGen_;
 
     }   // end stateMutex scope over steps 5-7
 
@@ -1445,8 +1459,10 @@ bool MainWindow::restartEmulationFromSettings()
 
     // 3. Re-run plugSlotsFromSettings() with the freshly-saved keys.
     plugSlotsFromSettings(st);
-    // Re-seed the Slot Config draft from the rebuilt slotCards[] next render.
+    // Re-seed the Slot Config draft from the rebuilt slotCards[] next
+    // render, and re-prime the Media panel's path buffers from the new cards.
     slotDraftInited_ = false;
+    ++mediaPanelSeedGen_;
 
     // 4. Restore each DiskII's persisted state (matches MainWindow ctor).
     //    Per-slot keys for multi-instance configs. Legacy `disk_path` /

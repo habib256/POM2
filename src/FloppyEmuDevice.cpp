@@ -161,7 +161,12 @@ std::vector<FloppyEmuDevice::Entry> FloppyEmuDevice::listing() const
                 Entry e;
                 e.name      = name;
                 e.fullPath  = de.path().string();
-                e.sizeBytes = static_cast<uint64_t>(de.file_size(ec));
+                // Same rule as parseFavorites below: file_size(ec) returns
+                // (uintmax_t)-1 and sets ec when the file vanished between
+                // the iterator step and the stat — honor ec → 0, not a
+                // 16-EiB row in the SD browser.
+                const auto sz = de.file_size(ec);
+                e.sizeBytes = ec ? 0u : static_cast<uint64_t>(sz);
                 files.push_back(std::move(e));
             }
         }

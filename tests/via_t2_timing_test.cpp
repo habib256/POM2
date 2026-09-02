@@ -203,6 +203,35 @@ int main()
         assert(!(via.ifr & IFR_T2) && "T2 one-shot re-fired (should arm once per T2CH)");
     }
 
+    // ── T2 read-back: the hardware line `written + 1 - elapsed` ─────────
+    // Same rule as T1 (commit c58528a, measured on real hardware via
+    // TRIBU): the counter loads on the phi2 AFTER the CxH write, and T2 is
+    // the identical silicon. MAME's -2 bias read one LOW — the drift class
+    // that made DIX rasters crawl on T1. The line must also be continuous
+    // through the one-shot underflow (free-running counter afterwards).
+    {
+        Via6522 via;
+        via.write(ACR, 0x00);
+        via.write(T2CL, 100);
+        via.write(T2CH, 0);                    // N = 100
+        int elapsed = 0;
+        auto rb = [&]() {
+            const int lo = via.read(T2CL);
+            const int hi = via.read(T2CH);
+            return (hi << 8) | lo;
+        };
+        for (int e : {1, 2, 50, 100, 101, 102}) {
+            while (elapsed < e) { via.advance(1); ++elapsed; }
+            const int expect = (100 + 1 - e) & 0xFFFF;
+            const int got = rb();
+            std::printf("  T2 rb at e=%d → %04X (want %04X)\n", e, got, expect);
+            assert(got == expect && "T2 read-back != written+1-elapsed");
+        }
+        while (elapsed < 105) { via.advance(1); ++elapsed; }   // fired at 103
+        assert(rb() == ((100 + 1 - 105) & 0xFFFF) &&
+               "T2 read-back line must be continuous through the underflow");
+    }
+
     testT1FirstShotTiming();
     testOraAccessClearsCa1();
 

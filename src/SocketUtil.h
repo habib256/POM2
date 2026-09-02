@@ -48,10 +48,21 @@
 #if POM2_HAS_SOCKETS
 
 #include "SocketCompat.h"
+#include "ThreadGuard.h"
 
 #include <chrono>
 #include <cstddef>
+#include <future>
+#include <memory>
+#include <mutex>
+#include <string>
 #include <thread>
+
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
+#include <netdb.h>
+#endif
 
 namespace pom2 {
 
@@ -122,6 +133,108 @@ inline void disableSigpipe(socket_t fd)
 inline iolen_t sendNoSignal(socket_t fd, const void* buf, std::size_t n)
 {
     return sendSocket(fd, buf, n);
+}
+
+
+// ─── Bounded resolve + connect ───────────────────────────────────────────
+//
+// getaddrinfo() blocks for as long as the resolver chain takes (resolv.conf
+// timeout × attempts × servers — tens of seconds against an unreachable DNS
+// server), and a blocking ::connect() is NOT bounded by SO_SNDTIMEO:
+// measured 2026-08-21 on macOS against 192.0.2.1 (TEST-NET-1, swallows
+// SYNs), connect() returned after 75 s with the option asking for 8 (see
+// DEV.md § FujiNet). Both run on threads a user is watching, so they get
+// hard deadlines here. Shared by FujiNetNetDevice and TnfsClient — the
+// bounded pair was born in FujiNetNetDevice.cpp and moved here when the
+// TNFS mount was found still trusting the SO_SNDTIMEO myth.
+
+/// A DNS lookup that cannot outlive the deadline: the lookup runs on its
+/// own guarded thread and is ABANDONED if it overruns — the thread frees
+/// its own result and exits whenever the resolver finally answers.
+struct BoundedLookup {
+    std::mutex mtx;
+    bool       abandoned = false;
+    addrinfo*  res       = nullptr;
+};
+
+inline bool resolveBounded(const std::string& host, const std::string& portStr,
+                           int timeoutMs, addrinfo** out,
+                           int socktype = SOCK_STREAM,
+                           int protocol = IPPROTO_TCP)
+{
+    *out = nullptr;
+    if (timeoutMs <= 0) return false;
+
+    auto shared = std::make_shared<BoundedLookup>();
+    std::promise<bool> ready;
+    std::future<bool>  fut = ready.get_future();
+
+    // Guarded: an exception escaping a detached thread calls std::terminate().
+    // The promise needs the same care — leaving it unset makes the waiter's
+    // fut.get() below throw future_error on the CALLING thread, so a lookup
+    // that dies has to answer "false" rather than answer nothing. `settled`
+    // also covers the abandoned path, where by contract nobody is waiting and
+    // the promise is deliberately left alone.
+    std::thread([shared, host, portStr, socktype, protocol,
+                 p = std::move(ready)]() mutable {
+        bool settled = false;
+        pom2::runGuarded("SockResolve", [&] {
+            addrinfo hints{};
+            hints.ai_family   = AF_INET;
+            hints.ai_socktype = socktype;
+            hints.ai_protocol = protocol;
+            addrinfo* r  = nullptr;
+            const bool ok = (::getaddrinfo(host.c_str(), portStr.c_str(),
+                                           &hints, &r) == 0) && r;
+
+            std::lock_guard<std::mutex> lk(shared->mtx);
+            if (shared->abandoned) {           // nobody is waiting any more
+                if (r) ::freeaddrinfo(r);
+                settled = true;
+                return;
+            }
+            shared->res = r;
+            p.set_value(ok);
+            settled = true;
+        });
+        if (!settled) p.set_value(false);
+    }).detach();
+
+    if (fut.wait_for(std::chrono::milliseconds(timeoutMs)) != std::future_status::ready) {
+        std::lock_guard<std::mutex> lk(shared->mtx);
+        shared->abandoned = true;
+        if (shared->res) { ::freeaddrinfo(shared->res); shared->res = nullptr; }
+        return false;
+    }
+
+    const bool ok = fut.get();
+    std::lock_guard<std::mutex> lk(shared->mtx);
+    *out = shared->res;
+    shared->res = nullptr;
+    return ok && *out;
+}
+
+/// connect() bounded by an explicit wait — the same non-blocking pattern
+/// W5100Device already uses. Leaves the socket NON-BLOCKING on success,
+/// which is what a poll-driven transfer wants; a blocking-I/O owner flips
+/// it back with `setBlocking`.
+inline bool connectBounded(const addrinfo* a, int timeoutMs, socket_t& out)
+{
+    socket_t s = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (!isValidSocket(s)) return false;
+    disableSigpipe(s);
+    if (!setNonBlocking(s)) { closeHostSocketValue(s); return false; }
+
+    if (::connect(s, a->ai_addr, static_cast<socklen_c>(a->ai_addrlen)) != 0) {
+        if (!errInProgress(lastSocketError()) ||
+            waitSocket(s, SocketWait::Write, timeoutMs) != WaitResult::Ready ||
+            connectResult(s) != 0) {
+            closeHostSocketValue(s);
+            return false;
+        }
+    }
+    out = s;
+    return true;
 }
 
 } // namespace pom2

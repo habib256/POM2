@@ -394,6 +394,21 @@ inline bool setNonBlocking(socket_t s)
 #endif
 }
 
+/// The inverse — back to blocking mode, for a socket `connectBounded`
+/// (SocketUtil.h) left non-blocking but whose owner wants plain blocking
+/// I/O under SO_RCVTIMEO (TnfsClient does).
+inline bool setBlocking(socket_t s)
+{
+#ifdef _WIN32
+    u_long on = 0;
+    return ::ioctlsocket(s, FIONBIO, &on) == 0;
+#else
+    const int flags = ::fcntl(s, F_GETFL, 0);
+    if (flags < 0) return false;
+    return ::fcntl(s, F_SETFL, flags & ~O_NONBLOCK) == 0;
+#endif
+}
+
 #ifdef _WIN32
 // Declared in <mstcpip.h>, which is not pulled in by ws2tcpip.h on every
 // toolchain. The definition is the one both the Windows SDK and mingw-w64

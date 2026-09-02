@@ -1102,10 +1102,11 @@ bool SmartPortCard::prepareEjectBay(int bay,
     return u->detachImage(out);
 }
 
-void SmartPortCard::clearBayDirty(int bay)
+void SmartPortCard::restoreBayDirty(int bay,
+                                    const std::vector<uint32_t>& indices)
 {
     if (SmartPortUnit* u = unit(static_cast<size_t>(bay)))
-        u->clearDirtyBlocks();
+        u->restoreDirtyBlocks(indices);
 }
 
 void SmartPortCard::setBayWriteBack(int bay, bool on)

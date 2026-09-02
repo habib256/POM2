@@ -82,9 +82,11 @@ public:
                             const std::string& label,
                             const std::string& hostFolder = std::string{}) override;
     bool ejectImage() override;
-    /// Two-phase eject (MountableMediaCard). Takes the payload the
-    /// save-on-eject policy in ejectImage() would write, leaving the medium
-    /// alone; clearDirtyBlocks() retires it once the caller has committed.
+    /// Two-phase eject (MountableMediaCard). MOVES out the payload the
+    /// save-on-eject policy in ejectImage() would write — dirty flags are
+    /// retired at capture (Block512Backing::takeWriteBack), so writes racing
+    /// the unlocked commit keep theirs — leaving the medium mounted;
+    /// restoreDirtyBlocks() puts the captured flags back if the commit fails.
     bool detachImage(pom2::Block512Backing::PendingWriteBack& out) override
     {
         if (!(backing_.isLoaded() && backing_.hasUnsavedChanges() &&
@@ -93,7 +95,8 @@ public:
         out = backing_.takeWriteBack();
         return true;
     }
-    void clearDirtyBlocks() override { backing_.clearDirty(); }
+    void restoreDirtyBlocks(const std::vector<uint32_t>& indices) override
+    { backing_.restoreDirty(indices); }
 
     bool isImageLoaded() const override { return backing_.isLoaded(); }
     const std::string& getImagePath() const override { return backing_.path(); }

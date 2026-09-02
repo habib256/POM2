@@ -130,11 +130,21 @@ Rewind_ImGui::FrameResult Rewind_ImGui::render(const char* title, bool& open,
     // ── Record toggle + buffer stats ─────────────────────────────────────
     bool rec = enabled;
     if (ImGui::Checkbox("Record", &rec)) {
+        // setEnabled is no longer just an atomic flip: re-enabling restarts
+        // the delta chain (sinceKeyframe_ = 0, prevBlob_.clear() — the
+        // timeline-splice fix), and the worker's capture() reads and
+        // move-assigns prevBlob_ under stateMtx. Unserialised, the clear
+        // races that vector access (UB), or slips after a capture and the
+        // first resumed frame deltas against the stale pre-pause blob —
+        // the exact splice bug the clear was added to fix. Same lock the
+        // history slider below already takes.
         if (rec) {
+            std::lock_guard<std::mutex> lk(ctrl.stateMutex());
             ctrl.rewind().setEnabled(true);
             res.statusMessage = "Rewind: recording on";
         } else {
             if (scrubbing_) { ctrl.rewindEndAndResume(cursor_); scrubbing_ = false; }
+            std::lock_guard<std::mutex> lk(ctrl.stateMutex());
             ctrl.rewind().setEnabled(false);
             res.statusMessage = "Rewind: recording off";
         }

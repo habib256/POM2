@@ -52,27 +52,43 @@ namespace {
 void testAllProfilesEnumerated()
 {
     const auto& all = pom2::allProfiles();
-    assert(all.size() == 8);
+    assert(all.size() == 9);
+    // Display order: NTSC chronologically, then the PAL block (Unenhanced
+    // //e before Enhanced //e, mirroring the NTSC pairing, //c last).
     assert(all[0] == pom2::SystemProfile::AppleII);
     assert(all[1] == pom2::SystemProfile::AppleIIPlus);
     assert(all[2] == pom2::SystemProfile::AppleIIeUnenhanced);
     assert(all[3] == pom2::SystemProfile::AppleIIe);
     assert(all[4] == pom2::SystemProfile::AppleIIc);
     assert(all[5] == pom2::SystemProfile::AppleIIcPlus);
-    assert(all[6] == pom2::SystemProfile::AppleIIePAL);
-    assert(all[7] == pom2::SystemProfile::AppleIIcPAL);
+    assert(all[6] == pom2::SystemProfile::AppleIIeUnenhancedPAL);
+    assert(all[7] == pom2::SystemProfile::AppleIIePAL);
+    assert(all[8] == pom2::SystemProfile::AppleIIcPAL);
 
-    // NTSC profiles are 262-line/60 Hz (17045 cyc/frame); the two PAL
+    // NTSC profiles are 262-line/60 Hz (17045 cyc/frame); the three PAL
     // profiles are 312-line/50 Hz (20313). PAL profiles otherwise inherit
     // their NTSC sibling's CPU/iieMode/slots.
-    for (auto p : { pom2::SystemProfile::AppleIIePAL,
+    for (auto p : { pom2::SystemProfile::AppleIIeUnenhancedPAL,
+                    pom2::SystemProfile::AppleIIePAL,
                     pom2::SystemProfile::AppleIIcPAL }) {
         const auto& c = pom2::profileConfig(p);
         assert(c.videoStandard == VideoStandard::PAL);
         assert(c.defaultCyclesPerFrame == 20313);
-        assert(c.iieMode);                              // both are IIe-class
-        assert(c.defaultCpu == M6502::CpuMode::CMOS);   // 65C02
+        assert(c.iieMode);                              // all are IIe-class
     }
+    // CPU follows the NTSC sibling: Enhanced PAL //e and //c PAL are 65C02;
+    // the Unenhanced PAL //e is NMOS — the French Touch machine, where the
+    // 6502-only corpus's per-line cycle counts hold (65C02 runs its
+    // `LSR abs,X` dispatcher one cycle short and the rasters drift).
+    assert(pom2::profileConfig(pom2::SystemProfile::AppleIIePAL).defaultCpu
+           == M6502::CpuMode::CMOS);
+    assert(pom2::profileConfig(pom2::SystemProfile::AppleIIcPAL).defaultCpu
+           == M6502::CpuMode::CMOS);
+    assert(pom2::profileConfig(pom2::SystemProfile::AppleIIeUnenhancedPAL)
+               .defaultCpu == M6502::CpuMode::NMOS);
+    // …and its ROM probes are the Unenhanced dumps, not the Enhanced one.
+    assert(pom2::profileConfig(pom2::SystemProfile::AppleIIeUnenhancedPAL)
+               .romProbeOrder.front() == "roms/apple2e_unenh.rom");
     assert(pom2::profileConfig(pom2::SystemProfile::AppleIIe).videoStandard
            == VideoStandard::NTSC);
     // //c PAL inherits the //c's on-board slot lock (SmartPort at sl5, etc.).
@@ -138,6 +154,8 @@ void testKeyAliases()
     assert(pom2::profileFromKey("iie-u")        == pom2::SystemProfile::AppleIIeUnenhanced);
     assert(pom2::profileFromKey("iieunenhanced") == pom2::SystemProfile::AppleIIeUnenhanced);
     assert(pom2::profileFromKey("apple2e-1983") == pom2::SystemProfile::AppleIIeUnenhanced);
+    assert(pom2::profileFromKey("iie-u-pal")    == pom2::SystemProfile::AppleIIeUnenhancedPAL);
+    assert(pom2::profileFromKey("frenchtouch")  == pom2::SystemProfile::AppleIIeUnenhancedPAL);
     assert(pom2::profileFromKey("iie")          == pom2::SystemProfile::AppleIIe);
     assert(pom2::profileFromKey("apple2e")      == pom2::SystemProfile::AppleIIe);
     assert(pom2::profileFromKey("//e")          == pom2::SystemProfile::AppleIIe);

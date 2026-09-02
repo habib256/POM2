@@ -119,7 +119,12 @@ void MainWindow::persistSession()
             { &controller->disk35Internal(), &controller->disk35External() }) {
         if (img->isLoaded() && img->hasUnsavedChanges() &&
             !img->isWriteProtected()) {
-            img->saveDirty();
+            // A failed flush leaves the file untouched (atomic temp+rename),
+            // but the only copy of the session's writes dies with the
+            // process — say so, like the Disk II shutdown path does.
+            if (!img->saveDirty())
+                pom2::log().warn("Disk35", "shutdown flush failed for " +
+                                 img->path() + ": " + img->lastError());
         }
     }
     settings->setString("disk35_path_1",

@@ -28,10 +28,12 @@
 #include "ProDOSVolume.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <string>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -600,6 +602,47 @@ static void testMultipleBitmapBlocks()
     std::printf("prodos_volume_smoke: multiple bitmap blocks OK\n");
 }
 
+static std::string slurp(const fs::path& p)
+{
+    std::ifstream f(p, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(f),
+                       std::istreambuf_iterator<char>());
+}
+
+// A host file edited AFTER the mount snapshot must survive the write-back:
+// the volume holds the mount-time copy, and rewriting it silently reverted
+// the user's edit while reporting a successful save. The legacy nullptr
+// call keeps the overwrite-everything behaviour.
+static void testHostNewerFilePreserved()
+{
+    const fs::path dir = makeTempDir("hostnewer");
+    writeFile(dir / "NOTES.TXT", {'o', 'l', 'd'});
+
+    std::vector<std::uint8_t> img;
+    assert(pom2::buildVolumeFromFolder(dir.string(), "HOST", img).ok);
+    const auto mountTime = fs::file_time_type::clock::now();
+
+    // The user edits the file on the host AFTER the mount snapshot.
+    writeFile(dir / "NOTES.TXT", {'n', 'e', 'w', 'e', 'r'});
+    fs::last_write_time(dir / "NOTES.TXT",
+                        mountTime + std::chrono::seconds(2));
+
+    auto r = pom2::decodeVolumeToFolder(img, dir.string(), &mountTime);
+    assert(r.ok);
+    assert(r.filesSkipped >= 1);
+    assert(slurp(dir / "NOTES.TXT") == "newer" &&
+           "write-back reverted a host-newer file to the mount snapshot");
+
+    // Legacy callers (no stamp) keep the overwrite-everything behaviour.
+    r = pom2::decodeVolumeToFolder(img, dir.string(), nullptr);
+    assert(r.ok);
+    assert(slurp(dir / "NOTES.TXT") == "old");
+
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    std::printf("prodos_volume_smoke: host-newer preservation OK\n");
+}
+
 int main()
 {
     testEmptyFolder();
@@ -610,6 +653,7 @@ int main()
     testMetadataTagParsing();
     testDecodeNeverMergesTwoEntriesOntoOneFile();
     testMultipleBitmapBlocks();
+    testHostNewerFilePreserved();
     std::printf("prodos_volume_smoke: PASS\n");
     return 0;
 }

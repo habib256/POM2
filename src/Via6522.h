@@ -264,12 +264,24 @@ struct Via6522
         case VIA_T1LH:   return static_cast<uint8_t>((t1Latch >> 8) & 0xFF);
         case VIA_T2CL: {
             // T2CL read clears IFR.T2 (MAME `6522via.cpp:590-594`).
+            //
+            // Read-back bias -1, NOT MAME's -2: the same hardware rule the
+            // T1 cases above carry (commit c58528a) — the visible counter
+            // line is `written + 1 - elapsed`, because the counter loads on
+            // the phi2 AFTER the CxH write. T2 is the identical load/
+            // decrement silicon (W65C22 datasheet), so MAME's extra cycle is
+            // the same one-low divergence that made DIX rasters crawl on
+            // T1; a beam-racer re-arming from a T2 read-back would drift
+            // the same way. Unconditional, like T1, so the line stays
+            // continuous through the underflow (armed counter carries the
+            // +2 pre-bias; after the one-shot fires, the +0x10000 free-run
+            // continues the same line). Pinned by `via_t2_timing`.
             ifr &= ~IFR_T2;
-            const int32_t rb = t2Active ? t2Counter - 2 : t2Counter;
+            const int32_t rb = t2Counter - 1;
             return static_cast<uint8_t>(rb & 0xFF);
         }
         case VIA_T2CH: {
-            const int32_t rb = t2Active ? t2Counter - 2 : t2Counter;
+            const int32_t rb = t2Counter - 1;
             return static_cast<uint8_t>((rb >> 8) & 0xFF);
         }
         case VIA_SR:     return sr;

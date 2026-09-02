@@ -98,6 +98,7 @@ bool charRomFitsProfile(const CharRomEntry& e, SystemProfile p)
          p == SystemProfile::AppleIIc              ||
          p == SystemProfile::AppleIIcPlus          ||
          p == SystemProfile::AppleIIePAL           ||
+         p == SystemProfile::AppleIIeUnenhancedPAL ||
          p == SystemProfile::AppleIIcPAL);
 
     if (e.locale == CharRomLocale::ProfileDefault) {

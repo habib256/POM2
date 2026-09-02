@@ -4,7 +4,7 @@
 
 ### *Eight machines from 1977 to 1988, beam-raced to the scanline — then tilted into 3D and rewound through time.*
 
-🎂 **Celebrating 50 years of Apple (1976 → 2026)** with a cycle-accurate Apple II family emulator: **8 one-click machine presets** (][ · ][+ · //e · //e enhanced · //c · //c+ · PAL //e · PAL //c Le Chat Mauve), MAME-faithful CPU and hardware ports, OpenEmulator-grade composite NTSC, a MicroM8-style **3D voxel view**, **time-travel rewind**, mechanical floppy sounds, and a stack of expansion cards from Mockingboard to Phasor — all running in the browser too.
+🎂 **Celebrating 50 years of Apple (1976 → 2026)** with a cycle-accurate Apple II family emulator: **9 one-click machine presets** (][ · ][+ · //e · //e enhanced · //c · //c+ · PAL //e unenhanced · PAL //e · PAL //c Le Chat Mauve), MAME-faithful CPU and hardware ports, OpenEmulator-grade composite NTSC, a MicroM8-style **3D voxel view**, **time-travel rewind**, mechanical floppy sounds, and a stack of expansion cards from Mockingboard to Phasor — all running in the browser too.
 
 Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 
@@ -14,7 +14,7 @@ Built with Dear ImGui & OpenGL — fast, lightweight, cross-platform.
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/Linux%20•%20macOS%20•%20Windows%20•%20Web-lightgrey.svg)](#-download)
 [![C++17](https://img.shields.io/badge/C%2B%2B-17-orange.svg)](#)
-[![8 machines](https://img.shields.io/badge/Machines-8-success.svg)](#-machine-profiles)
+[![9 machines](https://img.shields.io/badge/Machines-9-success.svg)](#-machine-profiles)
 [![MAME-parity](https://img.shields.io/badge/Hardware-MAME--faithful-yellowgreen.svg)](DEV.md)
 
 ![Apple II Plus](pic/Apple_II_plus.jpg)
@@ -206,20 +206,21 @@ Clicks that land on POM2's own interface stay POM2's, even where it sits on top 
 
 ## 🖥️ Machine Profiles
 
-Eight one-click machines spanning the line — six NTSC plus two **PAL (50 Hz)** variants. Switch from `Machine → Profile` or `--preset`. Each switch is a full cold reset that re-plugs built-in cards and re-mounts inserted disks where possible.
+Nine one-click machines spanning the line — six NTSC plus three **PAL (50 Hz)** variants. Switch from `Machine → Profile` or `--preset`. Each switch is a full cold reset that re-plugs built-in cards and re-mounts inserted disks where possible.
 
 | Profile | CPU | Mode | Main ROM probes | Built-in slots (locked) |
 |---|---|---|---|---|
 | **Apple ][ Original** (1977) | NMOS 6502 | — | `apple2o.rom`, `apple2.rom` | — |
 | **Apple ][+** (1979) | NMOS 6502 | — | `apple2p.rom`, `apple2.rom` | — |
-| **Apple //e** (1983, Unenhanced) | NMOS 6502 | IIe | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | AUX = Ext. 80-col (built-in) |
+| **Apple //e Unenhanced** (1983) | NMOS 6502 | IIe | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | AUX = Ext. 80-col (built-in) |
 | **Apple //e Enhanced** (1985) | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) |
 | **Apple //c** (1984) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | sl1/2 SSC · sl4 Mouse (AppleWin HLE) · sl5 SmartPort · sl6 Disk II |
 | **Apple //c Plus** (1988) | 65C02 | IIe | `apple2cp.rom`, `apple2c-plus.rom`, `apple2c-32Kv0.rom` | sl1/2 SSC · sl4 Mouse (AppleWin HLE) · sl5 SmartPort 3.5" · sl6 Disk II |
+| **Apple //e Unenhanced PAL** (50 Hz) | NMOS 6502 | IIe | `apple2e_unenh.rom`, `342-0135-b.64.rom`, `apple2e.rom` | AUX = Ext. 80-col (built-in) · **PAL timing** |
 | **Apple //e Enhanced PAL** (50 Hz) ← *default* | 65C02 | IIe | `apple2e.rom` | AUX = Ext. 80-col (built-in) · **PAL timing** |
 | **Apple //c PAL** (Le Chat Mauve) | 65C02 | IIe | `apple2c-32Kv0.rom`, `apple2c-16K.rom`, `3420033a.256` | same as //c **+ sl7 built-in Le Chat Mauve RGB** · **PAL timing** |
 
-Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`, `iie-pal`, `iic-pal`/`chatmauve`.
+Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`iie`, `apple2c`/`//c`, `apple2cplus`/`//c+`, `iie-u-pal`/`frenchtouch`, `iie-pal`, `iic-pal`/`chatmauve`.
 
 **First launch** boots **Apple //e Enhanced PAL** with **Composite (OpenEmulator)** video and this slot map — a European //e with the peripherals most software expects:
 
@@ -229,7 +230,7 @@ Aliases for `--preset`: `apple2`/`ii`, `apple2plus`/`ii+`, `iie-u`, `apple2e`/`i
 
 Slot 3 is empty because the //e's 80-column card isn't a slot card: the firmware is internal ROM at `$C300` and the Extended 80-Column Text Card sits on the AUX connector — both come with the profile. Everything here is a *default*: change any slot in Slot Configuration (or the profile in `Machine → Profile`) and your choice is what loads next time. POM2 falls back to **Apple ][+** if no //e ROM is found.
 
-> The two PAL profiles carry 312-line / ~50 Hz timing — the cadence French Touch / DIX demos and the Le Chat Mauve RGB Péritel adapter were built for.
+> The three PAL profiles carry 312-line / ~50 Hz timing — the cadence French Touch / DIX demos and the Le Chat Mauve RGB Péritel adapter were built for. The **Unenhanced PAL //e** (`--preset frenchtouch`) is the machine the 6502-only intros (OLDSKOOL FORT ET VERT…) were written on: their per-scanline cycle counts hold only on an NMOS 6502 — a 65C02 runs the `LSR abs,X` line dispatcher one cycle short and the raster bars drift one character cell per line.
 
 > **ROM identity check** — when the generic `apple2.rom` fallback resolves (no profile-specific dump present), the loader warns that the ROM may not match the selected machine.
 
@@ -401,7 +402,7 @@ Accepted main ROM sizes: 12 KB, 16 KB, 20 KB system packs (with 4 KB filler), an
 ```bash
 POM2 <disk-image>                   # mount into the right slot + cold-boot
 POM2 --kiosk <disk-image>           # exclusive full-screen, chrome-free, settings-read-only
-POM2 --preset ii|ii+|iie-u|iie|iic|iic+|iie-pal|iic-pal
+POM2 --preset ii|ii+|iie-u|iie|iic|iic+|iie-u-pal|iie-pal|iic-pal
 POM2 --snapshot-save out.pom2snap
 POM2 --snapshot-load in.pom2snap
 ```

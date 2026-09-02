@@ -211,7 +211,12 @@ inline void applyEnvShape(ChipSynthState& cs, const uint8_t* r)
     }
     cs.envStep    = kMask;
     cs.envHolding = 0;
-    cs.envCounter = 0;
+    // envCounter deliberately NOT touched: MAME's `set_shape` (the cited
+    // verbatim source) leaves the envelope period counter running — only
+    // reset zeroes it. Zeroing here made every mid-period R13 retrigger
+    // (the standard buzz-bass technique across the French Touch / DIX
+    // corpus) wait a full 2×EP for its first step, up to a period late vs
+    // hardware/MAME, shifting the buzz timbre. Pinned by `ay_env_retrigger`.
     cs.lastShape  = shape;
 }
 

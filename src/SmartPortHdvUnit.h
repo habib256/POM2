@@ -78,7 +78,8 @@ public:
         out = backing_.takeWriteBack();
         return true;
     }
-    void     clearDirtyBlocks() override { backing_.clearDirty(); }
+    void     restoreDirtyBlocks(const std::vector<uint32_t>& indices) override
+    { backing_.restoreDirty(indices); }
     bool     eject() override;
     const std::string& path()      const override { return backing_.path(); }
     const std::string& lastError() const override { return backing_.lastError(); }

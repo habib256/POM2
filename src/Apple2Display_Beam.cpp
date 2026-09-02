@@ -153,6 +153,45 @@ void Apple2Display::renderInternalSegment(Memory& mem, const Memory::DisplayStat
     }
 }
 
+// A mid-line soft switch's VISIBLE column depends on WHICH switch it is.
+// frameCycleToPos maps a switch's emuCycle to `byteCol = hpos - 24`, a
+// constant calibrated (madef_phase_probe / vbl_edge_phase) on MAD EFFECT's
+// mid-line $C055 — a PAGE2 flip, which is *fetch-side*: it selects the
+// address the scanner reads on its NEXT fetch, so its effect shows at the
+// following byte. The DHIRES/hi-res switches ($C056/$C057, $C05E/$C05F) are
+// *display-side*: they re-interpret the byte being fetched NOW, one
+// character cell LEFT of a page flip on the same cycle. Applying the
+// page-calibrated -24 to those drew OLDSKOOL FORT ET VERT's HGR-mode raster
+// bands one cell RIGHT of the TV-set art they frame — user-confirmed
+// 2026-09-02 (persists on genuine NMOS, so it is this mapping and not the
+// 65C02 cycle drift; the fix aligns in BOTH the Chat Mauve RGB and the
+// OpenEmulator composite paths). So those kinds get one column pulled back.
+// Subtracting after the [0,40] clamp equals clamping hpos-25 for every
+// in-range value, so a switch thrown in HBL (byteCol already 0 — the DIX
+// menu's $C056/$C057) stays at column 0 and does not move.
+static int beamColForEvent(const Memory::VideoEvent& e, VideoStandard vstd)
+{
+    int col = Apple2Display::frameCycleToPos(e.emuCycle, vstd).byteCol;
+    switch (e.kind) {
+        case Memory::VideoEventKind::HiRes:   // $C056/$C057  (lo/hi-res)
+        case Memory::VideoEventKind::Dhgr:    // derived DHIRES state
+        case Memory::VideoEventKind::An3:     // $C05E/$C05F  (AN3/DHIRES)
+            col -= 1;                       // display-side: effect one col left
+            if (col < 0) col = 0;
+            break;
+        default:
+            // Everything else stays on the page-calibrated -24. Page2 /
+            // 80Store are fetch-side (addressing) and MAD EFFECT / DROL / DIX
+            // pin them there. TextMode / MixedMode are left at -24 too: no
+            // measured title exercises a mid-line text/graphics flip, and
+            // $C050/$C051 changes the fetch REGION (text $0400 vs HGR $2000)
+            // as well as the interpretation, so its side is genuinely
+            // ambiguous — revisit only with a measured case, like this one.
+            break;
+    }
+    return col;
+}
+
 void Apple2Display::forEachBeamSegment(
     const Memory::DisplayState& frameStart,
     std::vector<Memory::VideoEvent> events,
@@ -191,8 +230,7 @@ void Apple2Display::forEachBeamSegment(
     std::stable_sort(events.begin(), events.end(),
         [std](const Memory::VideoEvent& a, const Memory::VideoEvent& b) {
             if (a.scanline != b.scanline) return a.scanline < b.scanline;
-            return frameCycleToPos(a.emuCycle, std).byteCol
-                 < frameCycleToPos(b.emuCycle, std).byteCol;
+            return beamColForEvent(a, std) < beamColForEvent(b, std);
         });
 
     // Per visible scanline, the ordered list of column segments [prevEnd,
@@ -214,7 +252,7 @@ void Apple2Display::forEachBeamSegment(
         std::vector<Seg> segs;
         int prevCol = 0;
         while (ei < events.size() && events[ei].scanline == y) {
-            const int col = frameCycleToPos(events[ei].emuCycle, std).byteCol;
+            const int col = beamColForEvent(events[ei], std);
             if (col > prevCol) { segs.push_back({col, cur, latch}); prevCol = col; }
             if (events[ei].kind == Memory::VideoEventKind::Dhgr &&
                 cur.dhgr && !events[ei].value)

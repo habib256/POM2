@@ -192,6 +192,39 @@ int main()
         assert(fs::is_directory(tmpDir));
     }
 
+    // ── A hard link planted at the temp name must not reach the target ──
+    // A regular file at <target>.tmp that is a hard link TO the target
+    // shares its inode: the old "regular = our own leftover; trunc is fine"
+    // rule truncated the user's file before anything was committed,
+    // violating the "target untouched on every failure path" contract.
+#ifndef _WIN32
+    {
+        const fs::path victim = dir / "victim.img";
+        const fs::path vtmp   = dir / "victim.img.tmp";
+        const auto keep = pattern(4096, 0x3C);
+        writeFile(victim, keep);
+        std::error_code lec;
+        fs::create_hard_link(victim, vtmp, lec);
+        if (!lec) {
+            ec.clear();
+            assert(pom2::prepareTempPath(vtmp, ec) && !ec);
+            assert(readFile(victim) == keep &&
+                   "target truncated through the planted hard link");
+            assert(!fs::exists(vtmp) && "planted hard link must be unlinked");
+
+            // And the full commit still lands afterwards.
+            const auto fresher = pattern(2048, 0x7E);
+            ec.clear();
+            assert(pom2::writeFileAtomic(victim, fresher.data(),
+                                         fresher.size(), ec));
+            assert(readFile(victim) == fresher);
+        } else {
+            std::printf("  (skipped: this filesystem has no hard links)\n");
+        }
+    }
+#endif
+
+
     fs::remove_all(dir, ec);
     std::printf("atomic_file_replace: all assertions passed\n");
     return 0;
