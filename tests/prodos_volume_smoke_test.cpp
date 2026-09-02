@@ -620,21 +620,23 @@ static void testHostNewerFilePreserved()
 
     std::vector<std::uint8_t> img;
     assert(pom2::buildVolumeFromFolder(dir.string(), "HOST", img).ok);
-    // Take the mount reference from the filesystem's OWN clock, not
-    // `file_time_type::clock::now()`. libc++ aliases that clock to the one
-    // `last_write_time` returns, but libstdc++ does not — mixing a `now()`
-    // stamp with FS-read mtimes made the `mtime > newerThan` compare unstable
-    // on Linux (host-newer file not skipped). Reading the reference back from
-    // disk keeps both sides of the compare in the same clock domain, and the
-    // 24 h gap is immune to any FS timestamp-resolution difference.
-    const auto mountTime = fs::last_write_time(dir / "NOTES.TXT");
 
     // The user edits the file on the host AFTER the mount snapshot.
     writeFile(dir / "NOTES.TXT", {'n', 'e', 'w', 'e', 'r'});
-    fs::last_write_time(dir / "NOTES.TXT",
-                        mountTime + std::chrono::hours(24));
 
-    auto r = pom2::decodeVolumeToFolder(img, dir.string(), &mountTime);
+    // Derive the mount stamp from the edited file's OWN recorded mtime, backed
+    // off 24 h. This must not (a) mix `file_time_type::clock::now()` with
+    // FS-read mtimes — libc++ aliases the two clocks, libstdc++ does not — nor
+    // (b) rely on the `last_write_time` SETTER, which is ineffective on some
+    // libstdc++ builds (the coverage leg): combined with a coarse-granularity
+    // CI filesystem where the "old" and "newer" writes land on the same second,
+    // a failed set left `dest_mtime == newerThan` and nothing was skipped. Both
+    // sides of the `dest_mtime > newerThan` compare now read the same on-disk
+    // timestamp, so the skip is guaranteed on every toolchain.
+    const auto newerThan =
+        fs::last_write_time(dir / "NOTES.TXT") - std::chrono::hours(24);
+
+    auto r = pom2::decodeVolumeToFolder(img, dir.string(), &newerThan);
     assert(r.ok);
     assert(r.filesSkipped >= 1);
     assert(slurp(dir / "NOTES.TXT") == "newer" &&
