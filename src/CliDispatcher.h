@@ -71,6 +71,8 @@ enum class CliPreset {
     AppleIIcPlus,   // → pom2::SystemProfile::AppleIIcPlus
     AppleIIePAL,    // → pom2::SystemProfile::AppleIIePAL (50 Hz)
     AppleIIcPAL,    // → pom2::SystemProfile::AppleIIcPAL (Le Chat Mauve)
+    AppleIIeUnenhancedPAL, // → SystemProfile::AppleIIeUnenhancedPAL
+                           //   (NMOS 6502 + 50 Hz — the French Touch machine)
 };
 
 /// One deferred action consumed in Phase C, in CLI order.

@@ -865,7 +865,8 @@ void AiControlServer::handleStatus(socket_t fd, const Request& /*req*/)
             oss << "[";
             for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
                 if (d) oss << ",";
-                oss << "{\"slot\":6,\"drive\":" << d
+                oss << "{\"slot\":" << disk6_->getSlot()
+                    << ",\"drive\":" << d
                     << ",\"path\":\"" << jsonEscape(disk6_->getDiskPath(d)) << "\""
                     << ",\"loaded\":" << (disk6_->isDiskLoaded(d) ? "true" : "false")
                     << ",\"track\":" << disk6_->getCurrentTrack(d)
@@ -1115,12 +1116,11 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
     // access. Defer the disk6_ null-check to inside the lock so a
     // concurrent profile switch (which detaches() before tearing down
     // the card) can't slip a null past us.
-    long slot  = 6;
+    long slot  = -1;                     // -1 = "the bound Disk II card"
     long drive = 0;
     jsonGetInt(req.body, "slot",  slot);
     jsonGetInt(req.body, "drive", drive);
     const std::string path = jsonGetString(req.body, "path");
-    if (slot != 6) { sendJsonError(fd, 400, "only slot 6 is implemented"); return; }
     if (drive < 0 || drive >= DiskIICard::kDriveCount) {
         sendJsonError(fd, 400, "drive must be 0 or 1"); return;
     }
@@ -1144,11 +1144,23 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
     // once and trusted across an unlocked phase 1 — it is re-checked under the
     // lock before the install. The UI callers get that guarantee for free from
     // the SlotBus topology rule, being on the thread that does the swapping.
+    // `disk6_` is the PRIMARY (lowest-slot) Disk II, not necessarily slot
+    // 6: with cards in slots 5 AND 6 the old hard-coded `slot != 6` check
+    // accepted "slot 6" and then operated on the slot-5 card — the wrong
+    // medium touched, 200 returned. Validate against — and report — the
+    // bound card's REAL slot, read under the lock like the pointer itself.
     bool writeBack = false;
+    int  boundSlot = -1;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         if (!disk6_) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
         writeBack = disk6_->isWriteBackEnabled();
+        boundSlot = disk6_->getSlot();
+    }
+    if (slot != -1 && slot != boundSlot) {
+        sendJsonError(fd, 400, "Disk II endpoints drive the primary card, "
+                      "which is in slot " + std::to_string(boundSlot));
+        return;
     }
 
     DiskImage   prepared;
@@ -1171,7 +1183,8 @@ void AiControlServer::handleDiskInsert(socket_t fd, const Request& req)
     }
     if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
     if (!ok)    { sendJsonError(fd, 400, "insert failed: " + errMsg); return; }
-    sendJsonOk(fd, "{\"slot\":6,\"drive\":" + std::to_string(drive) +
+    sendJsonOk(fd, "{\"slot\":" + std::to_string(boundSlot) +
+                   ",\"drive\":" + std::to_string(drive) +
                    ",\"path\":\"" + jsonEscape(*safe) + "\"}");
 }
 
@@ -1183,28 +1196,44 @@ void AiControlServer::handleDiskEject(socket_t fd, const Request& req)
     // asked for. An agent unmounting SmartPort media with {"slot":5,"drive":1}
     // got a 200 saying so, while the Disk II in slot 6 was flushed to disk and
     // dropped instead: the wrong medium written back, and nothing to see.
-    long slot  = 6;
+    long slot  = -1;                     // -1 = "the bound Disk II card"
     long drive = 0;
     jsonGetInt(req.body, "slot",  slot);
     jsonGetInt(req.body, "drive", drive);
-    if (slot != 6) { sendJsonError(fd, 400, "only slot 6 is implemented"); return; }
     if (drive < 0 || drive >= DiskIICard::kDriveCount) {
         sendJsonError(fd, 400, "drive must be 0 or 1"); return;
     }
     bool noCard = false;
+    bool wrongSlot = false;
     bool ejected = false;
+    int  boundSlot = -1;
     std::string errMsg;
     {
         std::lock_guard<std::mutex> lk(ctrl_->stateMutex());
         if (!disk6_) noCard = true;
         else {
-            ejected = disk6_->ejectDisk(static_cast<int>(drive));
-            if (!ejected) errMsg = disk6_->getLastError(static_cast<int>(drive));
+            // Same primary-vs-slot-6 rule as /disk/insert: validate the
+            // requested slot against the bound card's real one BEFORE
+            // touching a drive — a hard-coded "6" here ejected (and
+            // flushed) the slot-5 primary while confirming slot 6.
+            boundSlot = disk6_->getSlot();
+            if (slot != -1 && slot != boundSlot) wrongSlot = true;
+            else {
+                ejected = disk6_->ejectDisk(static_cast<int>(drive));
+                if (!ejected)
+                    errMsg = disk6_->getLastError(static_cast<int>(drive));
+            }
         }
     }
     if (noCard) { sendJsonError(fd, 503, "no Disk II card plugged"); return; }
+    if (wrongSlot) {
+        sendJsonError(fd, 400, "Disk II endpoints drive the primary card, "
+                      "which is in slot " + std::to_string(boundSlot));
+        return;
+    }
     if (!ejected) { sendJsonError(fd, 500, "eject failed: " + errMsg); return; }
-    sendJsonOk(fd, "{\"drive\":" + std::to_string(drive) + "}");
+    sendJsonOk(fd, "{\"slot\":" + std::to_string(boundSlot) +
+                   ",\"drive\":" + std::to_string(drive) + "}");
 }
 
 void AiControlServer::handleSnapshotSave(socket_t fd, const Request& req)

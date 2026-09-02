@@ -158,30 +158,41 @@ bool TnfsClient::openTransport(const std::string& host, uint16_t port,
 {
     closeTransport();
 
-    addrinfo hints{};
-    hints.ai_family   = AF_INET;
-    hints.ai_socktype = wantTcp ? SOCK_STREAM : SOCK_DGRAM;
-    hints.ai_protocol = wantTcp ? IPPROTO_TCP : IPPROTO_UDP;
-
+    // Both the resolve and a TCP connect get HARD deadlines. The previous
+    // code trusted SO_SNDTIMEO to bound a blocking connect() — the
+    // project's own 2026-08-21 macOS measurement says it does not (75 s
+    // against a SYN-swallowing host with the option asking 8; see
+    // SocketUtil.h / DEV.md § FujiNet) — and left getaddrinfo unbounded on
+    // top. `POM2 tnfs://unreachable-host/image.po` used to sit ~75 s in
+    // this TCP pass, window frozen, before the UDP fallback even started.
     const std::string portStr = std::to_string(port);
     addrinfo* res = nullptr;
-    const int rc = ::getaddrinfo(host.c_str(), portStr.c_str(), &hints, &res);
-    if (rc != 0 || !res) {
+    if (!resolveBounded(host, portStr, timeoutMs_, &res,
+                        wantTcp ? SOCK_STREAM : SOCK_DGRAM,
+                        wantTcp ? IPPROTO_TCP : IPPROTO_UDP)) {
         errOut = "cannot resolve " + host;
         return false;
     }
 
     bool ok = false;
     for (addrinfo* a = res; a; a = a->ai_next) {
-        socket_t s = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-        if (!isValidSocket(s)) continue;
-        disableSigpipe(s);
-
-        // A blocking connect with no timeout can wedge the caller for the
-        // stack's own retry budget (a minute or more on some hosts), and this
-        // runs on the CPU thread. UDP "connect" only fixes the peer address,
-        // so it cannot block; TCP gets the socket timeout below, which BSD
-        // stacks apply to connect() as well.
+        socket_t s = kInvalidSocket;
+        if (wantTcp) {
+            // connectBounded leaves the socket non-blocking; this client
+            // does plain blocking I/O under SO_RCVTIMEO, so flip it back.
+            if (!connectBounded(a, timeoutMs_, s)) continue;
+            if (!setBlocking(s)) { closeHostSocketValue(s); continue; }
+        } else {
+            s = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+            if (!isValidSocket(s)) continue;
+            disableSigpipe(s);
+            // UDP "connect" only fixes the peer address — it cannot block.
+            if (::connect(s, a->ai_addr,
+                          static_cast<socklen_c>(a->ai_addrlen)) != 0) {
+                closeHostSocketValue(s);
+                continue;
+            }
+        }
         timeval tv{};
         tv.tv_sec  = timeoutMs_ / 1000;
         tv.tv_usec = (timeoutMs_ % 1000) * 1000;
@@ -189,14 +200,10 @@ bool TnfsClient::openTransport(const std::string& host, uint16_t port,
                      reinterpret_cast<const char*>(&tv), sizeof tv);
         ::setsockopt(s, SOL_SOCKET, SO_SNDTIMEO,
                      reinterpret_cast<const char*>(&tv), sizeof tv);
-
-        if (::connect(s, a->ai_addr, static_cast<socklen_c>(a->ai_addrlen)) == 0) {
-            fd_  = s;
-            tcp_ = wantTcp;
-            ok   = true;
-            break;
-        }
-        closeHostSocketValue(s);
+        fd_  = s;
+        tcp_ = wantTcp;
+        ok   = true;
+        break;
     }
     ::freeaddrinfo(res);
 
@@ -216,6 +223,23 @@ void TnfsClient::closeTransport()
 bool TnfsClient::sendRecvTcp(const uint8_t* pkt, std::size_t n,
                              std::vector<uint8_t>& raw, std::string& errOut)
 {
+    // Self-healing pre-send drain: if an earlier reply left a tail in the
+    // socket buffer (a server sending more payload than the fixed pulls
+    // below expect — STAT's optional time/uid fields, say), the next
+    // request would otherwise parse that tail as a fresh header and the
+    // session would stay desynchronised until remount. Anything readable
+    // BEFORE our request has been sent cannot be our reply, so discard it.
+    {
+        char junk[512];
+        std::size_t drained = 0;
+        while (drained < 64 * 1024 &&
+               waitSocket(fd_, SocketWait::Read, 0) == WaitResult::Ready) {
+            const iolen_t r = ::recv(fd_, junk, sizeof junk, 0);
+            if (r <= 0) break;
+            drained += static_cast<std::size_t>(r);
+        }
+    }
+
     if (sendNoSignal(fd_, pkt, n) != static_cast<iolen_t>(n)) {
         errOut = "TNFS send failed: " + lastSocketErrorText();
         return false;
@@ -248,7 +272,30 @@ bool TnfsClient::sendRecvTcp(const uint8_t* pkt, std::size_t n,
         errOut = "TNFS: truncated response header";
         return false;
     }
-    if (buf[3] == kTnfsRead && buf[kHeaderSize] == 0x00) {
+
+    // Per-command framing: pull each SUCCESS reply's declared payload, not
+    // only READ's. A non-READ reply split across TCP segments (legal — the
+    // header note above says so) used to come back as a runt that failed
+    // the caller's size guard AND stranded its tail in the socket buffer,
+    // desynchronising every later request. Fixed sizes per the TNFS spec +
+    // the reference fujinet tnfslib; READDIR's name is variable, so it is
+    // pulled to its NUL. STAT may carry optional trailing fields (times,
+    // uid/gid strings) beyond the 10 this client reads — the pre-send
+    // drain above mops those up on the next call.
+    const uint8_t cmd      = buf[3];
+    const bool    okStatus = (buf[kHeaderSize] == 0x00);
+    if (okStatus) {
+        std::size_t want = kHeaderSize + 1;
+        switch (cmd) {
+        case kTnfsMount:   want += 4;  break;  // version(2) + retry delay(2)
+        case kTnfsOpen:
+        case kTnfsOpenDir: want += 1;  break;  // handle
+        case kTnfsStat:    want += 10; break;  // mode(2) uid(2) gid(2) size(4)
+        default:                       break;  // status-only replies
+        }
+        if (!pull(want)) { errOut = "TNFS: truncated reply payload"; return false; }
+    }
+    if (cmd == kTnfsRead && okStatus) {
         if (!pull(kHeaderSize + 3)) {          // status + 16-bit count
             errOut = "TNFS: truncated READ header";
             return false;
@@ -257,6 +304,16 @@ bool TnfsClient::sendRecvTcp(const uint8_t* pkt, std::size_t n,
         if (want > sizeof buf) { errOut = "TNFS: oversized READ reply"; return false; }
         if (!pull(want)) { errOut = "TNFS: truncated READ payload"; return false; }
         have = want;
+    } else if (cmd == kTnfsReadDir && okStatus) {
+        // One NUL-terminated name follows the status.
+        for (;;) {
+            bool haveNul = false;
+            for (std::size_t i = kHeaderSize + 1; i < have; ++i)
+                if (buf[i] == 0x00) { haveNul = true; break; }
+            if (haveNul) break;
+            if (have >= sizeof buf) { errOut = "TNFS: oversized READDIR reply"; return false; }
+            if (!pull(have + 1)) { errOut = "TNFS: truncated READDIR reply"; return false; }
+        }
     }
 
     raw.assign(buf, buf + have);

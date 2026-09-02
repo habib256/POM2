@@ -2710,6 +2710,31 @@ endif()
 add_test(NAME horizontal_split COMMAND test_horizontal_split)
 set_tests_properties(horizontal_split PROPERTIES TIMEOUT 5)
 
+add_executable(test_raster_switch_kind_offset
+    raster_switch_kind_offset_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_ChatMauve.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_Beam.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(test_raster_switch_kind_offset PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_raster_switch_kind_offset PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_raster_switch_kind_offset PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_raster_switch_kind_offset PRIVATE winmm)
+endif()
+
+add_test(NAME raster_switch_kind_offset COMMAND test_raster_switch_kind_offset)
+set_tests_properties(raster_switch_kind_offset PROPERTIES TIMEOUT 5)
+
 # Same horizontal split, but pinned in the composite signal (fillCompositeSignal)
 # — left window HGR waveform, right window TEXT waveform on the same line.
 add_executable(test_horizontal_split_composite
@@ -6560,4 +6585,38 @@ if(APPLE)
 endif()
 if(WIN32)
     target_link_libraries(dix_menu_raster_probe PRIVATE winmm)
+endif()
+
+add_executable(oldskool_raster_probe EXCLUDE_FROM_ALL
+    oldskool_raster_probe.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_ChatMauve.cpp
+    ${CMAKE_SOURCE_DIR}/src/Apple2Display_Beam.cpp
+    ${CMAKE_SOURCE_DIR}/src/AppleWinNtsc.cpp
+    ${CMAKE_SOURCE_DIR}/src/LeChatMauveCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    ${POM2_TEST_CORE_SOURCES}
+)
+target_include_directories(oldskool_raster_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(oldskool_raster_probe PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(oldskool_raster_probe PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(oldskool_raster_probe PRIVATE winmm)
 endif()

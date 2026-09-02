@@ -90,6 +90,12 @@ void LeChatMauveCard::onReset()
     mode             = RenderMode::COL140;
     an3Prev          = true;
     eightyColLatched = false;
+    // The beam-replay ring holds cycle-stamped edges; a cold boot rewinds
+    // cycleCounter to 0, so surviving edges would sit "in the future" and
+    // replay a mode this timeline never entered. Start the history fresh —
+    // Memory resets its own video event log for the same reason.
+    latchRingHead_ = 0;
+    latchRingSize_ = 0;
 
     // Eve manual IX: Ctrl-Reset clears all sixteen switches unless LOCKRES
     // is on. CPREG is a data register, not a switch — it keeps its byte.
@@ -433,5 +439,12 @@ void LeChatMauveCard::loadSnapshotState(const uint8_t* data, std::size_t len)
         if (data[2] >= 4 && len >= 10) rvbMode_ = data[9] & 0x03;
     }
     if (!isEve()) eveSwitches_ = 0;
+    // Snapshot-load and rewind move cycleCounter backwards; edges recorded
+    // on the abandoned timeline are stamped in the FUTURE and would win
+    // every latchBefore() scan, replaying a mode the restored machine never
+    // entered (MachineSnapshot resets Memory's video event log for exactly
+    // this clock-jump reason — this ring is the card's parallel log).
+    latchRingHead_ = 0;
+    latchRingSize_ = 0;
     syncAuxShadow();
 }

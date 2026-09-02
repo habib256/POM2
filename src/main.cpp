@@ -704,6 +704,8 @@ int main(int argc, char* argv[])
             case pom2::CliPreset::AppleIIcPlus: sp = pom2::SystemProfile::AppleIIcPlus; break;
             case pom2::CliPreset::AppleIIePAL:  sp = pom2::SystemProfile::AppleIIePAL;  break;
             case pom2::CliPreset::AppleIIcPAL:  sp = pom2::SystemProfile::AppleIIcPAL;  break;
+            case pom2::CliPreset::AppleIIeUnenhancedPAL:
+                                sp = pom2::SystemProfile::AppleIIeUnenhancedPAL; break;
             case pom2::CliPreset::Default: break;
         }
         mainWindow.applyProfile(sp);

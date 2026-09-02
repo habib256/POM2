@@ -800,8 +800,18 @@ TEXT waveform right, same line).
 done 2026-06-09)*. Both replays now resolve switches **per byte column**.
 `VideoEvent.emuCycle` (`Memory.h:320`) already carries the CPU cycle — only the
 horizontal position was discarded — so `Apple2Display::frameCycleToPos(emuCycle)`
-maps it to `{scanline, byteCol}` with `byteCol = clamp((emuCycle % 65) − 25, 0,
-40)` (the 40-byte visible window opens at horizontal cycle 25). The shared
+maps it to `{scanline, byteCol}` with `byteCol = clamp((emuCycle % 65) − 24, 0,
+40)` (the 40-byte visible window opens at horizontal cycle 25; the −24 is one
+cycle earlier because the scanner latches a byte in phi1 of the cycle whose phi2
+the CPU uses, calibrated on MAD EFFECT's `$C055`). **Per-kind offset**
+(`Apple2Display_Beam.cpp::beamColForEvent`, 2026-09-02): that −24 is right for a
+*fetch-side* switch — PAGE2 `$C054/$C055`, which picks the address read on the
+NEXT fetch — but a *display-side* hi-res/DHIRES switch (`$C056/$C057`, `$C05E/
+$C05F`) re-interprets the byte fetched NOW, one column LEFT, so HiRes / Dhgr / An3
+events get `−25`. Without it OLDSKOOL FORT ET VERT's HGR-mode raster bands drew
+one character cell right of the TV-set art (user-confirmed, both RGB and composite
+paths); pinned by `raster_switch_kind_offset`. TextMode / MixedMode stay on −24
+(unmeasured, and `$C050/$C051` also moves the fetch region). The shared
 `forEachBeamSegment(frameStart, events, paint)` builds, per visible scanline, the
 ordered list of column segments `[col0, col1)` + the display state across each
 (an event subdivides its line at `byteCol`; the end-of-line state carries down),
@@ -820,7 +830,9 @@ event-free run of scanlines collapses to one full-width paint — so existing de
 do not regress (`display_golden_hash`, `beam_race_composite`, OE parity goldens
 unchanged). Pinned by `horizontal_split` (RGBA) and `horizontal_split_composite`
 (signal): lower band re-flips every scanline → left window == HGR reference,
-right window == TEXT reference on the same line.
+right window == TEXT reference on the same line. The per-kind column offset is
+pinned separately by `raster_switch_kind_offset` (a mid-line HiRes split lands
+one byte column left of a PAGE2 split on the same cycle).
 
 The **560-wide IIe / Le Chat Mauve modes** (80-col text, DHGR, DLGR, Chat Mauve)
 also split mid-line, in both outputs:
@@ -2511,7 +2523,7 @@ transitions edge-only.
 
 ### ProDOS host folder
 
-`prodos_disk/`. `ProDOSVolume` synthesises a read-only ProDOS volume.
+`prodos_disk/`. `ProDOSVolume` synthesises a ProDOS volume (guest-writable in RAM; persisting back to the folder is the write-back opt-in).
 Blocks 0-1 boot (zeroed), 2-5 vol-dir key + 3 ext (51 entries max),
 block 6 bitmap (4096 blocks = 2 MB cap), 7+ data + sapling indexes.
 
@@ -2523,7 +2535,7 @@ Wiring: HDV slot 5 panel's Library shows `[host folder] prodos_disk/`
 entry. Click → `buildVolumeFromFolder` →
 `ProDOSHardDiskCard::loadImageFromBytes`. **No auto-boot** — user
 boots ProDOS elsewhere, then `/HOST/` appears as slot 5 drive
-(`CAT,S5,D1`). Read-only: driver returns `$2B` on writes. Pinned:
+(`CAT,S5,D1`). Guest writes land in RAM; with write-back ON they decode back into the folder on eject/quit — host files edited AFTER the mount are preserved (mount-time stamp carried in `PendingWriteBack`), never silently reverted to the snapshot. Pinned:
 `prodos_volume_smoke_test`.
 
 **Two ProDOS entries can want one host name** (2026-08-17, bug hunt 8
@@ -3390,7 +3402,7 @@ for the exact JSON shapes):
 | `/mem?addr=N&len=N` | GET / POST | hex read (len ≤ 4096) / bulk RAM write |
 | `/reset` | POST | `{"kind":"soft\|hard\|cold"}` — the three verbs in [CLAUDE § Reset](CLAUDE.md#reset-architecture) |
 | `/keyboard` | POST | `{"text":…}` / `{"raw":…}` → the paste queue |
-| `/disk`, `/eject` | POST | insert / eject by `{slot, drive, path}` |
+| `/disk`, `/eject` | POST | insert / eject by `{slot, drive, path}`; the endpoints drive the **primary** (lowest-slot) Disk II — `slot` may be omitted, and when given must match that card's real slot (validated and echoed back; a hard-coded "6" used to touch the slot-5 primary while confirming slot 6) |
 | `/snapshot/save`, `/snapshot/load` | POST | save path **must** end `.pom2snap` so an agent cannot clobber an unrelated file; load magic-byte-checks the blob |
 | `/speed` | POST | `{"cycles_per_frame":N}` or `{"preset":"1x\|2x\|max"}` |
 | `/screen.ppm` | GET | binary PPM of the live framebuffer |

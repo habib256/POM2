@@ -290,8 +290,38 @@ int main()
         assert(std::memcmp(before, after, kBlk) == 0);
     }
 
+    // Write-back OFF with dirty blocks is a successful NO-OP (the mirror of
+    // DiskImage::saveDirty), not an error. Erroring here wedged the 3.5"
+    // paths for the rest of the session: once dirty, unchecking "Write-back
+    // (save on eject)" made eject, disk swap and the //c+ mount35 flush gate
+    // all fail forever with a misleading "image is write-protected".
+    // dirty_ survives the no-op, so opting back in before eject still saves.
+    {
+        const fs::path img = base / "optout.po";
+        writeFile(img, makeRawImage());
+        const std::vector<std::uint8_t> pristine = readFile(img);
+
+        pom2::Disk35Image d;
+        assert(d.loadFile(img.string()));
+        d.setWriteBackEnabled(true);
+        std::vector<std::uint8_t> blk77(kBlk, 0x77);
+        assert(d.writeBlock(5, blk77.data()));
+
+        d.setWriteBackEnabled(false);        // user opts out, then ejects
+        assert(d.saveDirty() && "opt-out must be a successful no-op");
+        assert(readFile(img) == pristine && "opt-out must not write");
+        assert(d.hasUnsavedChanges() &&
+               "the no-op must not launder dirty_");
+
+        d.setWriteBackEnabled(true);         // …or changes mind first
+        assert(d.saveDirty());
+        const std::vector<std::uint8_t> saved = readFile(img);
+        assert(std::memcmp(saved.data() + 5 * kBlk, blk77.data(), kBlk) == 0);
+    }
+
     fs::remove_all(base);
-    std::printf("OK disk35_atomic_save (rename-replace, 2IMG envelope kept%s)\n",
+    std::printf("OK disk35_atomic_save (rename-replace, 2IMG envelope kept%s, "
+                "write-back opt-out no-ops)\n",
                 ranFailureCase ? ", failed save leaves image intact" : "");
     return 0;
 }

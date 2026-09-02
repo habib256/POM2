@@ -163,10 +163,31 @@ void SpeakerDevice::fillAudioBuffer(float* output, int frameCount)
     // Snapshot events that could fire inside this buffer's window.
     std::vector<uint64_t> windowEvents;
     {
+        std::lock_guard<std::mutex> lk(eventMutex);
+        // Consumer-ahead re-anchor — the mirror of the forward catch-up
+        // above. While the machine is paused (toolbar pause, debugger
+        // break: Mode::Stopped parks the worker but nothing stops the
+        // ma_device) this callback keeps consuming cycles while
+        // Memory::cycleCounter freezes, so on resume every new toggle is
+        // stamped far BEHIND the cursor. Without this, the stale purge
+        // below ate the whole resumed stream one buffer at a time (a net
+        // parity flip per ~6 ms buffer) and speaker audio stayed clicks or
+        // silence for the rest of the session. Snap back so the resumed
+        // stream keeps the same kCatchUpSecs lead the forward path
+        // maintains; the catchUpCycles threshold keeps ordinary
+        // rounding-stale events (a few cycles) on the cheap purge path.
+        if (!events.empty()
+            && events.front() + catchUpCycles < audioCpuCursor) {
+            const uint64_t lead =
+                static_cast<uint64_t>(kCatchUpSecs * cpuClockHz);
+            audioCpuCursor =
+                (events.front() > lead) ? events.front() - lead : 0;
+            subSampleAccum = 0.0;
+            lastUpdateFrac = 0.0;
+        }
         const uint64_t windowEndApprox = audioCpuCursor +
             static_cast<uint64_t>(frameCount * cyclesPerSubSample *
                                   kRateMultiplier) + 2;
-        std::lock_guard<std::mutex> lk(eventMutex);
         // Stale-event purge (timestamps already behind the cursor) —
         // same parity rule as the catch-up purge above: flip the level
         // when an odd count is silently dropped.

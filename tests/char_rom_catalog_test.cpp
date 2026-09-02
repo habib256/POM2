@@ -79,6 +79,7 @@ const std::vector<SystemProfile> kAllProfiles = {
     SystemProfile::AppleIIe,
     SystemProfile::AppleIIc,
     SystemProfile::AppleIIcPlus,
+    SystemProfile::AppleIIeUnenhancedPAL,
     SystemProfile::AppleIIePAL,
     SystemProfile::AppleIIcPAL,
 };
@@ -245,6 +246,7 @@ int main()
                                  SystemProfile::AppleIIeUnenhanced,
                                  SystemProfile::AppleIIc,
                                  SystemProfile::AppleIIcPlus,
+                                 SystemProfile::AppleIIeUnenhancedPAL,
                                  SystemProfile::AppleIIePAL,
                                  SystemProfile::AppleIIcPAL }) {
             expect(pom2::charRomFitsProfile(iieFr, p),

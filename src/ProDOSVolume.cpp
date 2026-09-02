@@ -775,6 +775,9 @@ struct DecodeWalk {
     std::size_t                       dirsLeft    = kMaxDecodeDirs;
     ProDOSDecodeResult&               r;
     bool                              ioFailed    = false;
+    /// Mount-time stamp: host files newer than this are preserved, not
+    /// reverted (see decodeVolumeToFolder's doc). Null = legacy overwrite.
+    const fs::file_time_type*         newerThan   = nullptr;
 };
 
 // Reserve `name` as a host filename inside one decoded directory, returning
@@ -999,6 +1002,25 @@ void decodeOneDir(DecodeWalk& w,
             const fs::path dest =
                 fs::path(hostFolder) / reserveHostName(usedHostNames,
                                                        name + typeExt);
+            // The volume is a snapshot taken at MOUNT time; a host file the
+            // user edited since then is NEWER than that snapshot, and
+            // rewriting it here would silently revert the user's edit to
+            // the mount-time copy (reported as a successful save, no less).
+            // Preserve it and say so — the guest's own writes leave the
+            // host mtime alone, so they still land.
+            if (w.newerThan) {
+                std::error_code mec;
+                const auto mtime = fs::last_write_time(dest, mec);
+                if (!mec && mtime > *w.newerThan) {
+                    pom2::log().warn("ProDOSVol",
+                        "decode: preserving host-newer file " +
+                        dest.filename().string() +
+                        " (edited on the host after the volume was mounted;"
+                        " the volume's stale copy was NOT written)");
+                    ++r.filesSkipped;
+                    continue;
+                }
+            }
             std::string writeErr;
             const FileWriteResult wr = writeFileAtomic(dest, data, writeErr);
             if (wr == FileWriteResult::Error) {
@@ -1033,8 +1055,10 @@ bool isHostSafeProDOSName(const std::string& name)
     return true;
 }
 
-ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
-                                        const std::string& hostFolder)
+ProDOSDecodeResult decodeVolumeToFolder(
+    const std::vector<std::uint8_t>& image,
+    const std::string& hostFolder,
+    const std::filesystem::file_time_type* preserveNewerThan)
 {
     ProDOSDecodeResult r;
 
@@ -1056,7 +1080,8 @@ ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
         return r;
     }
 
-    DecodeWalk walk{ image, totalBlocks, {}, kMaxDecodeDirs, r, false };
+    DecodeWalk walk{ image, totalBlocks, {}, kMaxDecodeDirs, r, false,
+                     preserveNewerThan };
     decodeOneDir(walk, /*firstBlock=*/2, hostFolder, /*depth=*/0);
 
     if (walk.ioFailed) return r;

@@ -46,6 +46,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -59,7 +60,9 @@ struct ProDOSBuildResult {
     std::size_t totalBlocks   = 0;
 };
 
-/// Synthesise a read-only ProDOS volume from `hostFolder`. The volume's
+/// Synthesise a ProDOS volume from `hostFolder` (the mounted volume is
+/// guest-writable RAM; persisting guest writes back to the folder is the
+/// separate write-back opt-in — see `decodeVolumeToFolder`). The volume's
 /// header carries `volumeName` (truncated/uppercased to a ProDOS-legal
 /// 15-char name; pass "HOST" for the typical case). On success,
 /// `outImage` holds the volume bytes (multiple of 512). Empty / missing
@@ -99,8 +102,15 @@ struct ProDOSDecodeResult {
 /// which creates a host directory. The walk therefore keeps a per-call set
 /// of expanded directory blocks (each is walked at most once) and a global
 /// directory budget; both report through `dirsSkipped` / `aborted`.
-ProDOSDecodeResult decodeVolumeToFolder(const std::vector<std::uint8_t>& image,
-                                        const std::string& hostFolder);
+/// `preserveNewerThan` (optional): the volume snapshot's mount time. A host
+/// file whose mtime is LATER was edited on the host while the volume was
+/// mounted — the snapshot's copy is stale, so the file is preserved (warned
+/// + counted in `filesSkipped`) instead of silently reverted. Pass nullptr
+/// for the legacy overwrite-everything behaviour.
+ProDOSDecodeResult decodeVolumeToFolder(
+    const std::vector<std::uint8_t>& image,
+    const std::string& hostFolder,
+    const std::filesystem::file_time_type* preserveNewerThan = nullptr);
 
 /// True iff `name` (a directory-entry name decoded from an untrusted volume
 /// image) is safe to use as a single host path component. The image is

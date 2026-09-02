@@ -495,6 +495,12 @@ void MainWindow::pumpImageWriter()
         // The mechanism keeps running: a job already in the printer's input
         // buffer must still reach paper even with nothing feeding it —
         // unplugging the card does not un-print the page.
+        //
+        // Release BUSY on the way out: the release block at the bottom of
+        // this function is the ONLY writer of the Grappler's BUSY line, and
+        // an early return that skips it forever leaves a back-pressured
+        // guest spinning on the ACK bit.
+        printerCoordinator_->setGrapplerBusy(*controller, false);
         imageWriter->tick(static_cast<double>(ImGui::GetIO().DeltaTime));
         return;
     }
@@ -503,6 +509,12 @@ void MainWindow::pumpImageWriter()
     // the printer: there is no parser to route to, the job goes to an
     // external interpreter, and the finished page comes back as a raster.
     if (imageWriter->modelProfile().lineage == pom2::IwLineage::PostScript) {
+        // Same early-return rule as above: with BUSY latched by a long
+        // dot-matrix job, switching the model to the LaserWriter took this
+        // branch every frame and the release block below never ran — the
+        // guest hung in the firmware's ACK poll ($CD89) forever. The
+        // PostScript path has no input-buffer model to hold the line for.
+        printerCoordinator_->setGrapplerBusy(*controller, false);
         pumpPostScript(fresh);
         return;
     }

@@ -50,9 +50,25 @@ std::string cacheNameFor(const std::string& host, const std::string& path)
     std::string flat = host + path;
     for (char& c : flat) if (!nameSafe(c)) c = '_';
     // Keep the tail: it carries the extension, and classifyDiskForSlot reads
-    // the extension to decide which drive the image belongs in.
+    // the extension to decide which drive the image belongs in. But a pure
+    // tail truncation dropped the HOST (it sits at the front): two servers
+    // mirroring the same ≥120-char path collided on one cache file, and the
+    // existence-only cache check then served server A's bytes as server B's
+    // disk — silently, offline, and poisonable on purpose. Prefix a hash of
+    // the FULL host+path so every distinct URL keeps a distinct key.
     constexpr std::size_t kMaxName = 120;
-    if (flat.size() > kMaxName) flat = flat.substr(flat.size() - kMaxName);
+    if (flat.size() > kMaxName) {
+        std::uint64_t h = 1469598103934665603ull;          // FNV-1a 64
+        for (unsigned char c : flat) { h ^= c; h *= 1099511628211ull; }
+        char hex[17];
+        for (int i = 15; i >= 0; --i) {
+            hex[i] = "0123456789abcdef"[h & 0xF];
+            h >>= 4;
+        }
+        hex[16] = '\0';
+        flat = std::string(hex) + "_" +
+               flat.substr(flat.size() - (kMaxName - 17));
+    }
     return flat;
 }
 

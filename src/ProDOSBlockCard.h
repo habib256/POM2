@@ -66,7 +66,7 @@ public:
     /// Block512Backing under it keeps compiling and falls back to ejectImage.
     virtual bool detachImage(Block512Backing::PendingWriteBack& /*out*/)
     { return false; }
-    virtual void clearDirtyBlocks() {}
+    virtual void restoreDirtyBlocks(const std::vector<uint32_t>& /*indices*/) {}
 
     virtual bool isImageLoaded() const = 0;
     virtual const std::string& getImagePath() const = 0;
@@ -136,7 +136,9 @@ public:
         if (bay != 0) return false;      // empty errOut → caller falls back
         return detachImage(out);
     }
-    void clearBayDirty(int bay) override { if (bay == 0) clearDirtyBlocks(); }
+    void restoreBayDirty(int bay,
+                         const std::vector<uint32_t>& indices) override
+    { if (bay == 0) restoreDirtyBlocks(indices); }
     void setBayWriteBack(int bay, bool on) override
     {
         if (bay == 0) setWriteBackEnabled(on);

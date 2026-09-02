@@ -34,6 +34,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -137,22 +138,33 @@ public:
         std::vector<uint32_t> dirtyIndices;       ///< file case
         std::vector<uint8_t>  dirtyBytes;         ///< 512 × dirtyIndices
         std::vector<uint8_t>  synthImage;         ///< synth case: whole volume
+        /// Synth case: when the folder snapshot was taken. The decode uses
+        /// it to preserve host files edited AFTER the mount instead of
+        /// silently reverting them to the snapshot's stale copy.
+        bool                  hasMountTime = false;
+        std::filesystem::file_time_type mountTime{};
     };
 
-    /// Phase 1, to be called WITH `stateMutex` held: copy out exactly what
+    /// Phase 1, to be called WITH `stateMutex` held: MOVE out exactly what
     /// `saveDirty()` would write. Memcpy only — no syscalls — so it is cheap
-    /// under the lock. Does NOT clear the dirty flags: an eject drops the
-    /// medium anyway, and a caller that means to keep it calls `clearDirty()`
-    /// only once phase 2 has actually succeeded.
-    PendingWriteBack takeWriteBack() const;
+    /// under the lock. CLEARS the dirty flags it captured, atomically with
+    /// the capture: the medium stays mounted and writable while phase 2
+    /// commits with the lock released, so a block the guest dirties (or
+    /// re-dirties) during that window must keep its flag — it is NOT in this
+    /// pending payload and still needs a later flush. A blanket phase-3
+    /// clear instead silently dropped exactly those writes. A failed commit
+    /// calls `restoreDirty(pending.dirtyIndices)` so a retry re-captures.
+    PendingWriteBack takeWriteBack();
 
     /// Phase 2, to be called WITHOUT the lock: perform the deferred write.
     /// Static because the backing it came from may no longer exist.
     static bool commitWriteBack(PendingWriteBack&& pending,
                                 std::string& error);
 
-    /// Drop the dirty set after a successful `commitWriteBack`.
-    void clearDirty();
+    /// Undo a `takeWriteBack` whose commit failed: re-mark its captured
+    /// blocks dirty (merging with any block dirtied since). Out-of-range
+    /// indices — the image was replaced meanwhile — are ignored.
+    void restoreDirty(const std::vector<uint32_t>& indices);
 
     bool   isLoaded()   const { return loaded_; }
     size_t blockCount() const { return image_.size() / kBlockBytes; }
@@ -208,6 +220,10 @@ private:
     bool    wpHeader_          = false;
     bool    supportsWriteBack_ = false;
     bool    synth_             = false;
+    /// Synth volumes: when the host-folder snapshot was taken (see
+    /// PendingWriteBack::mountTime).
+    bool    hasMountTime_      = false;
+    std::filesystem::file_time_type mountTime_{};
     std::string hostFolder_;
     std::string path_;
     std::string lastError_;

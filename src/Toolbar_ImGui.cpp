@@ -92,6 +92,7 @@ const char* profileShortLabel(SystemProfile p) {
         case SystemProfile::AppleIIcPlus:        return "//c+";
         case SystemProfile::AppleIIePAL:         return "//e PAL";
         case SystemProfile::AppleIIcPAL:         return "//c PAL";
+        case SystemProfile::AppleIIeUnenhancedPAL: return "//e-U PAL";
     }
     return "??";
 }
@@ -274,7 +275,7 @@ Toolbar_ImGui::Result Toolbar_ImGui::render(
     char profileBuf[16];
     std::snprintf(profileBuf, sizeof(profileBuf),
                   ICON_FA_COMPUTER " %s", profileShortLabel(snap.activeProfile));
-    ImGui::SetNextItemWidth(comboWidth(ICON_FA_COMPUTER " //e PAL"));
+    ImGui::SetNextItemWidth(comboWidth(ICON_FA_COMPUTER " //e-U PAL"));
     if (ImGui::BeginCombo("##POM2ToolbarProfile", profileBuf)) {
         for (SystemProfile p : pom2::allProfiles()) {
             char rowBuf[32];

@@ -5,6 +5,165 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — OLDSKOOL raster: per-kind mid-line switch column (the second half)
+
+Follow-up to the Unenhanced-PAL profile: the OLDSKOOL FORT ET VERT raster
+bands were off ~7 px (one character cell) from the TV-set art even on the
+genuine-NMOS profile, so it was a rendering bug, not the 65C02 cycle drift.
+
+`frameCycleToPos`'s `byteCol = hpos - 24` is calibrated (madef_phase_probe /
+vbl_edge_phase) on MAD EFFECT's mid-line `$C055` — a PAGE2 flip, which is
+*fetch-side* (it picks the address the scanner reads NEXT, so its effect
+shows one byte later). OLDSKOOL's mid-line switches are `$C056`/`$C057`
+(hi-res) and `$C05F` (AN3/DHIRES) — *display-side*: they re-interpret the
+byte being fetched NOW, one column LEFT of a page flip on the same cycle.
+`Apple2Display_Beam.cpp::beamColForEvent` now pulls HiRes / Dhgr / An3 back
+one column (`hpos-25`) while PAGE2 and everything else keep `hpos-24`. Scope
+was kept to exactly what the demo exercises: TextMode / MixedMode stay at -24
+(no measured title flips them mid-line, and `$C050/$C051` also moves the
+fetch region, so their side is ambiguous). User-confirmed on the live demo —
+aligned in BOTH the Chat Mauve RGB and OpenEmulator composite paths. MAD
+EFFECT, DROL, DIX and the three `horizontal_split` pins stay green untouched;
+new pin `raster_switch_kind_offset` locks HiRes = PAGE2 - 1 column. The
+earlier "POM2 is faithful for the machine selected" claim (round-2 CHANGELOG
++ TODO) is corrected: the machine was necessary, this mapping was the rest.
+
+## 2026-09-02 — Apple //e Unenhanced PAL: the French Touch machine exists now
+
+A user screenshot showed OLDSKOOL FORT ET VERT's raster bands "7 pixels
+off" on the default `Apple //e Enhanced PAL` profile.
+`tests/oldskool_raster_probe` (new diagnostic, EXCLUDE_FROM_ALL like the
+DIX probe) measured the mechanism: the demo's per-scanline dispatcher is
+`LSR TBUFFER,X` — 7 cycles on the NMOS 6502, **6 on the 65C02** (real
+silicon; `M6502::RmwAbsX` models both) — so on the Enhanced machine every
+65-cycle line loop runs in 64 and each mid-line switch drifts one character
+cell (7 px) per line. NMOS probe: switch locked at hpos 26 on all 66 band
+lines. CMOS: sweeping. The demo's own `.nfo` says "Apple IIe mode (not
+Enhanced), 6502 required" — POM2 was being *faithful* to the wrong machine,
+and offered no right one: the only PAL //e was Enhanced, whose 65C02 is
+soldered (`resolveCpuMode` refuses NMOS there for good reason).
+
+So the machine exists now: **`Apple //e Unenhanced PAL (50 Hz)`** — NMOS
+6502 + PAL timing + the `apple2e_unenh` ROM probes, derived from the NTSC
+Unenhanced config the way the other PAL profiles derive from theirs. Key
+`iie-u-pal`, CLI aliases `frenchtouch` / `//e-u-pal`.
+
+**Correction (same day, after testing on the new profile):** the NMOS
+switch removes the *staircase* (the per-line cycle drift), but a **residual
+fixed ~1-column offset survives on genuine NMOS** — verified live on the
+`iie-u-pal` profile (`/status` → `cpu_mode: nmos`), the band-vs-TV
+misalignment persists. So OLDSKOOL stacks two bugs: the CPU cycle count
+(fixed by this profile) AND the `frameCycleToPos` per-kind mid-line column
+mapping (`hpos - 24`, calibrated only on MAD EFFECT's `$C055`; OLDSKOOL uses
+`$C056/$C057/$C05F`). The second is STILL OPEN and needs a measured,
+regression-tested calibration — not a blind shift. See TODO § "Mid-scanline
+raster offset" for the full write-up and the measurement blocker. Display order
+reorganised while at it: `allProfiles()` now reads NTSC chronologically
+then the PAL block (Unenhanced //e · Enhanced //e · //c Le Chat Mauve),
+and the Unenhanced NTSC row was renamed "Apple //e Unenhanced (1983)" to
+mirror its Enhanced sibling. Nine machines total; menu/palette/toolbar/ROM
+Status all derive from the one array. Pinned by `system_profile_smoke` +
+`cli_kiosk`; probe note: headless, the intro returns to DOS ~10 s after
+BRUN before its PRESENT/bands phase — an environment quirk to chase when
+the subject reopens (the drift measurement is from the phase it reaches).
+
+## 2026-09-02 — Bug-hunt round 2: twelve fixes across six fresh lenses
+
+Second adversarial hunt (parsers / MAME parity / snapshot-rewind / network /
+audio-printer / error paths): 12 confirmed, all fixed.
+
+- **Host-folder write-back preserved user edits** (the high one): the synth
+  volume is a MOUNT-TIME snapshot, but the decode rewrote every differing
+  file — a host file edited while the volume was mounted was silently
+  reverted to the stale copy and counted as saved. `Block512Backing` now
+  stamps the snapshot time, `PendingWriteBack` carries it, and
+  `decodeVolumeToFolder` preserves (warn + `filesSkipped`) any host file
+  whose mtime is later. DEV.md's "read-only, `$2B` on writes" note was
+  stale and is corrected. Pinned by `prodos_volume_smoke`.
+- **TNFS TCP transport**: `connect()` was "bounded" by SO_SNDTIMEO, which
+  the project's own 2026-08-21 measurement disproved (75 s vs 8 asked), and
+  `getaddrinfo` was unbounded — `POM2 tnfs://unreachable/…` froze ~75 s.
+  The FujiNet `resolveBounded`/`connectBounded` pair moved to
+  `SocketUtil.h` (shared; `SocketCompat::setBlocking` added) and TnfsClient
+  uses it. Framing: only READ replies were reassembled across TCP
+  segments; a split MOUNT/OPEN/STAT/READDIR failed AND stranded its tail,
+  desynchronising the session for good. Per-command pulls + a pre-send
+  drain fix both. Cache keys hashed (FNV-1a of full host+path) when
+  truncated — the pure tail-truncation dropped the host, colliding distinct
+  servers onto one cache file. Pinned by `tnfs_client` (split STAT).
+- **VIA T2 read-back** joins T1 on the hardware line `written+1−elapsed`
+  (was MAME's −2 — one low, the exact drift class of the T1 raster crawl),
+  continuous through the underflow. Pinned by `via_t2_timing`.
+- **AY envelope retrigger**: `applyEnvShape` zeroed `envCounter` on every
+  R13 store; MAME's cited-verbatim `set_shape` leaves the period counter
+  running. Buzz-bass retriggers were up to a period late.
+- **Rewind Record checkbox** now takes `stateMutex` around `setEnabled` —
+  since the splice fix it clears `prevBlob_`, racing the worker's capture
+  (vector UB, or a delta against the stale pre-pause blob).
+- **Chat Mauve beam-replay ring** cleared on reset + snapshot/rewind
+  restore: future-stamped edges from the abandoned timeline replayed a
+  mode the machine never entered (Memory purges its video log for the
+  same clock-jump reason; the card's parallel log did not).
+- **Grappler+**: BUSY is released on the PostScript-model and no-source
+  early returns (switching to LaserWriter with BUSY latched hung the guest
+  in the $CD89 ACK poll forever), and `setPrinterBusy` re-derives the ACK
+  IRQ on the busy→idle edge (MAME raises it on /ACK; an IRQ-mode driver
+  never woke without a status read).
+- **`prepareTempPath`** unlinks a regular file with link count > 1: a hard
+  link planted at `<target>.tmp` shared the target's inode and the trunc
+  destroyed the target before commit — contract says "target untouched on
+  every failure path". `Disk35Image::saveDirty` now routes its
+  `.pom2tmp` through the same scrutiny. Pinned by `atomic_file_replace`.
+- **AI `/disk` endpoints** already fixed in round 1; **FloppyEmu
+  `listing()`** now honors `file_size`'s error code (a vanished file showed
+  a ~16 EiB row — the same fix `parseFavorites` already carried).
+
+## 2026-09-02 — Bug-hunt batch: eject race, 3.5" opt-out wedge, pause-deaf speaker
+
+A five-lens adversarial bug hunt (locking / memory / storage / timing /
+lifecycle) confirmed six defects; all fixed here, each pinned.
+
+- **Two-phase eject dropped guest writes racing the commit** (the high one).
+  `StorageCoordinator::ejectMediaBay` ran phase 2 (`commitWriteBack`, tens of
+  ms) with `stateMutex` released — by design — while the medium stayed
+  mounted and writable; phase 3 then blanket-cleared **all** dirty flags, so
+  blocks ProDOS wrote during the window were wiped unwritten and the eject
+  reported ok: silent loss from the user's only host copy.
+  `Block512Backing::takeWriteBack` now **moves** the dirty set out (flags
+  retired atomically at capture, under the lock), so racing writes keep
+  their flags and `ejectBay`'s own save-on-eject flushes the (normally
+  empty) remainder inline; a failed commit restores the captured set via
+  `restoreDirty` so retry still works. `clearDirty`/`clearBayDirty` are
+  gone — the API that made the bug expressible no longer exists. Pinned by
+  `two_phase_block_mount` cases 7–8.
+- **`Disk35Image::saveDirty` errored when write-back was off**, where
+  `DiskImage::saveDirty` no-ops: once dirty, unchecking write-back wedged
+  3.5" eject / swap / the //c+ flush gate forever ("image is
+  write-protected"). Now a successful no-op; `dirty_` survives it so opting
+  back in still saves. Failure paths also log now (they only set
+  `lastError_`, so a failed shutdown flush died silently —
+  `MainWindow_Session` logs it too, like the Disk II path always did).
+  Pinned by `disk35_atomic_save`.
+- **Speaker deaf after pause/resume**: the audio callback keeps running
+  under `Mode::Stopped`, so `audioCpuCursor` consumed ~1 M cycles/s while
+  `Memory::cycleCounter` froze; on resume every toggle landed behind the
+  cursor and the stale purge ate the stream (one parity flip per buffer) for
+  the rest of the session. `fillAudioBuffer` now has the consumer-ahead
+  mirror of its forward catch-up: a gap > `catchUpCycles` re-anchors the
+  cursor `kCatchUpSecs` before the first pending toggle. Pinned by
+  `speaker_smoke` case 5.
+- **AI `/disk` endpoints hard-coded slot 6** but operate on the *primary*
+  (lowest-slot) Disk II: with cards in slots 5+6, ejecting "slot 6" flushed
+  and dropped the slot-5 disk and returned 200. The endpoints now validate
+  the requested slot against the bound card's real one and echo it back
+  (`slot` omitted = the bound card).
+- **Internal Disks & Media panel showed stale paths after a slot rebuild**:
+  its primed InputText statics survived `applyProfile` /
+  `restartEmulationFromSettings`, presenting the old card's image path
+  against a rebuilt card — one Mount click from inserting it. A seed
+  generation (`mediaPanelSeedGen_`) bumped by both rebuild paths re-primes
+  the buffers.
+
 ## 2026-09-02 — The 6522 T1 read-back was one cycle low, and DIX rasters crawled
 
 TODO "Next up" §2, run to ground with the real demo. TRIBU (DIX anthology)

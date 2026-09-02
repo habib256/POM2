@@ -165,8 +165,22 @@ inline bool prepareTempPath(const std::filesystem::path& tmp,
     if (probe || st.type() == std::filesystem::file_type::not_found)
         return true;                       // nothing in the way
 
-    if (st.type() == std::filesystem::file_type::regular)
-        return true;                       // our own leftover; trunc is fine
+    if (st.type() == std::filesystem::file_type::regular) {
+        // Our own leftover always has link count 1. A regular file HARD-
+        // LINKED to the target shares the target's inode, so the caller's
+        // ofstream(trunc) through it would destroy the target BEFORE
+        // anything is committed — the same redirection the symlink branch
+        // below removes, and a violation of the "target untouched on every
+        // failure path" contract. remove() only unlinks THIS name.
+        std::error_code lc;
+        const auto links = std::filesystem::hard_link_count(tmp, lc);
+        if (!lc && links > 1) {
+            std::error_code rm;
+            std::filesystem::remove(tmp, rm);
+            if (rm) { ec = rm; return false; }
+        }
+        return true;                       // a plain leftover; trunc is fine
+    }
 
     // ONLY a symlink is removed. It is the one entry that redirects the write
     // somewhere else, and the temp name is ours by construction, so nothing

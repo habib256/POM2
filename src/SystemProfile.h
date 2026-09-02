@@ -69,6 +69,14 @@ enum class SystemProfile {
     // French Touch / DIX target. See CpuClock.h VideoStandard.
     AppleIIePAL,         // Apple //e Enhanced PAL (65C02, 312 lines, 50 Hz)
     AppleIIcPAL,         // Apple //c PAL (Le Chat Mauve RGB adapter machine)
+    // Appended after the first release of the enum (palette command ids use
+    // the numeric value within a session, so existing values stay put; the
+    // DISPLAY order lives in allProfiles(), which slots this one between
+    // the //c+ and the Enhanced PAL).
+    AppleIIeUnenhancedPAL, // Apple //e Unenhanced PAL — NMOS 6502 + 50 Hz.
+                           // The French Touch machine: the 6502-only demo
+                           // corpus (OLDSKOOL FORT ET VERT…) counts cycles
+                           // that differ on a 65C02.
 };
 
 struct ProfileConfig {
@@ -99,7 +107,7 @@ struct ProfileConfig {
 
 /// Resolve a profile enum to its full configuration. The probe orders
 /// are ordered by preference; the caller's job is to pick the first
-/// existing file at runtime. All four profiles are always defined —
+/// existing file at runtime. Every profile is always defined —
 /// missing ROM files don't disable the profile, they just degrade the
 /// machine to "no ROM" status (the user sees `NO ROM` in the title
 /// bar and the CPU starts running garbage at the reset vector).
@@ -129,8 +137,12 @@ std::string_view profileKey(SystemProfile p);
 bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
                          std::string_view cardKey, std::string_view savedKey);
 
-/// All profiles in display order. Used by the Presets menu loop.
-const std::array<SystemProfile, 8>& allProfiles();
+/// All profiles in DISPLAY order (not enum order): the NTSC machines
+/// chronologically, then the three European PAL variants — Unenhanced //e,
+/// Enhanced //e, //c Le Chat Mauve. Used by the Presets menu / palette /
+/// toolbar / ROM Status loops, so this array is the one place that decides
+/// how the machine list reads.
+const std::array<SystemProfile, 9>& allProfiles();
 
 }  // namespace pom2
 

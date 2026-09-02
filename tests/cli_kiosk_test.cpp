@@ -194,6 +194,16 @@ void testPresetIieUnenhanced()
     // Plain "iie" still resolves to the Enhanced profile (not the new one).
     assert(parse({"POM2","--preset","iie"}, help)->preset
                == pom2::CliPreset::AppleIIe);
+
+    // The PAL Unenhanced machine (the French Touch 6502-only corpus:
+    // OLDSKOOL FORT ET VERT needs NMOS + 50 Hz).
+    assert(parse({"POM2","--preset","iie-u-pal"},   help)->preset
+               == pom2::CliPreset::AppleIIeUnenhancedPAL);
+    assert(parse({"POM2","--preset","frenchtouch"}, help)->preset
+               == pom2::CliPreset::AppleIIeUnenhancedPAL);
+    // …and "iie-pal" still means the Enhanced PAL machine.
+    assert(parse({"POM2","--preset","iie-pal"}, help)->preset
+               == pom2::CliPreset::AppleIIePAL);
 }
 
 // ── classifyDiskForSlot ──────────────────────────────────────────────────

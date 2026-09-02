@@ -187,7 +187,8 @@ public:
     bool ejectBay(int bay) override;
     bool prepareEjectBay(int bay, Block512Backing::PendingWriteBack& out,
                          std::string& errOut) override;
-    void clearBayDirty(int bay) override;
+    void restoreBayDirty(int bay,
+                         const std::vector<uint32_t>& indices) override;
     void setBayWriteBack(int bay, bool on) override;
     std::vector<std::pair<std::string, std::string>>
          bayTypeOptions(int bay) const override;

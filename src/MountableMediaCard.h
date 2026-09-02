@@ -134,11 +134,16 @@ public:
         return false;
     }
 
-    /// Phase 3, with `stateMutex` held: drop the dirty set now that phase 2
-    /// has committed it. The caller then calls `ejectBay`, whose internal
-    /// save-on-eject is a guarded no-op with nothing dirty left — so the
-    /// medium is dropped without a second write.
-    virtual void clearBayDirty(int /*bay*/) {}
+    /// Phase-2 FAILURE undo, with `stateMutex` held: re-mark the blocks
+    /// `prepareEjectBay` lifted out (phase 1 retires their flags as it
+    /// captures them) so the still-mounted medium is dirty again and a retry
+    /// re-captures them. On phase-2 SUCCESS there is no phase-3 bookkeeping:
+    /// the captured flags are already retired, and any block the guest
+    /// dirtied while the commit ran unlocked kept its flag — the caller's
+    /// `ejectBay` flushes that (normally empty) remainder inline, so a
+    /// write racing the commit is never dropped.
+    virtual void restoreBayDirty(int /*bay*/,
+                                 const std::vector<uint32_t>& /*indices*/) {}
 
     /// Toggle per-bay write-back (save-on-eject).
     virtual void setBayWriteBack(int bay, bool on) = 0;

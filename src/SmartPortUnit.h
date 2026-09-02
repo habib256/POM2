@@ -135,13 +135,17 @@ public:
     /// is held (an HDV unit rewrites the whole file).
     virtual bool eject() = 0;
 
-    /// Phase 1 / phase 3 of a two-phase eject, mirroring `adoptImage`'s
+    /// Phase 1 / failure-undo of a two-phase eject, mirroring `adoptImage`'s
     /// opt-in shape: the default says "no block backing here" and the caller
     /// falls back to the inline `eject()`. Phase 1 must NOT drop the medium —
-    /// the commit can fail and the pre-split behaviour kept it mounted.
+    /// the commit can fail and the pre-split behaviour kept it mounted. It
+    /// MOVES the dirty set out (flags retired at capture, so a block the
+    /// guest dirties while the commit runs unlocked keeps its flag for the
+    /// eject's own inline flush); `restoreDirtyBlocks` re-marks the captured
+    /// set when the commit fails.
     virtual bool detachImage(Block512Backing::PendingWriteBack& /*out*/)
     { return false; }
-    virtual void clearDirtyBlocks() {}
+    virtual void restoreDirtyBlocks(const std::vector<uint32_t>& /*indices*/) {}
 
     /// Current image path; empty when nothing mounted.
     virtual const std::string& path() const = 0;

@@ -29,6 +29,7 @@
 #include "Sony35Gcr.h"
 #include "AtomicFileReplace.h"
 #include "Logger.h"
+#include "Logger.h"
 #include "TwoImg.h"
 
 #include <algorithm>
@@ -309,10 +310,16 @@ bool Disk35Image::exportRawTo(const std::string& outPath,
 bool Disk35Image::saveDirty()
 {
     if (!loaded_ || !dirty_) return true;
-    if (isWriteProtected()) {
-        lastError_ = "Disk35Image: image is write-protected";
-        return false;
-    }
+    // Write-back off (or read-only host file): a SUCCESSFUL no-op, exactly
+    // like DiskImage::saveDirty. isWriteProtected() folds the user's
+    // write-back opt-out in, and treating that as a hard error wedged the
+    // 3.5" paths for the rest of the session: once dirty, unchecking
+    // "Write-back (save on eject)" made eject, disk swap and the //c+
+    // mount35 flush gate all fail forever with a misleading
+    // "write-protected" error. Opting out means "discard on eject", not
+    // "refuse to eject" — dirty_ is left set so re-enabling write-back
+    // before the eject still saves the session's writes.
+    if (isWriteProtected()) return true;
 
     // Never open the user's image with `trunc` and rewrite it in place:
     // save-on-eject writes 800 KB, and an ENOSPC / removable-media / network
@@ -329,10 +336,21 @@ bool Disk35Image::saveDirty()
     const std::filesystem::perms origPerms =
         std::filesystem::status(path_, permEc).permissions();
     const bool havePerms = !permEc;
+    // Same temp-path scrutiny as every AtomicFileReplace caller: a symlink
+    // or hard link planted at <path>.pom2tmp would redirect the trunc onto
+    // the user's file (or another victim) before anything is committed.
+    std::error_code prepEc;
+    if (!prepareTempPath(tmp, prepEc)) {
+        lastError_ = "Disk35Image: temp path unusable " + tmp + ": " +
+                     prepEc.message();
+        pom2::log().warn("Disk35", lastError_);
+        return false;
+    }
     {
         std::ofstream f(tmp, std::ios::binary | std::ios::out | std::ios::trunc);
         if (!f) {
             lastError_ = "Disk35Image: cannot open " + tmp + " for write";
+            pom2::log().warn("Disk35", lastError_);
             return false;
         }
         if (!twoImgHeaderRaw_.empty()) {
@@ -348,7 +366,12 @@ bool Disk35Image::saveDirty()
         f.flush();
         f.close();
         if (!f) {
+            // The atomic-temp discipline means the user's file is untouched,
+            // but the only copy of the session's writes is about to die with
+            // the process on a shutdown flush — leave a trace, like
+            // DiskIICard::flushPendingWrites does for the same case.
             lastError_ = "Disk35Image: write failed on " + tmp;
+            pom2::log().warn("Disk35", lastError_);
             std::error_code ec;
             std::filesystem::remove(tmp, ec);
             return false;
@@ -361,6 +384,7 @@ bool Disk35Image::saveDirty()
     }
     if (!replaceFileAtomic(tmp, path_, ec)) {
         lastError_ = "Disk35Image: cannot replace " + path_ + ": " + ec.message();
+        pom2::log().warn("Disk35", lastError_);
         std::error_code ec2;
         std::filesystem::remove(tmp, ec2);
         return false;

@@ -66,7 +66,9 @@ const ProfileConfig& cfgAppleIIeUnenhanced()
     static const ProfileConfig cfg{
         SystemProfile::AppleIIeUnenhanced,
         "iie-u",
-        "Apple //e (1983, Unenhanced)",
+        // Named to mirror its Enhanced sibling ("Apple //e Enhanced
+        // (1985)") so the menu reads as a matched pair.
+        "Apple //e Unenhanced (1983)",
         // Apple part 342-0135-B (D000/D8) + 342-0134-A (E000/E8/F0/F8) =
         // 16 KB original //e firmware. MAME loads them via
         // `apple2e.cpp:5520-5544 ROM_START(apple2e)`. Fall back to the
@@ -252,6 +254,32 @@ const ProfileConfig& cfgAppleIIePAL()
     return cfg;
 }
 
+// The French Touch machine: a EUROPEAN unenhanced //e — NMOS 6502 + PAL
+// 50 Hz. The 6502-only demo corpus (OLDSKOOL FORT ET VERT and friends:
+// "Apple IIe mode (not Enhanced), 6502 required" per its own .nfo) counts
+// cycles per scanline with NMOS timings; on a 65C02 the per-line
+// `LSR abs,X` dispatcher runs one cycle short (7 → 6 — a real-silicon
+// difference, not an emulation artifact) and every mid-scanline raster
+// switch drifts one character cell (7 px) per line. Measured by
+// `tests/oldskool_raster_probe` (2026-09-02): NMOS = switch locked at
+// hpos 26 on every band line, CMOS = sweeping. Until this profile existed
+// the demo could not be run as authored: the only PAL //e was the
+// Enhanced one, whose 65C02 is soldered (resolveCpuMode rightly refuses
+// an NMOS override there).
+const ProfileConfig& cfgAppleIIeUnenhancedPAL()
+{
+    static const ProfileConfig cfg = [] {
+        ProfileConfig c = cfgAppleIIeUnenhanced();
+        c.profile               = SystemProfile::AppleIIeUnenhancedPAL;
+        c.key                   = "iie-u-pal";
+        c.displayName           = "Apple //e Unenhanced PAL (50 Hz)";
+        c.defaultCyclesPerFrame = 20313;
+        c.videoStandard         = VideoStandard::PAL;
+        return c;
+    }();
+    return cfg;
+}
+
 const ProfileConfig& cfgAppleIIcPAL()
 {
     static const ProfileConfig cfg = [] {
@@ -287,6 +315,8 @@ const ProfileConfig& profileConfig(SystemProfile p)
         case SystemProfile::AppleIIcPlus:       return cfgAppleIIcPlus();
         case SystemProfile::AppleIIePAL:        return cfgAppleIIePAL();
         case SystemProfile::AppleIIcPAL:        return cfgAppleIIcPAL();
+        case SystemProfile::AppleIIeUnenhancedPAL:
+                                          return cfgAppleIIeUnenhancedPAL();
     }
     return cfgAppleIIPlus();   // unreachable, silences compiler
 }
@@ -306,6 +336,9 @@ SystemProfile profileFromKey(std::string_view key)
     if (key == "iic+" || key == "iicplus" || key == "apple2cplus"
         || key == "apple2cp" || key == "//c+"
         || key == "appleiicplus")                                   return SystemProfile::AppleIIcPlus;
+    if (key == "iie-u-pal" || key == "iieupal" || key == "iie-unenh-pal"
+        || key == "//e-u-pal" || key == "apple2e-1983-pal"
+        || key == "frenchtouch")                 return SystemProfile::AppleIIeUnenhancedPAL;
     if (key == "iie-pal" || key == "iiepal" || key == "apple2e-pal"
         || key == "//e-pal")                                        return SystemProfile::AppleIIePAL;
     if (key == "iic-pal" || key == "iicpal" || key == "apple2c-pal"
@@ -340,15 +373,20 @@ bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
     return true;
 }
 
-const std::array<SystemProfile, 8>& allProfiles()
+const std::array<SystemProfile, 9>& allProfiles()
 {
-    static const std::array<SystemProfile, 8> all = {
+    // Display order: NTSC machines chronologically, then the PAL block —
+    // Unenhanced //e before Enhanced //e (same pairing as the NTSC side),
+    // //c Le Chat Mauve last. NOT enum order: AppleIIeUnenhancedPAL was
+    // appended to the enum after release, but reads in its natural place.
+    static const std::array<SystemProfile, 9> all = {
         SystemProfile::AppleII,
         SystemProfile::AppleIIPlus,
         SystemProfile::AppleIIeUnenhanced,
         SystemProfile::AppleIIe,
         SystemProfile::AppleIIc,
         SystemProfile::AppleIIcPlus,
+        SystemProfile::AppleIIeUnenhancedPAL,
         SystemProfile::AppleIIePAL,
         SystemProfile::AppleIIcPAL,
     };

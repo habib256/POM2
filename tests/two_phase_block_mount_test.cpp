@@ -324,6 +324,88 @@ void testFailurePaths()
     std::error_code ec; fs::remove(ragged, ec);
 }
 
+// ── 7. Writes racing the two-phase EJECT survive ─────────────────────────
+// takeWriteBack() MOVES the dirty set out: flags retired at capture, so a
+// block the guest writes while commitWriteBack runs unlocked (the medium is
+// still mounted, the CPU worker still running) keeps its flag and reaches
+// the file through the eject's own inline flush. The pre-fix blanket
+// clearDirty() in phase 3 wiped exactly those flags — guest writes racing
+// the commit were silently dropped from the user's only host copy.
+void testWritesDuringPendingWriteBackSurvive()
+{
+    const fs::path p = tmpPath("pom2_2pb_eject_race.2mg");
+    writeFile(p, twoImgImage(4, false));
+
+    pom2::Block512Backing b;
+    std::string err;
+    assert(twoPhaseMount(b, p, err));
+    b.setWriteBackEnabled(true);
+
+    std::vector<uint8_t> blk(kBlk, 0xAA);
+    assert(b.writeBlock(1, blk.data()));
+
+    // Phase 1: the capture retires the flags it captured…
+    pom2::Block512Backing::PendingWriteBack pending = b.takeWriteBack();
+    assert(pending.valid);
+    assert(!b.hasUnsavedChanges() &&
+           "capture must retire the flags it captured");
+
+    // …and the guest keeps writing against the still-mounted medium: a NEW
+    // block, and a REWRITE of the captured one (the overlap case an
+    // index-based phase-3 clear would also have lost).
+    std::fill(blk.begin(), blk.end(), 0xBB);
+    assert(b.writeBlock(2, blk.data()));
+    std::fill(blk.begin(), blk.end(), 0xCC);
+    assert(b.writeBlock(1, blk.data()));
+    assert(b.hasUnsavedChanges() &&
+           "writes racing the commit must stay dirty");
+
+    // Phase 2 commits the captured payload only.
+    assert(pom2::Block512Backing::commitWriteBack(std::move(pending), err));
+    std::vector<uint8_t> onDisk = readFile(p);
+    assert(onDisk[64 + 1 * kBlk] == 0xAA);
+
+    // Phase 3 = the eject's own inline flush of the remainder.
+    assert(b.saveDirty());
+    onDisk = readFile(p);
+    assert(onDisk[64 + 1 * kBlk] == 0xCC && "racing rewrite lost");
+    assert(onDisk[64 + 2 * kBlk] == 0xBB && "racing write lost");
+    assert(!b.hasUnsavedChanges());
+
+    std::printf("[ OK ] writes racing a two-phase eject survive\n");
+    std::error_code ec; fs::remove(p, ec);
+}
+
+// ── 8. A failed commit restores the captured dirty set ───────────────────
+void testRestoreDirtyAfterFailedCommit()
+{
+    const fs::path p = tmpPath("pom2_2pb_restore.2mg");
+    writeFile(p, twoImgImage(4, false));
+
+    pom2::Block512Backing b;
+    std::string err;
+    assert(twoPhaseMount(b, p, err));
+    b.setWriteBackEnabled(true);
+
+    std::vector<uint8_t> blk(kBlk, 0xD1);
+    assert(b.writeBlock(3, blk.data()));
+
+    pom2::Block512Backing::PendingWriteBack pending = b.takeWriteBack();
+    assert(pending.valid && !b.hasUnsavedChanges());
+
+    // The failure path's undo: the medium is dirty again, and the next save
+    // re-captures and writes the block (pre-split behaviour: a failed save
+    // loses nothing).
+    b.restoreDirty(pending.dirtyIndices);
+    assert(b.hasUnsavedChanges());
+    assert(b.saveDirty());
+    const std::vector<uint8_t> onDisk = readFile(p);
+    assert(onDisk[64 + 3 * kBlk] == 0xD1);
+
+    std::printf("[ OK ] a failed commit's restore keeps the blocks dirty\n");
+    std::error_code ec; fs::remove(p, ec);
+}
+
 }  // namespace
 
 int main()
@@ -334,6 +416,8 @@ int main()
     testSameFileWithUnsavedWritesIsNotRolledBack();
     testWriteBackAfterTwoPhaseMount();
     testFailurePaths();
+    testWritesDuringPendingWriteBackSurvive();
+    testRestoreDirtyAfterFailedCommit();
     std::printf("two_phase_block_mount: all assertions passed\n");
     return 0;
 }

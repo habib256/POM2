@@ -820,6 +820,13 @@ private:
     // re-seeds the draft from the freshly-rebuilt slotCards[]; otherwise the
     // panel shows — and Apply persists — the previous profile's stale slots.
     bool slotDraftInited_ = false;
+    /// Media panel path-buffer seed generation. renderMediaPanel keeps its
+    /// InputText buffers in function-local statics primed once from the live
+    /// cards; bumping this on every slot rebuild (applyProfile /
+    /// restartEmulationFromSettings) forces a re-prime, so the panel never
+    /// shows — one Mount click from inserting — the previous topology's
+    /// paths against a rebuilt card.
+    uint32_t mediaPanelSeedGen_ = 0;
     /// Staged Chat Mauve model (Slot Config): seeded with the slot draft,
     /// counted as a pending change, persisted as `chatmauve_variant` on
     /// Apply. //c-class connectors take only the Adaptateur IIc and never

@@ -689,13 +689,20 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::ejectMediaBay(
     // Three critical sections, because save-on-eject is a whole-file
     // read-modify-write + rename and doing it under `stateMutex` froze the
     // CPU worker and the paint thread together (CLAUDE.md's standing rule).
-    //   1. locked   — lift the payload out, medium left MOUNTED
-    //   2. unlocked — commit it
-    //   3. locked   — retire the dirty set, then drop the medium
+    //   1. locked   — MOVE the payload out (dirty flags retired at capture),
+    //                 medium left MOUNTED
+    //   2. unlocked — commit it (restore the captured dirty set on failure)
+    //   3. locked   — drop the medium
     // The medium survives phase 1 on purpose: a commit can fail (disk full,
     // read-only parent) and the one-phase code kept it mounted so the user
-    // could retry. Phase 3 leaves nothing dirty, so `ejectBay`'s own
-    // save-on-eject is a guarded no-op there and the file is written once.
+    // could retry — the failure path re-marks the captured blocks so the
+    // retry re-captures them. The CPU worker keeps RUNNING through phase 2,
+    // so the guest can dirty more blocks against the still-mounted medium:
+    // phase 1 having cleared only what it captured, those stragglers keep
+    // their flags and phase 3's `ejectBay` flushes them inline (normally
+    // nothing). The pre-fix blanket clear in phase 3 wiped them instead —
+    // guest writes racing the commit were silently dropped from the user's
+    // only host copy, the exact hazard DEV.md ranks above latency.
     Block512Backing::PendingWriteBack pending;
     bool twoPhase = false;
     {
@@ -716,8 +723,18 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::ejectMediaBay(
     }
 
     if (twoPhase && pending.valid) {
+        const std::vector<std::uint32_t> captured = pending.dirtyIndices;
         std::string error;
         if (!Block512Backing::commitWriteBack(std::move(pending), error)) {
+            // Put the captured dirty set back so the still-mounted medium is
+            // dirty again and a retry re-captures it (pre-split behaviour: a
+            // failed save loses nothing). Re-resolved: the bus can be
+            // rebuilt while the commit runs unlocked.
+            auto state = controller.lockState();
+            auto& bus = state.memory().slotBus();
+            if (auto* media =
+                    dynamic_cast<MountableMediaCard*>(bus.peripheral(slot)))
+                media->restoreBayDirty(bay, captured);
             return commandError(error.empty()
                 ? "the image could not be saved" : error);
         }
@@ -735,7 +752,10 @@ StorageCoordinator::MediaCommandResult StorageCoordinator::ejectMediaBay(
         if (bay < 0 || bay >= media->bayCount())
             return commandError("invalid media bay " +
                                 std::to_string(bay + 1));
-        if (twoPhase) media->clearBayDirty(bay);
+        // No phase-3 dirty bookkeeping: phase 1 retired the flags it
+        // captured, and any block the guest dirtied while phase 2 ran
+        // unlocked kept its flag — this ejectBay flushes that (normally
+        // empty) remainder inline before dropping the medium.
         if (!media->ejectBay(bay)) {
             const auto info = media->bayInfo(bay);
             return commandError(info.lastError.empty()
