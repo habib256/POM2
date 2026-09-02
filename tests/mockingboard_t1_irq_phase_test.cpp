@@ -45,7 +45,9 @@
 #include <cassert>
 #include <cstdint>
 #include <cstdio>
+#include <initializer_list>
 #include <memory>
+#include <utility>
 
 // MockingboardCard lives in the global namespace.
 
