@@ -6654,3 +6654,43 @@ endif()
 if(WIN32)
     target_link_libraries(oldskool_crash_probe PRIVATE winmm)
 endif()
+
+add_executable(test_mockingboard_t1_irq_phase
+    mockingboard_t1_irq_phase_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/Mockingboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263.cpp
+    ${CMAKE_SOURCE_DIR}/src/Ssi263PhonemeData.cpp
+    ${CMAKE_SOURCE_DIR}/src/M6502.cpp
+    ${CMAKE_SOURCE_DIR}/src/Memory.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomDump.cpp
+    ${CMAKE_SOURCE_DIR}/src/MemoryWatch.cpp
+    ${CMAKE_SOURCE_DIR}/src/Keyboard.cpp
+    ${CMAKE_SOURCE_DIR}/src/MemoryProfile_IIcClass.cpp
+    ${CMAKE_SOURCE_DIR}/src/NoSlotClock.cpp
+    ${CMAKE_SOURCE_DIR}/src/IWMDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Disk35Image.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Gcr.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHub.cpp
+    ${CMAKE_SOURCE_DIR}/src/Sony35Drive.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskImage.cpp
+    ${CMAKE_SOURCE_DIR}/src/SlotBus.cpp
+    ${CMAKE_SOURCE_DIR}/src/CassetteDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/AudioDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SpeakerDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+)
+target_include_directories(test_mockingboard_t1_irq_phase PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_mockingboard_t1_irq_phase PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_mockingboard_t1_irq_phase PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_mockingboard_t1_irq_phase PRIVATE winmm)
+endif()
+
+add_test(NAME mockingboard_t1_irq_phase COMMAND test_mockingboard_t1_irq_phase)
+set_tests_properties(mockingboard_t1_irq_phase PROPERTIES TIMEOUT 5)
