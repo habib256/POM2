@@ -821,12 +821,16 @@ cycle earlier because the scanner latches a byte in phi1 of the cycle whose phi2
 the CPU uses, calibrated on MAD EFFECT's `$C055`). **Per-kind offset**
 (`Apple2Display_Beam.cpp::beamColForEvent`, 2026-09-02): that −24 is right for a
 *fetch-side* switch — PAGE2 `$C054/$C055`, which picks the address read on the
-NEXT fetch — but a *display-side* hi-res/DHIRES switch (`$C056/$C057`, `$C05E/
-$C05F`) re-interprets the byte fetched NOW, one column LEFT, so HiRes / Dhgr / An3
-events get `−25`. Without it OLDSKOOL FORT ET VERT's HGR-mode raster bands drew
-one character cell right of the TV-set art (user-confirmed, both RGB and composite
-paths); pinned by `raster_switch_kind_offset`. TextMode / MixedMode stay on −24
-(unmeasured, and `$C050/$C051` also moves the fetch region). The shared
+NEXT fetch — but a *display-side* DHIRES/AN3 switch (`$C05E/$C05F`, the DHGR colour clock)
+re-interprets the byte fetched NOW, one column LEFT, so **only Dhgr / An3**
+events get `−25`. Without it OLDSKOOL FORT ET VERT's AN3-driven raster bands
+drew one character cell right of the TV-set art (user-confirmed, both RGB and
+composite). HiRes (`$C056/$C057`) is NOT shifted — it is a graphics-mode/address
+switch, fetch-side like PAGE2, and MAD EFFECT flips lo/hi-res mid-line to place
+its beam-raced picture; shifting HiRes pulled those regions one cell too far left
+(regression caught 2026-09-02). TextMode / MixedMode / 80Col also stay on −24.
+The HiRes/PAGE2 half is pinned by `raster_switch_kind_offset`; the AN3/DHGR −1 is
+validated against the live demo. The shared
 `forEachBeamSegment(frameStart, events, paint)` builds, per visible scanline, the
 ordered list of column segments `[col0, col1)` + the display state across each
 (an event subdivides its line at `byteCol`; the end-of-line state carries down),

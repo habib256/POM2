@@ -5,6 +5,22 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — Raster per-kind offset narrowed to AN3/DHGR (MAD EFFECT regression fix)
+
+The OLDSKOOL per-kind offset (earlier today) shifted HiRes / Dhgr / An3
+mid-line switches one column left. That over-reached: MAD EFFECT flips
+lo/hi-res ($C056/$C057) mid-line to place its beam-raced picture, and the
+HiRes shift dragged those regions one character cell too far left (user
+report; visible on MAD EFFECT's lo-res "FRENCH" + raster-lines screen).
+
+The -1 belongs ONLY to the DHIRES/AN3 colour clock ($C05E/$C05F): OLDSKOOL's
+raster bands are AN3-driven (the DHGR artifact colour), which is what the
+shift fixes -- user-confirmed in RGB and composite. `beamColForEvent` now
+shifts only Dhgr / An3; HiRes joins PAGE2 / TextMode / 80Col on the
+fetch-side -24. MAD EFFECT confirmed fixed live; OLDSKOOL's AN3 colour
+alignment is unchanged (AN3 still -25). `raster_switch_kind_offset` updated
+to pin HiRes = PAGE2 (both -24); display/beam suite green.
+
 ## 2026-09-02 — Block ASCII Anthology: dual-bank char ROM switched by annunciator 2
 
 "Block ASCII Anthology" (French Touch) rendered as garbled letters/brackets:
