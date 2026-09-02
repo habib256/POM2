@@ -5,6 +5,33 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-02 — OLDSKOOL crash fixed: Mockingboard MMIO sync lands on the access data cycle
+
+French Touch's standalone `oldskool.dsk` (FORT ET VERT, SHADOW 2021) blew the
+6502 stack (SP -> $00, into DOS) ~10 s in; the DIX-packaged copy ran fine, and
+removing the Mockingboard removed the crash. Root cause: OLDSKOOL arms a
+free-running Mockingboard T1 IRQ and its handler reads the T1 counter (`$C404`)
+to phase-measure the beam, self-modifying a `BVC` by `mem[$03] - T1CL - $19` to
+dispatch. POM2's lazy VIA sync (`syncToCpuCycle`) advanced the timers to
+`getCycleCountNow() = cycleCounter + cpu.cycles`, but `cpu.cycles` does not yet
+count the in-flight DATA cycle of the reading instruction (`SBC $C404` reads
+with `cpu.cycles == 3`), so the T1 counter read back one too high. That single
+count wrapped the phase `$00 -> $FF`, jumping the dispatch into a code slice
+that `RTS`'d off the 3-byte IRQ frame -> return to DOS RWTS garbage -> `TXS` ->
+SP=0 -> runaway.
+
+Fix: `syncToCpuCycle()` advances to `getCycleCountNow() + 1` — the cycle the
+bus access actually occurs on. It cannot be the VIA read-back bias (`-1`, pinned
+by `via_t1_rearm_chain`): that models a DIRECT read and OLDSKOOL wants the
+opposite; and it cannot be an IRQ-entry change: MMIO and batch syncs still
+converge on a load's instruction-end. The +1 cancels for write-then-read idioms
+(detection routines; TRIBU's closed-loop re-arm), so it moves ONLY reads taken
+against a free-running underflow. DIX menu raster columns are byte-identical
+(`dix_menu_raster_probe`), all VIA/Mockingboard/CPU/Disk II suites green, and
+the fix is Mockingboard-local (no CPU-core or Disk II sub-cycle change). Pinned
+by `mockingboard_t1_irq_phase`; `mockingboard_sync_smoke::testNoEndOfStepOvershoot`
+reworked to drive its MMIO through real executed instructions.
+
 ## 2026-09-02 — Raster per-kind offset narrowed to AN3/DHGR (MAD EFFECT regression fix)
 
 The OLDSKOOL per-kind offset (earlier today) shifted HiRes / Dhgr / An3

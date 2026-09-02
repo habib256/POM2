@@ -837,7 +837,27 @@ bool MockingboardCard::snapshotSsi263(Ssi263Snap* out) const
 void MockingboardCard::syncToCpuCycle()
 {
     if (!cpu_) return;
-    syncToCpuCycleAt(cpu_->getCycleCountNow());
+    // +1: the bus access happens on the FINAL (data) cycle of the
+    // instruction, but `getCycleCountNow()` = cycleCounter + cpu.cycles and
+    // cpu.cycles does NOT yet count that in-flight data cycle (e.g. `SBC
+    // $C404`, a 4-cycle abs read, calls memRead with cpu.cycles == 3). A real
+    // 6522 has already decremented T1/T2 on the φ2 of that cycle, so syncing
+    // to the pre-cycle count samples the timers one cycle early — every
+    // Mockingboard MMIO read/write saw its VIA counter one too high.
+    //
+    // Invisible to steady-state music and to write-then-read detection idioms
+    // (Nox Archaist / Skyfox): those read RELATIVE to their own arm, so the
+    // +1 on the read and the +1 on the arm write cancel. It only moves reads
+    // taken relative to a FREE-RUNNING underflow — the stable-raster T1-IRQ
+    // dispatch French Touch's OLDSKOOL FORT ET VERT does: its handler reads
+    // $C404 to phase-measure the beam and self-modifies a BVC by
+    // `mem[$03] - T1CL - $19`. One-too-high T1CL made that phase wrap
+    // $00 -> $FF, jumping the dispatch into a slice that RTS'd off the 3-byte
+    // IRQ frame -> SP=0 -> crash (~10 s in). TRIBU's raster is unaffected: it
+    // re-arms every link (closed loop), so a constant read+write offset
+    // cancels and the 5-link/frame chain stays drift-free (via_t1_rearm_chain,
+    // dix_menu_raster_probe). Pinned by mockingboard_t1_irq_phase.
+    syncToCpuCycleAt(cpu_->getCycleCountNow() + 1);
 }
 
 // Advance the VIAs to an explicit absolute CPU cycle. Split out from

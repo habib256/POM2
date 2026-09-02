@@ -102,6 +102,10 @@ int main(int argc, char** argv) {
     auto acr = [&](int chip) { return mbp ? mbp->peekViaRegister(chip, 0x0B) : 0; };
     auto ifr = [&](int chip) { return mbp ? mbp->peekViaRegister(chip, 0x0D) : 0; };
     bool ierT1Seen = false, irqSeen = false;
+    // Measure the IRQ-entry latency the stable-raster handler depends on:
+    // CPU cycles from the T1 underflow (IFR.T1 rising edge) to the handler's
+    // SBC $C404 read at $82F7, and the T1CL it reads there.
+    uint8_t prevIfrT1 = 0; uint64_t underflowCycle = 0; int measured = 0;
 
     const long long maxSteps = 60'000'000;  // ~generous
     bool dumped = false;
@@ -112,6 +116,24 @@ int main(int argc, char** argv) {
         ring[rn % kRing] = { pc, op, sp, cpu.getStatusRegister(), cpu.getAccumulator() };
         ++rn;
         if (sp < minSp) minSp = sp;
+        if (mbp && measured < 4) {
+            // IFR.T1 rising edge = the underflow that raised the IRQ.
+            const uint8_t ifrT1 = ifr(0) & 0x40;
+            if (ifrT1 && !prevIfrT1) underflowCycle = cpu.getCycleCountNow();
+            prevIfrT1 = ifrT1;
+            // The handler's phase read at $82F7 (SBC $C404).
+            if (pc == 0x82F7) {
+                const uint64_t readCycle = cpu.getCycleCountNow();
+                std::printf(">> phase read #%d: underflow=%llu read=%llu "
+                            "elapsed=%llu cyc  T1CL($C404 peek)=$%02X  A(mem[$03])=$%02X\n",
+                            measured + 1,
+                            (unsigned long long)underflowCycle,
+                            (unsigned long long)readCycle,
+                            (unsigned long long)(readCycle - underflowCycle),
+                            mbp->peekViaRegister(0, 0x04), mem.memRead(0x03));
+                ++measured;
+            }
+        }
         if (mbp) {
             if (!ierT1Seen && ((ier(0) | ier(1)) & 0x40)) {
                 ierT1Seen = true;

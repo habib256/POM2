@@ -1332,12 +1332,29 @@ event queue and a `setCpuClock` override.
 Each VIA `irqOut() = (ifr & ier & 0x7F) != 0`; OR'd onto slot IRQ.
 
 **Lazy timer sync** (`syncToCpuCycle()`): every `slotRomRead/Write`
-catches VIAs up to `cpu_->getCycleCountNow()` first. **Gotcha**:
-`advanceCycles` syncs to `getCycleCountNow() - cycles`, not
-`now` — `cycleCounter` is bumped before slot dispatch but
-`cpu->cycles` hasn't been zeroed yet, so the naive `now`
-over-counts by one instruction (broke Nox/Skyfox/Broadside T1 IRQ
-detection until 2026-05-25). Pinned:
+catches VIAs up to `cpu_->getCycleCountNow() + 1` first. The **+1**
+lands the sync on the access's DATA cycle — the last cycle of the
+instruction performing it, where a real 6522 has already decremented
+T1/T2 on that φ2. `getCycleCountNow() = cycleCounter + cpu.cycles` and
+`cpu.cycles` does not yet count that in-flight data cycle (`SBC $C404`,
+a 4-cycle abs read, syncs with `cpu.cycles == 3`), so without it every
+Mockingboard MMIO counter read was one too high. Invisible to steady
+music and to write-then-read detection (Nox/Skyfox read RELATIVE to
+their own arm, so read+arm offsets cancel) and to TRIBU's raster (it
+re-arms every link — closed loop — so a constant offset cancels, and
+`via_t1_rearm_chain` / `dix_menu_raster_probe` are unchanged). It only
+moves reads taken against a FREE-RUNNING underflow: French Touch's
+OLDSKOOL FORT ET VERT reads `$C404` in its stable-raster T1-IRQ handler
+and phase-dispatches on `mem[$03] - T1CL - $19`; the one-too-high T1CL
+wrapped that phase `$00 -> $FF`, jumping a self-modified BVC into a
+slice that RTS'd off the 3-byte IRQ frame -> SP=0 -> crash ~10 s in
+(fixed 2026-09-02). Pinned by `mockingboard_t1_irq_phase`. **Gotcha**:
+`advanceCycles` (the end-of-step batch) syncs to
+`getCycleCountNow() - cycles`, not `now` — `cycleCounter` is bumped
+before slot dispatch but `cpu->cycles` hasn't been zeroed yet, so the
+naive `now` over-counts by one instruction (broke Nox/Skyfox/Broadside
+T1 IRQ detection until 2026-05-25). MMIO (`+1`, the data cycle) and
+batch (instruction end) converge for a load. Pinned:
 `mockingboard_sync_smoke::testNoEndOfStepOvershoot`.
 
 **Tear-down**: remove `AudioSource` from `AudioDevice` BEFORE
