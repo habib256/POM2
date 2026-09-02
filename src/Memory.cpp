@@ -328,6 +328,24 @@ int Memory::loadCharRom(const char* filename, int bank)
     }
     characterRom.resize(size);
     f.read(reinterpret_cast<char*>(characterRom.data()), size);
+    charRomDualBank_ = false;
+    if (size == 8192 && f && bank < 0) {
+        // DUAL-BANK: keep both 4 KB sets; annunciator 2 selects the live one
+        // at render time (charRomActiveData). This is the real localized-//e
+        // wiring — the char ROM's A12 is driven by AN2 ($C05C/$C05D) — and it
+        // is what lets a demo switch its whole font mid-run (French Touch
+        // "Block ASCII Anthology": normal text ↔ block glyphs). Normalise each
+        // 4 KB half in place, then skip the single-bank normalisation below.
+        const pom2::CharRomFacts f0 =
+            pom2::normaliseCharRom(characterRom.data(),        4096);
+        (void)pom2::normaliseCharRom(characterRom.data() + 4096, 4096);
+        charRomLowercase_ = f0.hasLowercase;
+        charRomDualBank_  = true;
+        pom2::log().info("ROM",
+            std::string("Char ROM: 8K two-set dump, dual-bank (AN2 $C05C/$C05D "
+                        "selects the live 4K set): ") + filename);
+        return 1;
+    }
     if (size == 8192 && f) {
         // Collapse to the selected 4K bank, then fall through to the ordinary
         // 4K normalization. Done before the short-read check below so a failed

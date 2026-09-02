@@ -76,6 +76,14 @@ enum class CharRomLocale : uint8_t {
     // POM2's standalone 4 KB dumps; pinned by `char_rom_8k_bank`).
     AppleIIeFrench8k_FR,
     AppleIIeFrench8k_US,
+
+    // French Touch custom character generator (8 KB EPROM, `eprom2164.bin`,
+    // shipped with the "Block ASCII Anthology" demo). The Unenhanced //e the
+    // French Touch corpus targets has no MouseText, so demos that draw block
+    // art bring their OWN char set to burn into the video ROM socket. Bank 0
+    // holds the block glyphs. Without it, the demo's block art renders as the
+    // stock font's letters/brackets — the "garbled" screen users see.
+    AppleIIeFrenchTouchBlock,
 };
 
 struct CharRomEntry {

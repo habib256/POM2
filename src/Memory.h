@@ -494,6 +494,28 @@ public:
     // ASCII table at render time.
     const std::vector<uint8_t>& charRom() const { return characterRom; }
 
+    // ── International 8 KB char ROM: runtime bank select via annunciator 2 ──
+    // A localized //e (French, Japanese katakana, …) fits a 2364-class 8 KB
+    // character generator holding TWO 4 KB sets and wires the char ROM's A12
+    // to annunciator 2 ($C05C = AN2 off, $C05D = AN2 on) — so software flips
+    // the whole font by poking AN2 (apple2history.org ch.12; the Japanese
+    // j-Plus katakana toggle is the canonical example). POM2 loads such a ROM
+    // dual-bank (`loadCharRom` with bank < 0) and selects the live 4 KB set
+    // here; a plain 4 KB ROM leaves AN2 a no-op, exactly as on a US machine.
+    // French Touch "Block ASCII Anthology" uses this to switch between its
+    // normal-text set (the intro screen) and its block-glyph set (the art).
+    bool charRomIsDualBank() const { return charRomDualBank_; }
+    std::size_t charRomBankOffset() const {
+        return (charRomDualBank_ && an2) ? 4096u : 0u;
+    }
+    const uint8_t* charRomActiveData() const {
+        return characterRom.empty() ? nullptr
+                                     : characterRom.data() + charRomBankOffset();
+    }
+    std::size_t charRomActiveSize() const {
+        return charRomDualBank_ ? 4096u : characterRom.size();
+    }
+
     // Soft-switch state (read by the display / speaker / paddle code).
     struct DisplayState {
         bool textMode  = true;   // $C050 clear, $C051 set
@@ -867,6 +889,9 @@ private:
     void ramWorksSwapToBank(uint8_t newBank);  // memcpy in/out
     std::vector<uint8_t> characterRom;
     bool charRomLowercase_ = false;   // see charRomHasLowercase()
+    // True when `characterRom` holds a full 8 KB two-set part whose active
+    // 4 KB half is chosen at runtime by annunciator 2 (see charRomActiveData).
+    bool charRomDualBank_  = false;
     std::string lastError;
 
     // Soft-switch state, guarded by stateMutex. Reads from the UI thread

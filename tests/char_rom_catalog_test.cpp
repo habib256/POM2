@@ -70,6 +70,7 @@ const std::vector<CharRomLocale> kAllLocales = {
     CharRomLocale::AppleIIeGermanImproved,
     CharRomLocale::AppleIIeFrench8k_FR,
     CharRomLocale::AppleIIeFrench8k_US,
+    CharRomLocale::AppleIIeFrenchTouchBlock,
 };
 
 const std::vector<SystemProfile> kAllProfiles = {
@@ -132,6 +133,7 @@ int main()
             { CharRomLocale::AppleIIeGermanImproved,           "iie_de_improved" },
             { CharRomLocale::AppleIIeFrench8k_FR,              "iie_fr8k_fr" },
             { CharRomLocale::AppleIIeFrench8k_US,              "iie_fr8k_us" },
+            { CharRomLocale::AppleIIeFrenchTouchBlock,         "iie_ft_block" },
         };
         expect(kKeys.size() == kAllLocales.size(),
                "the pinned key table covers every locale");
@@ -192,8 +194,16 @@ int main()
                pom2::charRomBank(CharRomLocale::AppleIIeFrench8k_US) == 1,
                "the two 342-0274-A entries select different banks");
     }
+    // The French Touch "Block ASCII" 8 KB part is DUAL-BANK: it carries a
+    // sentinel bank of -1 so Memory::loadCharRom keeps both 4 KB sets and lets
+    // annunciator 2 ($C05C/$C05D) pick the live one at render time. (Block
+    // ASCII Anthology switches its whole font that way — normal-text intro vs
+    // block-glyph art.)
+    expect(pom2::charRomBank(CharRomLocale::AppleIIeFrenchTouchBlock) == -1,
+           "the Block ASCII 8 KB part is dual-bank (AN2-switchable, bank -1)");
     for (CharRomLocale l : kAllLocales) {
         if (l == CharRomLocale::AppleIIeFrench8k_US) continue;
+        if (l == CharRomLocale::AppleIIeFrenchTouchBlock) continue;  // dual-bank
         expect(pom2::charRomBank(l) == 0,
                std::string("2 KB / 4 KB part '") + pom2::charRomLocaleKey(l) +
                "' selects bank 0");
