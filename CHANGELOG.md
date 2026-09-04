@@ -5,6 +5,47 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-04 — StorageCoordinator gets its first tests, and a resync gap closes
+
+A bug hunt, reported with its uncertainty intact.
+
+Looking for where defects can hide, the useful question turned out to be which
+non-UI source files no test ever links. Almost every answer is a `MainWindow_*`
+or `*_ImGui` translation unit — expected, they need a GL context. One was not:
+**`StorageCoordinator.cpp`, 1640 lines of pure logic with no test of any kind**,
+deciding which disk goes where and what reaches `state.cfg`. It is also the
+code the day's earlier HDV report ran through.
+
+`persistRebuildSettings` is the function Slot Config's Apply (and every profile
+switch) calls to write the LIVE media state into Settings before the SlotBus is
+torn down and rebuilt from those same keys. Settings are the transport, and the
+function exists because the keys are not trusted — that distrust is why it was
+written at all, after Apply once dropped whatever was mounted in Disk II drive
+2. Its Disk II and CFFA branches resync path *and* write-back, unconditionally,
+including "nothing". Its HDV branch resynced the path only when an image
+happened to be loaded, and never resynced the write-back opt-in at all.
+
+**What that is, honestly: a latent gap, not a reproducible bug.** Every HDV
+mutation path was traced — the media bay row, the HDV panel's eject and
+write-back toggle, `ejectMediaBay`, `setMediaBayWriteBack`, `ejectAllMedia` —
+and every one persists both keys independently, so the hole is masked. But it
+is a hole in the function's own contract, in the same shape as the defect that
+motivated the function, on the two facts that decide whether a mounted image
+comes back and whether a session's writes reach the file. It now writes what
+the card actually holds. The exclusions are unchanged (the session-local
+auto-provisioned slot, a synthesised "[host folder] " volume), and it still
+deliberately does not clear the key when there is no HDV card at all — that is
+`persistSessionSettings`' job on quit, and doing it here would wipe a path a
+card is about to be given.
+
+New: `tests/storage_rebuild_persist_test.cpp` (`storage_rebuild_persist`), the
+file's first test — an eject and a write-back opt-in through a real capture →
+persist round-trip. Both assertions failed on the code as found. Suite is now
+240. Worth recording what the wiring showed: linking a settings round-trip
+required `EmulationController` and a dozen more sources, because the class
+mixes its pure capture/persist half with mount/eject calls that go through the
+controller. That coupling is itself much of why the file had no tests.
+
 ## 2026-09-04 — The nightly sanitizer legs go green again (three harness defects, no emulator bug)
 
 Both nightly jobs had been red since 2026-09-03 while every push run stayed

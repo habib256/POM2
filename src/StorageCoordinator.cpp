@@ -414,12 +414,33 @@ void StorageCoordinator::persistRebuildSettings(
                          disk.writeBackEnabled);
     }
 
-    if (snapshot.primaryHdv &&
-        snapshot.primaryHdv->slot != autoHdvSlot_ &&
-        snapshot.primaryHdv->loaded &&
-        snapshot.primaryHdv->path.rfind("[host folder] ", 0) ==
-            std::string::npos) {
-        settings.setString("hdv_path", snapshot.primaryHdv->path);
+    // Same shape as the Disk II and CFFA branches above, and for the same
+    // reason: this function exists to RESYNC the live state into the keys
+    // before a rebuild reads them back, because the keys are not trusted —
+    // that distrust is why it was written (Apply once dropped whatever was
+    // mounted in Disk II drive 2). The HDV branch only ever resynced the path
+    // when an image happened to be loaded, and never resynced the write-back
+    // opt-in at all, so an ejected image left a stale path behind and the
+    // opt-in survived only because every mutation path persists it
+    // separately. Masked, not correct: write what the card ACTUALLY holds,
+    // including "nothing".
+    //
+    // Still excluded, as before: the session-local auto-provisioned slot and a
+    // synthesised "[host folder] " volume, neither of which may reach hdv_path
+    // or it returns as a real mount. And note this deliberately does NOT clear
+    // the key when there is no HDV card at all — persistSessionSettings does
+    // (a one-shot auto-plug must not survive a quit), but a rebuild that
+    // merely has no card yet must not wipe a path one is about to be given.
+    if (snapshot.primaryHdv && snapshot.primaryHdv->slot != autoHdvSlot_) {
+        const bool persistable =
+            snapshot.primaryHdv->loaded &&
+            snapshot.primaryHdv->path.rfind("[host folder] ", 0) ==
+                std::string::npos;
+        settings.setString("hdv_path",
+                           persistable ? snapshot.primaryHdv->path
+                                       : std::string());
+        settings.setBool("hdv_writeback",
+                         snapshot.primaryHdv->writeBackEnabled);
     }
 
     for (const auto& medium : snapshot.cffa) {
