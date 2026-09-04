@@ -96,8 +96,14 @@ struct HttpStub {
         port = ntohs(a.sin_port);
         if (::listen(listenFd, 2) != 0) return false;
 
-        th = std::thread([this] {
-            const int c = ::accept(listenFd, nullptr, nullptr);
+        // `lfd` by value, not the member: stop() writes `listenFd = -1`
+        // BEFORE joining (it has to — closing the listening socket is what
+        // unblocks this accept()), so reading the member here is a plain
+        // data race on an int, which the nightly TSan leg reported. The
+        // thread gets its own copy; stop()'s close() still wakes it.
+        const int lfd = listenFd;
+        th = std::thread([this, lfd] {
+            const int c = ::accept(lfd, nullptr, nullptr);
             if (c < 0) return;
             char buf[2048];
             const ssize_t r = ::recv(c, buf, sizeof buf - 1, 0);

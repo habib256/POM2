@@ -40,6 +40,20 @@ endif()
 if(NOT POM2_TEST_GENERATOR MATCHES "Visual Studio|Xcode|Multi-Config")
     list(APPEND _configure_command "-DCMAKE_BUILD_TYPE=${POM2_TEST_CONFIG}")
 endif()
+# The installed libpom2_core.a carries whatever instrumentation the PARENT
+# build used, so a consumer built without the matching -fsanitize fails to
+# link against the sanitizer runtime's own symbols
+# (__asan_option_detect_stack_use_after_return, __ubsan_vptr_type_cache) —
+# which is exactly how this test failed on every nightly asan-ubsan run.
+# Note it cannot be fixed by forwarding CMAKE_CXX_FLAGS: the parent applies
+# the sanitizer through add_compile_options/add_link_options, which never
+# reach that variable. The selection has to travel by name.
+if(POM2_TEST_SANITIZE)
+    list(APPEND _configure_command
+        "-DCMAKE_C_FLAGS=-fsanitize=${POM2_TEST_SANITIZE}"
+        "-DCMAKE_CXX_FLAGS=-fsanitize=${POM2_TEST_SANITIZE}"
+        "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=${POM2_TEST_SANITIZE}")
+endif()
 
 execute_process(
     COMMAND ${_configure_command}

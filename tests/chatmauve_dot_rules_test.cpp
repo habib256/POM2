@@ -44,6 +44,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <iterator>   // std::size
 
 namespace {
 
@@ -93,7 +94,19 @@ void awHiResRGBCell(int x, const uint8_t main[40], uint32_t out[14])
     for (int i = 0; i < 14; i++) {
         if (i == 7) offset = (byteval3 & 0x80) != 0;
         const int color = dwordval_tmp & 0x3;
-        colors[i] = offset ? kAwHgr[1 + color] : kAwHgr[6 - color];
+        // AppleWin indexes g_pPaletteRGB, its FULL 16-entry palette, so
+        // `6 - color` at color == 0 lands on a real (if meaningless) entry
+        // there. kAwHgr is only the 6-entry slice this oracle needs, so the
+        // same expression runs one past the end — which is what the nightly
+        // UBSan leg reported ("index 6 out of bounds for type 'unsigned
+        // int [6]'"). The value is dead either way: the loop below reads
+        // colors[i] ONLY when the 3-dot window is 010 or 101, i.e. exactly
+        // when color is 1 or 2. Keep AppleWin's arithmetic verbatim — it is
+        // the point of the oracle — and give the entries nothing reads a
+        // defined value instead of a read off the end.
+        const int idx = offset ? 1 + color : 6 - color;
+        colors[i] = (idx < static_cast<int>(std::size(kAwHgr)))
+                        ? kAwHgr[idx] : kBlack;
         if (i % 2) dwordval_tmp >>= 2;
     }
     const uint32_t mask = 0x01C0, chck1 = 0x0140, chck2 = 0x0080;

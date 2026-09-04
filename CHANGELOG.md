@@ -5,6 +5,43 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-04 — The nightly sanitizer legs go green again (three harness defects, no emulator bug)
+
+Both nightly jobs had been red since 2026-09-03 while every push run stayed
+green — the sanitizers only run on `schedule` / `workflow_dispatch`. All three
+findings are in `tests/`; none is a defect in the emulator.
+
+**UBSan, `chatmauve_dot_rules`** — "index 6 out of bounds for type 'unsigned
+int [6]'". The AppleWin oracle indexes `g_pPaletteRGB`, AppleWin's full
+16-entry palette, so its `6 - color` at color 0 lands on a real entry there;
+the port kept the arithmetic but narrowed the array to the 6-entry slice it
+needs, and ran one past the end. The value was always dead — the caller reads
+`colors[i]` only when the 3-dot window is 010 or 101, i.e. exactly color 1 or
+2 — so the fix keeps AppleWin's expression verbatim (it is the point of the
+oracle) and gives the unread entries a defined value. Reproduced locally under
+UBSan, same message, before and after.
+
+**TSan, `fujinet_net_device`** — a data race on `HttpStub::listenFd`. `stop()`
+writes `listenFd = -1` *before* joining, and it has to: closing the listening
+socket is what unblocks the worker's `accept()`. The worker read the member.
+The thread now captures the descriptor by value at creation, so nothing is
+shared; `close()` still wakes it. Worth recording how thin the first
+verification was: one run passed with the fix reverted, which would have
+"confirmed" a fix that changed nothing. Looped instead — **9 races in 15 runs
+without the fix, 0 in 30 with it**.
+
+**ASan/UBSan, `pom2_core_sdk_consumer`** — not a race or an overflow but a
+link failure, and the interesting one. That test installs the SDK and builds
+`examples/pom2_core_consumer` as a *separate* CMake project; the installed
+`libpom2_core.a` carries the parent's instrumentation, so the consumer must be
+built with the matching `-fsanitize` or it fails on the runtime's own symbols
+(`__asan_option_detect_stack_use_after_return`, `__ubsan_vptr_type_cache`).
+Forwarding `CMAKE_CXX_FLAGS` would NOT have fixed it: the parent applies the
+sanitizer through `add_compile_options`/`add_link_options`, which never reach
+that variable. `POM2_SANITIZE` now travels to the sub-configure by name.
+Verified by reading the generated consumer's `CMakeCache.txt` — the flags are
+there — not merely by the test turning green.
+
 ## 2026-09-04 — A block device with write-back off now says so, standing
 
 Reported as "SCOSWAMP.HDV doesn't seem to get written". Two independent causes,
