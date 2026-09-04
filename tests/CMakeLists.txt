@@ -6517,6 +6517,7 @@ add_test(NAME pom2_core_sdk_consumer
         -DPOM2_TEST_GENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
         -DPOM2_TEST_GENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
         -DPOM2_TEST_EXECUTABLE_SUFFIX=${CMAKE_EXECUTABLE_SUFFIX}
+        -DPOM2_TEST_SANITIZE=${POM2_SANITIZE}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/pom2_core_sdk_consumer_test.cmake)
 # Installs and builds a second project, so it is slower than a unit test and
 # depends on the SDK archive being built first.
