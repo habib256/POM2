@@ -594,6 +594,8 @@ MainWindow::MainWindow(bool forceIIPlus)
                 "ntsc_center_lighting", p.centerLighting);
             p.phosphorGamma = settings->getFloat(
                 "ntsc_phosphor_gamma", p.phosphorGamma);
+            p.rgbBandwidthMHz = settings->getFloat(
+                "ntsc_rgb_bandwidth_mhz", p.rgbBandwidthMHz);
             const int sm = settings->getInt("ntsc_shadow_mask",
                                             static_cast<int>(p.shadowMask));
             p.shadowMask = static_cast<pom2::NtscParams::ShadowMask>(
@@ -616,6 +618,7 @@ MainWindow::MainWindow(bool forceIIPlus)
             p.luminanceGain      = std::clamp(p.luminanceGain,      1.0f, 2.0f);
             p.centerLighting     = std::clamp(p.centerLighting,     0.5f, 1.0f);
             p.phosphorGamma      = std::clamp(p.phosphorGamma,      0.6f, 2.6f);
+            p.rgbBandwidthMHz    = std::clamp(p.rgbBandwidthMHz,     0.0f, 8.0f);
 #ifdef __EMSCRIPTEN__
             p.barrel = std::min(p.barrel, 0.03f);
 #endif

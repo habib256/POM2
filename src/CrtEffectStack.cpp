@@ -277,7 +277,22 @@ void main()
 
     // ── Shadow mask (procedural, analytic anti-alias) ─────────────
     if (uShadowMask != 0 && uShadowStrength > 0.0) {
-        float oxBase = uv.x * (uSrcSize.x * 2.0);
+        // Mask pitch is a property of the GLASS, not of the signal: a real
+        // tube's triads have a fixed pitch in millimetres whatever resolution
+        // is fed to it. Deriving this coordinate from uSrcSize.x tied it to
+        // the framebuffer instead, so the 280-wide modes (40-col text, 40-col
+        // HGR, lo-res — Apple2Display's legacy `frame`) got a mask exactly
+        // twice as coarse as the 560-wide ones (80-col, DHGR, Chat Mauve, and
+        // the OE demod output, which is 560 too), and merely switching video
+        // mode visibly changed the tube. Pin it to the 560-dot line at the
+        // same 2-units-per-dot scale the scanline coordinate uses for rows —
+        // the row axis never had the bug because uSrcSize.y is always the
+        // Apple II's 192. The scanline count IS a signal property (192 real
+        // beam sweeps); the mask is not, hence the asymmetry. 560 x 2 = 1120
+        // leaves every 560-wide mode pixel-identical and only brings the
+        // 280-wide ones onto the same glass.
+        const float kMaskUnitsX = 1120.0;
+        float oxBase = uv.x * kMaskUnitsX;
         // Triad period is 3 units; as one output pixel approaches a whole
         // triad the mask is undersampled and would moiré, so fade it to
         // neutral there. Keeps the mask crisp where the picture has room.
@@ -341,6 +356,52 @@ void main()
 }
 )GLSL";
 
+// Analog RGB bandwidth pre-pass. Windowed-sinc low-pass, horizontal only,
+// applied per channel on the SOURCE sample grid (see NtscParams::
+// rgbBandwidthMHz for why the grid, not the screen, is the right place).
+//
+// h[k] = 2·fc · sinc(2·fc·k) · hann(k), fc in cycles/sample; 17 taps (N=8
+// each side plus the centre). The caller only runs this pass when fc < 0.5,
+// so the "cutoff above Nyquist" case costs nothing rather than being a
+// numerically-transparent filter. Weights are normalised by their own sum, so
+// a flat field stays exactly flat whatever fc and however the window truncates
+// the kernel — no DC droop, no brightness step when the knob is dragged.
+const char* kBandwidthFragmentShader = R"GLSL(
+in vec2 vUv;
+out vec4 fragColor;
+
+uniform sampler2D uSrc;
+uniform vec2  uSrcSize;
+uniform float uCutoff;      // cycles/sample, 0 < uCutoff < 0.5
+
+const int   kTaps = 8;
+const float kPi   = 3.14159265;
+
+void main()
+{
+    float texel = 1.0 / uSrcSize.x;
+    float fc2   = 2.0 * uCutoff;
+
+    // k = 0: sinc(0) = 1, hann(0) = 1.
+    vec3  acc  = texture(uSrc, vUv).rgb * fc2;
+    float wsum = fc2;
+
+    for (int k = 1; k <= kTaps; ++k) {
+        float x = fc2 * float(k);
+        float h = fc2 * (sin(kPi * x) / (kPi * x))
+                      * (0.5 + 0.5 * cos(kPi * float(k) / float(kTaps + 1)));
+        // Clamp rather than trust the caller's wrap mode: a GL_REPEAT source
+        // would fold the right edge of the line onto the left one.
+        float dx = float(k) * texel;
+        acc += (texture(uSrc, vec2(clamp(vUv.x - dx, 0.0, 1.0), vUv.y)).rgb +
+                texture(uSrc, vec2(clamp(vUv.x + dx, 0.0, 1.0), vUv.y)).rgb) * h;
+        wsum += 2.0 * h;
+    }
+
+    fragColor = vec4(acc / max(wsum, 1e-4), 1.0);
+}
+)GLSL";
+
 } // namespace
 
 CrtEffectStack::CrtEffectStack() = default;
@@ -378,6 +439,23 @@ bool CrtEffectStack::initialize()
     uLuminanceGain = glGetUniformLocation(program, "uLuminanceGain");
     uCenterLighting = glGetUniformLocation(program, "uCenterLighting");
     uPhosphorGamma = glGetUniformLocation(program, "uPhosphorGamma");
+
+    // Bandwidth pre-pass. Optional: if it fails to compile the stack stays
+    // usable and the knob simply does nothing (bwProgram == 0 disables it),
+    // rather than taking the whole glass pass down with it.
+    {
+        std::string bwErr;
+        bwProgram = compileShaderProgram(kVertexShader,
+                                         kBandwidthFragmentShader, &bwErr);
+        if (bwProgram) {
+            uBwSrc     = glGetUniformLocation(bwProgram, "uSrc");
+            uBwSrcSize = glGetUniformLocation(bwProgram, "uSrcSize");
+            uBwCutoff  = glGetUniformLocation(bwProgram, "uCutoff");
+        } else {
+            pom2::log().warn("CRT",
+                "analog-bandwidth pre-pass unavailable: " + bwErr);
+        }
+    }
 
     const float verts[] = {
         -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
@@ -435,6 +513,71 @@ bool CrtEffectStack::createTextures(int w, int h)
     return true;
 }
 
+// The Apple II's 560-dot line is clocked at 14.31818 MHz; a 280-dot line at
+// half that. So the sample rate of the framebuffer we are handed follows its
+// width, and one MHz figure means a different fraction of Nyquist per video
+// mode — exactly as one physical cable behaves.
+static constexpr float kDotClockMHz560 = 14.31818f;
+
+unsigned int CrtEffectStack::applyBandwidth(unsigned int srcTex,
+                                            int srcW, int srcH)
+{
+    if (bwProgram == 0 || params.rgbBandwidthMHz <= 0.0f || srcW <= 0)
+        return 0;
+
+    const float fsMHz  = float(srcW) * (kDotClockMHz560 / 560.0f);
+    const float cutoff = params.rgbBandwidthMHz / fsMHz;   // cycles/sample
+    // At or above Nyquist the filter is transparent: skip the pass entirely
+    // instead of burning a draw on an identity. This is what makes a 5 MHz
+    // cable a no-op on the 280-wide modes without a special case anywhere.
+    if (cutoff >= 0.5f) return 0;
+
+    if (bwTex == 0 || srcW != bwW_ || srcH != bwH_) {
+        if (bwTex == 0) {
+            glGenTextures(1, &bwTex);
+            glGenFramebuffers(1, &bwFbo);
+        }
+        glBindTexture(GL_TEXTURE_2D, bwTex);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, srcW, srcH, 0,
+                     GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glBindFramebuffer(GL_FRAMEBUFFER, bwFbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                               GL_TEXTURE_2D, bwTex, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+            // Give the knob up, keep the glass pass: same graceful-degradation
+            // rule as a failed compile above.
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glDeleteFramebuffers(1, &bwFbo);
+            glDeleteTextures(1, &bwTex);
+            bwFbo = 0; bwTex = 0; bwProgram = 0;
+            pom2::log().warn("CRT", "analog-bandwidth FBO incomplete — knob disabled");
+            return 0;
+        }
+        bwW_ = srcW; bwH_ = srcH;
+    }
+
+    // Fragment centres of a srcW x srcH render land exactly on source texel
+    // centres, and every tap is an integer texel away, so the caller's
+    // NEAREST/LINEAR choice is irrelevant here — nothing to save and restore.
+    glBindFramebuffer(GL_FRAMEBUFFER, bwFbo);
+    glViewport(0, 0, srcW, srcH);
+    glUseProgram(bwProgram);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, srcTex);
+    if (uBwSrc      >= 0) glUniform1i(uBwSrc, 0);
+    if (uBwSrcSize  >= 0) glUniform2f(uBwSrcSize, float(srcW), float(srcH));
+    if (uBwCutoff   >= 0) glUniform1f(uBwCutoff, cutoff);
+    glBindVertexArray(vao);
+    glDrawArrays(GL_TRIANGLES, 0, 6);
+    glBindVertexArray(0);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return bwTex;
+}
+
 unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
                                      int dstW, int dstH)
 {
@@ -474,11 +617,20 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     const int readIdx  = 1 - pingPongIdx;
     pingPongIdx = readIdx;
 
-    glBindFramebuffer(GL_FRAMEBUFFER, fbo[writeIdx]);
-    glViewport(0, 0, outW, outH);
+    // ── Analog RGB bandwidth pre-pass ────────────────────────────────────
+    // Band-limit on the source grid first, then everything below treats the
+    // result as if it had always been the framebuffer. Returns 0 when the
+    // knob is off or the cutoff sits above the mode's Nyquist, in which case
+    // we simply keep the caller's texture.
     glDisable(GL_BLEND);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
+    unsigned int glassSrc = srcTex;
+    if (const unsigned int filtered = applyBandwidth(srcTex, srcW, srcH))
+        glassSrc = filtered;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo[writeIdx]);
+    glViewport(0, 0, outW, outH);
 
     // The UI uploads screenTexture / OE demod with GL_NEAREST for crisp 1:1
     // integer scaling when CRT is off. For the effect pass we temporarily
@@ -486,7 +638,7 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     // sampleSrc() adds bicubic when upscaling further.
     GLint prevMinFilter = GL_NEAREST;
     GLint prevMagFilter = GL_NEAREST;
-    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glBindTexture(GL_TEXTURE_2D, glassSrc);
     glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, &prevMinFilter);
     glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, &prevMagFilter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
@@ -494,10 +646,10 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
 
     glUseProgram(program);
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, srcTex);
+    glBindTexture(GL_TEXTURE_2D, glassSrc);
     glUniform1i(uSrc, 0);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, firstFrame ? srcTex : outputTex[readIdx]);
+    glBindTexture(GL_TEXTURE_2D, firstFrame ? glassSrc : outputTex[readIdx]);
     glUniform1i(uPrevFrame, 1);
 
     if (uSrcSize     >= 0) glUniform2f(uSrcSize, float(srcW), float(srcH));
@@ -521,7 +673,9 @@ unsigned int CrtEffectStack::process(unsigned int srcTex, int srcW, int srcH,
     glBindVertexArray(0);
 
     // Restore the caller's NEAREST filter (integer-scale path without CRT).
-    glBindTexture(GL_TEXTURE_2D, srcTex);
+    // glassSrc is our own bwTex when the bandwidth pass ran, and that one was
+    // created LINEAR, so this is a no-op there rather than a wrong restore.
+    glBindTexture(GL_TEXTURE_2D, glassSrc);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, prevMinFilter);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, prevMagFilter);
 

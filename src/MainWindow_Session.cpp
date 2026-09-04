@@ -300,6 +300,7 @@ void MainWindow::persistSession()
         settings->setFloat("ntsc_luminance_gain", p.luminanceGain);
         settings->setFloat("ntsc_center_lighting", p.centerLighting);
         settings->setFloat("ntsc_phosphor_gamma", p.phosphorGamma);
+        settings->setFloat("ntsc_rgb_bandwidth_mhz", p.rgbBandwidthMHz);
         settings->setInt  ("ntsc_shadow_mask", static_cast<int>(p.shadowMask));
         settings->setBool ("ntsc_pal",         p.palMode);
         settings->setBool ("ntsc_text_sharp",  p.textSharp);

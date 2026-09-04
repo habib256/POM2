@@ -467,7 +467,13 @@ has not been found online; the HGR colour registers stay a gap.
   pots for R, G, B gain — Féline manual p. 13) and **TTL RGB**. An RGBI
   TTL output has exactly 16 colours; the analog one is those 16 through
   resistor networks. A "TTL" palette (pure RGBI) is the honest second
-  option next to the captured one.
+  option next to the captured one. *Since 2026-09-04 the two connectors do
+  differ on screen*: `NtscParams::rgbBandwidthMHz` (CRT Settings → Analog
+  link) low-passes the RGB on its own sample grid — 0 = the TTL header,
+  ~5-6 MHz = the Péritel cable, which softens a true 560-dot DHGR/COL280
+  picture and leaves 280-dot HGR nearly alone. The three trim pots are not
+  modelled yet; per-channel gain would sit in the same pre-pass.
+  → [DEV § CRT effect stack](../DEV.md#universal-crt-effect-stack-crteffectstack)
 - PAL 50 Hz: the //c PAL and //e PAL profiles already run 312 lines; a
   Chat Mauve plugged on an NTSC profile should keep the machine's timing
   (the card does not generate sync) — offer auto-PAL as a profile
