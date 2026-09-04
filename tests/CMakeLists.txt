@@ -1177,6 +1177,55 @@ set_tests_properties(cffa_card_smoke PROPERTIES TIMEOUT 5)
 # ─── ProDOS HDV block-device card smoke test ──────────────────────────────
 # Pins the slot-5 block-device ROM signature and the $C0D0-$C0D2 block read
 # protocol used by the embedded ProDOS driver.
+# ─── StorageCoordinator: the settings round-trip across a slot rebuild ───
+# Its first tests. 1640 lines of pure logic deciding which disk goes where and
+# what gets written to state.cfg, reachable only through a UI panel — so the
+# one place a mistake shows up is a user's lost mount or lost write-back.
+add_executable(test_storage_rebuild_persist
+    storage_rebuild_persist_test.cpp
+    ${POM2_TEST_CORE_SOURCES}
+    ${CMAKE_SOURCE_DIR}/src/Block512Backing.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSHardDiskCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/ProDOSVolume.cpp
+    ${CMAKE_SOURCE_DIR}/src/StorageCoordinator.cpp
+    ${CMAKE_SOURCE_DIR}/src/DiskIICard.cpp
+    # StorageCoordinator mixes the pure capture/persist half tested here with
+    # mount/eject calls that go through EmulationController, so the whole
+    # controller comes along even for a settings round-trip. That coupling is
+    # itself part of why the file had no tests.
+    ${CMAKE_SOURCE_DIR}/src/EmulationController.cpp
+    ${CMAKE_SOURCE_DIR}/src/IIcExternalSmartPort.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortBusDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Debugger.cpp
+    ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
+    ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
+    ${CMAKE_SOURCE_DIR}/src/FloppySoundDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/Settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/CffaCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/AtaBlockDevice.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortCard.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPort35Unit.cpp
+    ${CMAKE_SOURCE_DIR}/src/SmartPortHdvUnit.cpp
+    ${CMAKE_SOURCE_DIR}/src/MediaMount.cpp
+)
+target_include_directories(test_storage_rebuild_persist PRIVATE
+    ${CMAKE_SOURCE_DIR}/src
+    ${IMGUI_DIR})     # miniaudio.h location for FloppySoundDevice
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_storage_rebuild_persist PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads m)
+endif()
+if(APPLE)
+    target_link_libraries(test_storage_rebuild_persist PRIVATE
+        "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
+endif()
+if(WIN32)
+    target_link_libraries(test_storage_rebuild_persist PRIVATE winmm)
+endif()
+add_test(NAME storage_rebuild_persist COMMAND test_storage_rebuild_persist)
+set_tests_properties(storage_rebuild_persist PROPERTIES TIMEOUT 10)
+
 add_executable(test_hdv_card
     hdv_card_smoke_test.cpp
     ${POM2_TEST_CORE_SOURCES}
