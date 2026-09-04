@@ -260,15 +260,16 @@ void MainWindow::renderNtscSettingsWindow()
                                 ImGuiTreeNodeFlags_DefaultOpen)) {
         // Widest label sets the column, so it can never clip. Measured rather
         // than hardcoded so it survives the UI zoom.
-        const float labelW = ImGui::CalcTextSize("Phosphor gamma").x +
+        const float labelW = ImGui::CalcTextSize("Analog bandwidth").x +
                              ImGui::GetStyle().ItemSpacing.x * 2.0f;
         auto slider = [&](const char* label, const char* id, float* v,
-                          float lo, float hi, const char* tip) {
+                          float lo, float hi, const char* tip,
+                          const char* fmt = "%.2f") {
             ImGui::TextUnformatted(label);
             if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
             ImGui::SameLine(labelW);
             ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::SliderFloat(id, v, lo, hi, "%.2f",
+            if (ImGui::SliderFloat(id, v, lo, hi, fmt,
                                    ImGuiSliderFlags_AlwaysClamp))
                 changed = true;
         };
@@ -322,6 +323,22 @@ void MainWindow::renderNtscSettingsWindow()
         slider("Luminance gain", "##lumgain", &p.luminanceGain, 1.0f, 2.0f,
                "Post-glass re-brighten — compensates the dimming\n"
                "from scanlines and the shadow mask.");
+
+        // The cable between the machine and the tube. OpenEmulator models
+        // this as its "connection" type; POM2 exposes it as one figure in MHz
+        // because the interesting case — Le Chat Mauve — is literally a choice
+        // of connector: the TTL RGB header (square dots, 0 = off) or the
+        // analog Péritel socket (resistor ladders, trim pots and a cable,
+        // ~5-6 MHz). The filter runs on the source sample grid, so the same
+        // figure lands differently per video mode and needs no per-mode knob.
+        ImGui::SeparatorText("Analog link");
+        slider("Analog bandwidth", "##rgbbw", &p.rgbBandwidthMHz, 0.0f, 8.0f,
+               "Bandwidth of the analog video chain, in MHz.\n"
+               "0 = off — a direct/TTL link, square dots.\n"
+               "~5-6 = an analog RGB (Peritel/SCART) cable: 560-dot\n"
+               "detail (DHGR, COL280) softens, 280-dot HGR barely moves.\n"
+               "Above a mode's Nyquist the filter is skipped entirely.",
+               "%.1f MHz");
 
         ImGui::SeparatorText("Demodulation (OpenEmulator pipelines only)");
         // PAL composite — line-phase alternation. Off by default (POM2 ships

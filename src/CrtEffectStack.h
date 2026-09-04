@@ -90,6 +90,19 @@ private:
     unsigned int vao          = 0;
     unsigned int vbo          = 0;
 
+    // Analog RGB bandwidth pre-pass (NtscParams::rgbBandwidthMHz). A separate
+    // program rendering at SOURCE resolution: band-limiting is an operation on
+    // the sample grid, not on the screen, so filtering here — before the glass
+    // pass upscales — is both correct and cheap (560x192, once per frame).
+    // Allocated lazily and only while the knob is non-zero.
+    unsigned int bwProgram    = 0;
+    unsigned int bwTex        = 0;
+    unsigned int bwFbo        = 0;
+    int          bwW_ = 0, bwH_ = 0;
+    int          uBwSrc      = -1;
+    int          uBwSrcSize  = -1;
+    int          uBwCutoff   = -1;
+
     int uSrc         = -1;
     int uPrevFrame   = -1;
     int uSrcSize     = -1;
@@ -116,6 +129,10 @@ private:
     NtscParams params{};
 
     bool createTextures(int w, int h);
+    // Run the bandwidth pre-pass over `srcTex` (srcW x srcH). Returns the
+    // filtered texture, or 0 when the filter is inactive / unavailable — in
+    // which case the caller simply keeps using srcTex.
+    unsigned int applyBandwidth(unsigned int srcTex, int srcW, int srcH);
 };
 
 } // namespace pom2

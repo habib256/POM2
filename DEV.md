@@ -1040,6 +1040,19 @@ luminanceGain ordering matches OpenEmulator's display shader
 - **Shadow mask** uses the Lottes dark/light triplet (off-channels → 0.5, lit
   channel → 1.5) so the triad preserves average luminance, instead of the old
   pure-primary `(1,0,0)` mask that crushed 2/3 channels and over-darkened.
+- **Mask pitch is glass, not signal** (2026-09-04). The mask's horizontal
+  coordinate is pinned to a constant `kMaskUnitsX = 1120.0` (the 560-dot line
+  at 2 units/dot), *not* derived from `uSrcSize.x`. It used to be, and since
+  the triad period is a fixed 3 units that put half as many triads on screen in
+  the 280-wide modes (legacy `frame`: 40-col text, 40-col HGR, lo-res) as in
+  the 560-wide ones (`frame80`: 80-col, DHGR, Chat Mauve, OE demod) — flipping
+  video mode changed the tube. A real CRT's triad pitch is fixed in millimetres
+  whatever resolution it is fed. The vertical axis deliberately keeps
+  `uSrcSize.y * 2.0`: the scanline count **is** a signal property (192 real
+  beam sweeps), the mask is not. 560 was chosen as the reference over 280 so
+  every 560-wide mode — including both OE paths — stays pixel-identical.
+  Checked by `crt_barrel_view` (exit 3 on mismatch); no ctest pin is possible
+  because the shader needs a GL context.
 - **Phosphor curve** (`phosphorGamma`, default 1.0 = identity) is a
   per-channel power law `rgb = rgb^γ` on the beam intensity → emitted light,
   applied after BCS and before the spatial scanline/mask modulation (which
@@ -1048,6 +1061,42 @@ luminanceGain ordering matches OpenEmulator's display shader
   deepens shadows for more CRT-like contrast, γ < 1 lifts them. Default
   identity keeps every existing golden/parity test untouched. Slider range
   0.6–2.6, persisted `ntsc_phosphor_gamma`.
+- **Analog RGB bandwidth** (`rgbBandwidthMHz`, default 0 = off) is a separate
+  **pre-pass** at source resolution, ahead of the glass: a 17-tap Hann-windowed
+  sinc low-pass, horizontal, per channel, run on the framebuffer's own sample
+  grid. It models the video chain between machine and tube the way OpenEmulator
+  models its *connection* types. The motivating case is Le Chat Mauve, which
+  has two connectors (`docs/chatmauve_plan.md` § 3.7): a TTL RGB header (square
+  dots — leave the knob at 0) and an analog Péritel socket where R/G/B each
+  leave through a resistor ladder and a trim pot, then a cable (~5-6 MHz).
+  - **Why the source grid, not the screen.** Band-limiting is an operation on
+    the samples. A 560-wide `frame80` is clocked at 14.318 MHz, a 280-wide
+    `frame` at 7.16 MHz, so one MHz figure is a different fraction of Nyquist
+    per mode — which is exactly how one cable behaves, and is why there is no
+    per-mode knob. Measured on the 560 grid (peak-to-peak out of 215):
+
+    | cutoff | 7.16 MHz content (true 560-dot DHGR / COL280) | 3.58 MHz content (280-dot HGR doubled into `frame80`) |
+    |---|---|---|
+    | 3 MHz | 1 | 37 |
+    | 4 MHz | 1 | 161 |
+    | 5 MHz | 1 | 215 |
+    | 7 MHz | 173 | 215 |
+
+    So ~5 MHz softens a genuine 560-dot picture and leaves HGR alone; go to
+    3-4 MHz to soften HGR too. On the 280-wide buffer a 5 MHz cutoff is above
+    Nyquist (3.58 MHz), `applyBandwidth` returns 0 and the pass is **skipped**
+    outright — a no-op that costs nothing, not a transparent filter.
+  - Weights are normalised by their own sum, so DC gain is exactly 1: a flat
+    field keeps its level whatever the cutoff and however the window truncates
+    the kernel (checked — mean 180 → 180, span 0). Dragging the slider must
+    not walk the brightness.
+  - It is a windowed-sinc brickwall, not the 1st-order RC rolloff a real cable
+    has. Deliberate: a knob that reaches "visibly soft" inside its range is
+    more useful than a physically-shaped one that barely does anything, and the
+    transition band of a 17-tap Hann is gentle enough to read as analog.
+  - Graceful degradation, twice: a failed compile or an incomplete FBO zeroes
+    `bwProgram` and logs, leaving the glass pass fully working with the knob
+    inert — the pre-pass must never be able to take the CRT stack down.
 - **Luminance gain** (`luminanceGain`, default 1.0) re-brightens post-mask,
   mirroring OpenEmulator's stage — pairs with scanlines/mask to recover
   brightness.
@@ -1075,8 +1124,8 @@ output Nyquist and alias into moiré "lines". Two-part fix:
 - `MainWindow::drawScreenImage()` computes the on-screen target size **up
   front** and passes it to `CrtEffectStack::process(src, srcW, srcH, dstW,
   dstH)`, which renders the pass at **native output resolution** (decoupled
-  from the source dims, which now only drive the pattern *frequency* via
-  `uSrcSize`). ImGui then blits the result 1:1 — no second resample beat.
+  from the source dims, which now only drive the *scanline* frequency via
+  `uSrcSize.y`; the mask frequency is the fixed `kMaskUnitsX` above). ImGui then blits the result 1:1 — no second resample beat.
 - The shader **analytically anti-aliases** the patterns: `fwidth()` of the
   scanline/mask coordinate measures how many pattern-units one output pixel
   spans; as that approaches Nyquist (which is exactly where the warp

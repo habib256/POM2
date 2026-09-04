@@ -48,7 +48,9 @@
 #include "Memory.h"
 
 #include <GLFW/glfw3.h>
-#include <GL/gl.h>
+// Pom2GL.h, not a bare <GL/gl.h>: that header does not exist on macOS and is
+// frozen at GL 1.1 on Windows, so this harness only ever built on Linux.
+#include "Pom2GL.h"
 
 #include <cmath>
 #include <cstdint>

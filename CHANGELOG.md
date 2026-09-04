@@ -5,6 +5,108 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-04 — A block device with write-back off now says so, standing
+
+Reported as "SCOSWAMP.HDV doesn't seem to get written". Two independent causes,
+one of them ours.
+
+**The silent half.** A floppy folds the host opt-in into the medium: both
+`DiskImage` and `Disk35Image` define `isWriteProtected() = fileWriteProtected
+|| !writeBackEnabled`, so with write-back off the guest is *told no* and DOS
+raises an error. A block device deliberately does not — `ProDOSHardDiskCard::
+writeDataByte` presents a fully writable volume on the grounds that "a real
+hard disk is read/write to ProDOS", and only the 2IMG header WP blocks a write.
+That decision stands (it is what makes a session feel like real hardware), but
+its consequence had no voice anywhere: the guest's save **succeeds**, the
+blocks live in RAM, and they are dropped at eject or quit with nothing on
+screen ever having said so. `MediaBayInfo::hasUnsavedChanges` exists for
+exactly this and was consulted only by the status bar's eject menu — which the
+session that loses work never opens, because its shape is mount, play, quit.
+
+The bay row in Slot Config / Internal Disks & Media now carries a standing
+amber line whenever a loaded bay has write-back off, worded for what actually
+happens on a block device rather than borrowed from the floppy panel's
+"read-only" text, and stronger once `hasUnsavedChanges` is set. No
+guest-visible semantics changed; flipping the block path to report
+write-protect like a floppy would be a policy reversal, and is deliberately
+not done here.
+
+**The other half, in the neighbouring repo** (`pom2adventure`, recorded here
+because it is what actually made the image stale): `make hdv` aborted before
+touching the image because `SCOSWAMP.MORE/TOOLS/build/build_prodos_volume` was
+missing, and the guard rule printed the two cmake lines then `exit 1`. That
+build directory is gitignored, so it vanishes on any clean; the .hdv is
+gitignored too but survives in the working tree, so the emulator kept booting a
+stale image — 13 hours older than the `SCOSWAMP.BIN` it was supposed to
+contain. The rule now runs those two commands instead of reciting them.
+
+## 2026-09-04 — Le Chat Mauve gets its second connector: an analog RGB bandwidth stage
+
+The OpenEmulator work POM2 had ported was the *display* half — barrel,
+scanlines, mask, persistence, vignette, gamma — and `CrtEffectStack` already
+applied all of it to the Chat Mauve. What was missing was the half OE calls the
+**connection**: the video chain between machine and tube, which is not the same
+cable in every setup. The composite pipelines model theirs inside the
+demodulator; the RGB ones had none at all and emitted perfectly square dots.
+
+The Chat Mauve is the case that makes this concrete. The cards have two
+connectors (`docs/chatmauve_plan.md` § 3.7): a TTL RGB header, and an analog
+Péritel socket where R, G and B each leave through a resistor ladder and a trim
+pot before a metre of cable. POM2 rendered both identically. `NtscParams::
+rgbBandwidthMHz` (default **0 = off**, so no existing look moves) now drives a
+17-tap Hann-windowed sinc low-pass — horizontal, per channel — as a pre-pass at
+source resolution ahead of the glass.
+
+The non-obvious part is *where* it runs. Band-limiting is an operation on the
+sample grid, not on the screen, and the Apple II's two framebuffer widths are
+two different clocks: `frame80` is sampled at 14.318 MHz, `frame` at 7.16 MHz.
+Filtering there means one MHz figure lands correctly on every mode with no
+per-mode special case — which is what a real cable does. Measured swing out of
+215 on the 560 grid: at 5 MHz, 7.16 MHz content (a true 560-dot DHGR/COL280
+picture) drops 215 → 1 while 3.58 MHz content (280-dot HGR doubled into
+frame80) stays at 215; drop to 3-4 MHz and HGR softens too. On the 280-wide
+buffer 5 MHz is above Nyquist, so `applyBandwidth` returns 0 and the pass is
+skipped outright rather than run as an identity.
+
+Kernel weights are normalised by their own sum, so DC gain is exactly 1 and
+dragging the slider cannot walk the picture's brightness (flat field: mean
+180 → 180, span 0). A failed shader compile or an incomplete FBO zeroes
+`bwProgram` and logs — the knob goes inert, the glass pass keeps working.
+Persisted as `ntsc_rgb_bandwidth_mhz`; slider under "Analog link" in CRT
+Settings. Checked by `crt_barrel_view` (exit 4), which also prints the sweep.
+
+## 2026-09-04 — Shadow-mask pitch is a property of the glass, not of the signal
+
+`CrtEffectStack`'s shadow mask derived its horizontal coordinate from the
+source framebuffer: `oxBase = uv.x * (uSrcSize.x * 2.0)`. Since the triad
+period is a fixed 3 units, that tied the number of triads on screen to the
+video mode. The 280-wide modes (Apple2Display's legacy `frame`: 40-col text,
+40-col HGR, lo-res) got a mask exactly **twice as coarse** as the 560-wide ones
+(`frame80`: 80-col, DHGR, Le Chat Mauve, and the OE demod output, which is 560
+too) — so merely switching video mode, or a program flipping to 80 columns,
+visibly changed the tube the picture was being displayed on.
+
+A real CRT's triads have a fixed pitch in millimetres whatever resolution is
+fed to it. The coordinate is now pinned to the 560-dot line at the same
+2-units-per-dot scale the scanline coordinate uses for rows: `kMaskUnitsX =
+1120.0`. Note the asymmetry is principled, not an oversight — the row axis
+never had the bug and keeps `uSrcSize.y * 2.0`, because the scanline count *is*
+a signal property (192 real beam sweeps) while the mask is not. Choosing 560
+rather than 280 as the reference leaves every 560-wide mode (including both OE
+paths, where the mask is most used) pixel-identical and only brings the
+280-wide ones onto the same glass.
+
+No ctest pin is possible — the shader needs a GL context and CI has none — so
+the check lives in the existing offscreen harness `crt_barrel_view`, which now
+renders a flat field at 280 and at 560 through an aperture grille and counts
+the triads landing on an identically-sized output; mismatch is exit code 3.
+Measured before the fix: 298 vs 596 sign changes. After: 596 vs 596. All
+three offscreen GL harnesses also stopped being Linux-only in passing —
+`crt_barrel_view`, `oe_signal_view` and `ntsc_oe_ab_tool` each included a bare
+`<GL/gl.h>`, which does not exist on macOS (and is frozen at GL 1.1 on
+Windows), so none of them had ever once built there. They all go through
+`Pom2GL.h` now, which is what made the measurements above possible at all.
+
 ## 2026-09-02 — OLDSKOOL crash fixed: Mockingboard MMIO sync lands on the access data cycle
 
 French Touch's standalone `oldskool.dsk` (FORT ET VERT, SHADOW 2021) blew the

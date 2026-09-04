@@ -852,6 +852,39 @@ void MainWindow::renderMediaPanel()
                             settings->save();
                         }
                         ImGui::EndDisabled();
+
+                        // Standing warning, not just an eject-time one. The
+                        // status bar's eject menu already asks before pulling
+                        // a bay with unsaved blocks, but the session that
+                        // loses work never opens it: mount, play, quit. And
+                        // unlike a floppy — whose isWriteProtected() folds in
+                        // `!writeBackEnabled`, so the guest is told no — a
+                        // block device deliberately presents a fully writable
+                        // volume with write-back off (ProDOSHardDiskCard::
+                        // writeDataByte: "a real hard disk is read/write to
+                        // ProDOS"). The guest's save therefore SUCCEEDS, the
+                        // file never changes, and nothing anywhere says so.
+                        // That is the gap this line closes.
+                        if (info.loaded && !info.writeBackEnabled) {
+                            ImGui::TextColored(
+                                ImVec4(0.95f, 0.6f, 0.4f, 1.0f),
+                                info.hasUnsavedChanges
+                                    ? "Write-back off — this volume has "
+                                      "already been written to, and none of "
+                                      "it will reach the file"
+                                    : "Write-back off — nothing written here "
+                                      "will reach the file");
+                            if (ImGui::IsItemHovered())
+                                ImGui::SetTooltip(
+                                    "Off by default so running a program "
+                                    "never silently rewrites your image.\n"
+                                    "A block device still reports itself "
+                                    "writable to ProDOS, so the guest's save "
+                                    "appears to succeed —\nthe blocks live "
+                                    "in memory and are dropped on eject or "
+                                    "quit.\nTick Write-back above to let "
+                                    "them be saved.");
+                        }
                     }
 
                     if (!info.lastError.empty())

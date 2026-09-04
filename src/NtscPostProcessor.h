@@ -93,6 +93,30 @@ struct NtscParams
     // half of the phosphor model).
     float phosphorGamma = 1.0f;  // 0.6..2.6 (1.0 = flat)
 
+    // Analog RGB bandwidth, in MHz — the video chain between the machine and
+    // the tube, modelled the way OpenEmulator models its "connection" types.
+    // A digital/TTL RGB link carries square dots and needs no filter; an
+    // ANALOG one does not. The Le Chat Mauve cards are the concrete case:
+    // they have two connectors (docs/chatmauve_plan.md § 3.7) — a TTL RGB
+    // header, and a Péritel/SCART socket whose R, G and B each leave through
+    // a resistor ladder and three trim pots, then a metre of cable. That path
+    // rolls off well before the dot rate, so single-dot detail arrives with a
+    // rise time instead of a vertical edge.
+    //
+    // The filter is a windowed-sinc FIR applied horizontally, per channel, on
+    // the SOURCE sample grid — which is what makes it self-consistent across
+    // video modes without a second special case. A 560-wide framebuffer is
+    // sampled at 14.318 MHz, a 280-wide one at 7.16 MHz (`Apple2Display`'s
+    // `frame80` / `frame`), so the same MHz figure is a different fraction of
+    // Nyquist in each: ~5 MHz visibly softens a true 560-dot DHGR / COL280
+    // picture, barely touches a 280-dot HGR one doubled into frame80, and is
+    // above Nyquist — hence a no-op, and skipped outright — on the 280-wide
+    // buffer. That is the real behaviour of one cable carrying all of them.
+    //
+    // 0 = off (the TTL connector, and the default: no existing look changes).
+    // ~5-6 MHz is the analog Péritel figure. CrtEffectStack only.
+    float rgbBandwidthMHz = 0.0f;  // 0 = off, else ~2..8
+
     // PAL composite mode: alternates the Q-subcarrier sign every other
     // scanline (line-phase alternation). On a real PAL TV this cancels
     // hue errors at the cost of vertical chroma resolution; here it
