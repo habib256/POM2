@@ -1,6 +1,6 @@
 # POM2 — TODO
 
-Status as of 2026-09-01 (v0.8.5). This file lists **open work only**: an item
+Status as of 2026-09-05 (v0.9.0). This file lists **open work only**: an item
 that ships is deleted here and its "why" is written up in `CHANGELOG.md`. MAME
 refs → `DEV.md`.
 
@@ -9,24 +9,20 @@ effort in *italics*. File/line in `backticks`.
 
 **Read in this order**:
 
-1. [Next up](#next-up) — the ordered list of what to do next (2026-09-01):
-   Le Chat Mauve (P0-P2 done, P3-P7 + goldens open), the raster offset, the
-   Best1a.nib write-back.
-2. [Priority order](#priority-order) — the 2026-08-28 architecture plan, P0→P3
-   (P0-P2 landed; P3 are rulings).
-3. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
+1. [The shape of the risk](#the-shape-of-the-risk-2026-09-05) — what a
+   measurement of the tree says about *where* defects can still hide. This is
+   the evidence the ordering below rests on; read it before disagreeing with
+   the ordering.
+2. [Next up](#next-up) — two tracks that compete for the same hours, named
+   as such: **A · verification shape**, **B · fidelity**.
+3. [The scope question](#the-scope-question) — the one thing nothing in this
+   repo currently answers.
+4. [Priority order](#priority-order) — the 2026-08-28 architecture plan, kept
+   as history. Its P0-P2 landed; its P3 are rulings.
+5. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
    currently gets wrong *on purpose*, with the reason.
-4. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
-5. [Backlog](#backlog) — everything else, by subsystem.
-
-**What to do next, in order (2026-09-01):** the three items under
-[Next up](#next-up) — Le Chat Mauve at the silicon, the raster "offset" DIX exposed
-(closed 2026-09-02 — it was the 6522 T1 read-back bias), and the Best1a.nib
-finding. The 3.5"
-campaign that used to sit here (//c+, Liron card, plain //c over the SmartPort
-bus) closed on 2026-09-01; the
-[hand-assembled ROM family](#prodos-status-the-hand-assembled-rom-family)
-closed on 2026-08-28.
+6. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
+7. [Backlog](#backlog) — everything else, by subsystem.
 
 **A note on what the 2026-08-28 P0 pass actually found.** Three of the four
 items landed, and every one of them turned up something the plan had not
@@ -39,13 +35,118 @@ commented, and never read. None of these fail loudly; all three were found by
 running the guard rather than by reading it. Worth remembering the next time a
 guard is added: write the test that makes it FAIL.
 
+## The shape of the risk (2026-09-05)
+
+Measured, not felt. Numbers from `src/` excluding `third_party/`.
+
+**The test net is a donut.** 71 400 lines of tests against 159 300 of source is
+a serious ratio, and the emulation core is where they are. **25 % of
+`src/*.cpp` — 27 084 lines of 105 108 — is linked by no test at all**, and it
+is not spread evenly: it is the **host side**. 22 257 lines of `MainWindow_*` /
+`*_ImGui`, plus ~2 300 lines of coordinators.
+
+That is not "the UI needs a GL context". **That region holds policy, not
+painting**: `persistMediaBay`, the write-back semantics, the profile-forced
+slot map, ROM resolution — what decides whether a session's work reaches the
+disk. Both causes of the 2026-09-04 HDV report were there.
+
+And it is untested **by coupling, not by choice**. Linking a settings
+round-trip for `StorageCoordinator` dragged in `EmulationController` and
+fifteen more sources, because the class mixes its pure capture/persist half
+with mount/eject calls that go through the controller. The most consequential
+file on the host side is hard to test *by construction*.
+
+**The signature failure is drift between parallel paths.** Three instances
+surfaced in a single day (2026-09-04), all the same shape — two siblings, one
+updated:
+
+| Contract | Sibling A | Sibling B |
+|---|---|---|
+| Write-protect | `DiskImage` / `Disk35Image` fold in `!writeBackEnabled` | `Block512Backing` does not |
+| Resync before a slot rebuild | Disk II and CFFA: path **and** write-back | HDV: path partly, write-back never |
+| CRT glass pitch | Scanlines from source height (right) | Shadow mask from source width (wrong) |
+
+Each path is tested on its own; nothing asserts that all of them obey the same
+rule. That is what a **contract test** is for, and POM2 has none.
+
+**Three blind spots, by construction rather than by neglect:**
+
+- *Anything needing a context is unpinned.* The shaders have no ctest — CI has
+  no GL — so the checks live as exit codes inside `crt_barrel_view`. A whole
+  half of the render path rests on review.
+- *The nightly can be red without anyone knowing.* Sanitizers run only on
+  `schedule`; push CI stays green. Three real defects waited two days
+  (2026-09-03 → 05).
+- *A path exercised only at release can only break at release.* linuxdeploy's
+  moving `continuous` tag rotated on 2026-09-01 and was discovered during the
+  v0.9.0 run, after four other platforms had already gone green.
+
+**A method risk worth naming**, evidenced on 2026-09-04: prose volume can
+substitute for verification. The TSan fix passed one run with the fix
+*reverted* — a single green run would have "confirmed" a change that did
+nothing. Looping gave the real answer (9 races in 15 runs without it, 0 in 30
+with it). A well-written explanation of a fix is not evidence that it fixes
+anything.
+
 ## Next up
 
-Ordered on 2026-09-01. These come before everything in
-[Priority order](#priority-order) and [Backlog](#backlog); each is written so
-that whoever picks it up can start without re-deriving the finding.
+Two tracks. They **compete for the same hours**, and saying so is the point of
+splitting them: track A changes how fast defects are found, track B changes
+what POM2 can show. Do not pretend one list orders both.
 
-### 1 · 🟠 Le Chat Mauve at the silicon — `docs/chatmauve_plan.md`
+### Track A · verification shape
+
+Ordered by return, not by size.
+
+#### A1 · 🟠 One contract test across the parallel media paths — *≈1 d*
+
+The direct antidote to the drift table above. One test that enumerates every
+medium — `DiskImage`, `Disk35Image`, `Block512Backing`, the SmartPort units —
+and asserts the same invariants on each:
+
+- what `isWriteProtected()` reports with write-back off;
+- whether an eject clears the persisted path;
+- whether a mount preserves the write-back opt-in;
+- whether a flush is a no-op when nothing is dirty.
+
+Where a path diverges **on purpose** — `Block512Backing` presents a writable
+volume because "a real hard disk is read/write to ProDOS"
+(`ProDOSHardDiskCard::writeDataByte`) — the test states the divergence rather
+than papering over it. A contract that is written down once is a contract the
+next card cannot quietly fail.
+
+#### A2 · 🟠 Split `StorageCoordinator`'s pure half — *≈1 d*
+
+`captureRebuildSnapshot`, `persistRebuildSettings`, `persistSessionSettings`
+and the snapshot structs need no `EmulationController`. Extracted, ~600 lines
+become testable without linking the emulator, and
+`tests/storage_rebuild_persist_test.cpp` stops dragging fifteen sources.
+The 2026-09-04 resync gap would have been impossible to introduce.
+
+#### A3 · 🟠 Notify on a red nightly — *≈1 h*
+
+A few lines of YAML on the `sanitizers` job. Cost/benefit is absurd in its
+favour: the three defects fixed on 2026-09-04 had been sitting since 09-03,
+invisible because push CI is a different workflow.
+
+#### A4 · 🟡 A weekly release rehearsal — *≈½ d*
+
+Run the packaging path — fetch, build, verify, **do not publish** — on a
+schedule. `packaging/linux/fetch_appimage_tools.sh` is only ever executed by a
+release, so its pins can only ever fail during one. A rehearsal would have
+caught the linuxdeploy rotation on 09-01 instead of 09-05. Cheap generalisation:
+*every path that only runs at release needs a scheduled dry run.*
+
+#### A5 · 🟡 A CI leg with software GL — *≈1 d*
+
+Mesa llvmpipe + Xvfb on a Linux runner. Turns `crt_barrel_view`'s mask-pitch
+and bandwidth checks into real ctest entries, and — more importantly — stops
+the UI being out of reach *on principle*. It is the precondition for ever
+testing the 22 000 lines in track A's donut hole.
+
+### Track B · fidelity
+
+#### B1 · 🟠 Le Chat Mauve at the silicon — `docs/chatmauve_plan.md`
 
 **P0-P2 landed 2026-09-01** (CHANGELOG of that day): one card, four variants
 (Féline · Adaptateur //c · Eve · Video-7 by `chatmauve_variant`), the Féline's
@@ -57,6 +158,12 @@ CP280 runs with 80COL off) and the COL280 bit order read off `& PLOT`'s bytes
 (2-dot cells of the 560 stream). `tests/purplesoft_eve_probe.cpp` boots the
 demo disk with an Eve and writes the frames; `DEMO GR16K` / `DEMO TEXTE` come
 out as the maker drew them.
+
+The card also got its **second connector** on 2026-09-04:
+`NtscParams::rgbBandwidthMHz` low-passes the RGB on its own sample grid, so the
+TTL header and the analog Péritel cable no longer render identically. The three
+trim pots (R/G/B gain, Féline manual p. 13) are **not** modelled; they belong in
+the same pre-pass.
 
 **What is left, in order** (plan § 5):
 
@@ -100,151 +207,46 @@ abstraction catalog (2026-09-02). 🟢 Four cards have no row in
 card), **workstation**, **4play**, **transwarp**. Classify them in the doc
 AND `abstractionCatalog()` together — the two are kept in step by hand.
 
-**Found on the way — fixed the same day** (CHANGELOG 2026-09-01): headless
-DOS 3.3 paid RWTS's one-second motor-on wait on nearly every sector because
-the legacy nibble gate stopped the spindle instantly on `$C0E8`, freezing the
-latch RWTS polls before `$C0E9`. The legacy path now models the analog card's
-556 one-second coast like the bit-LSS path's MODE_DELAY; boot to the
-Purplesoft prompt went from 115 s to under 10 s of machine time. Pinned
-`diskii_motor_coast`.
+## The scope question
 
-### 2 · ✅ "Mid-scanline raster offset" — T1 read-back + per-kind column offset, both fixed 2026-09-02
+Nothing in this repo answers it, and it is the largest long-term risk — larger
+than any open defect.
 
-**What it really was.** The symptom filed here on 2026-09-01 (raster bars vs
-the frame art, edges off by about a character cell, seen on DIX) was NOT the
-horizontal placement of the mid-line soft-switch — it was the whole raster
-**crawling**. TRIBU (DIX's Unreeeal Superhero 3 tribute, GPLv3 sources in
-`disks_5.4/demo/unreeeal_superhero_3_tribute/`) phase-locks five chained VIA
-T1 IRQs per PAL frame, each handler re-arming with `TIMERn - IntL + counter
-read-back` (`ADC $C404 … STA $C405`, 21 cycles read→write, `DELAY = 24 ;
-value FOR APPLEWIN / REAL APPLE II`). POM2's T1 read-back used MAME's
-`-IFR_DELAY` bias; the release-tuned constant fixes the hardware line at
-`written + 1 - elapsed` — one cycle higher. Each link lost one cycle,
-measured -5 cycles/frame on the real disk: every switch column drifted left
-one character cell every ~3 frames, through HBL and onto the previous line.
-Fixed in `Via6522.h` (read-back bias -1, armed and free-running alike; the
-continuous period stays latch+2). Pinned by `via_t1_rearm_chain`; measured
-drift-free on TRIBU by `dix_menu_raster_probe` (arms locked to scanlines
-0/64/88/176/184, the demo's design). The DIX menu's own rasters
-(T2-timed, HBL-placed) were already exact — `frameCycleToPos`'s hpos-24
-mapping survives MAD EFFECT, the menu AND TRIBU untouched.
+POM2 covers nine machine profiles, dozens of slot cards, three network stacks,
+printers down to character ROMs and PDF export, an HGR/DHGR paint editor, a
+sprite editor, a 3D voxel view, a run-control debugger, an HTTP control server,
+a WASM build, an SDK, Floppy Emu, TNFS and PostScript by delegation. Every one
+of them has a long tail. The parity dashboard can only grow.
 
-**Still open, and now a title exhibits it (OLDSKOOL, below)**: the residual
-"mid-scanline split — exact transition cycle at character-clock" refinement
-under [Display](#display-hgr--dhgr--80-col) — a per-kind fetch-side vs
-display-side one-cycle offset in `frameCycleToPos` (`byteCol = hpos - 24`,
-calibrated ONLY on MAD EFFECT's `$C055`/PAGE2 mid-line switch).
+`docs/lle_vs_hle.md` answers "at what **level** do we model this?" — well, and
+per subsystem. Nothing answers **"what is central, and what may freeze without
+guilt?"** Those are different questions, and the second one is what decides
+whether the tail is a strength or a debt.
 
-**A measured case arrived 2026-09-02 — OLDSKOOL — and it turned out to be
-TWO bugs stacked, only one of which is fixed.** User screenshot: OLDSKOOL
-FORT ET VERT (French Touch 2021, the SHADOW-party 8KB intro, also a DIX
-part) shows its side raster bands ~7 px (= one character cell) off — the
-TV-set art's left/right edges do not line up with the raster-band
-boundaries the demo draws to frame it.
-
-  1. **CPU cycle count (FIXED via the new profile).** The per-scanline
-     dispatcher is `LSR TBUFFER,X` — RMW abs,X, **7 cycles on the 6502,
-     6 on the 65C02** (real-hardware difference; `M6502::RmwAbsX` models
-     both). On a 65C02 every 65-cycle line loop runs in 64 and each mid-line
-     switch walks one cycle further left per line — a *staircase* (`tests/
-     oldskool_raster_probe`: NMOS = HIRES switch locked at hpos 26 on all
-     66 band lines; CMOS = hpos sweeping 26→25→24…). The `.nfo` says so:
-     "Apple IIe (not Enhanced), 6502 required". → the `Apple //e Unenhanced
-     PAL (50 Hz)` profile landed (key `iie-u-pal`, aliases `frenchtouch`/
-     `//e-u-pal`; NMOS + PAL + `apple2e_unenh` probes; menu slot between //c+
-     and Enhanced PAL; pinned by `system_profile_smoke` + `cli_kiosk`).
-
-  2. **Residual fixed 1-column offset (FIXED 2026-09-02).** With the
-     machine on the genuine-NMOS profile (verified live: `/status` →
-     `Apple //e Unenhanced PAL`, `cpu_mode: nmos`), the ~7 px offset
-     **persisted** — a *fixed* shift, not a staircase — so it was NOT the
-     CPU cycle count but the `frameCycleToPos` per-kind mapping. `hpos - 24`
-     was calibrated only on MAD EFFECT's `$C055` (PAGE2, *fetch-side*: it
-     picks the address the scanner reads NEXT, effect one byte later).
-     OLDSKOOL's mid-line switches are `$C056`/`$C057` (hi-res) and `$C05F`
-     (AN3/DHIRES), which are *display-side* — they re-interpret the byte
-     being fetched NOW, one character cell LEFT of a page flip on the same
-     cycle. `Apple2Display_Beam.cpp::beamColForEvent` now pulls HiRes / Dhgr
-     / An3 back one column (to `hpos-25`) while PAGE2 and everything else
-     stay on `hpos-24`. User-confirmed on the live demo, aligned in BOTH the
-     Chat Mauve RGB and OpenEmulator composite paths. (My earlier note here,
-     "POM2 is faithful for the machine selected", was WRONG — the machine
-     was necessary but the mapping was the second half.)
-
-**How it was fixed (scope kept to the evidence).** Only the kinds OLDSKOOL
-actually exercises — HiRes / Dhgr / An3 — were shifted; PAGE2 / 80Store stay
-fetch-side, and TextMode / MixedMode were LEFT at `-24` (no measured title
-flips them mid-line, and `$C050/$C051` changes the fetch region too, so their
-side is genuinely ambiguous — revisit only with a measured case). Result:
-OLDSKOOL aligns, and MAD EFFECT (`madef_phase_probe`), DROL
-(`drol_pageflip_render`), DIX (`dix_menu_raster_probe`) and the three
-`horizontal_split` pins (which flip TextMode mid-line) all stay green with no
-edits. New pin `raster_switch_kind_offset` locks the relationship: a mid-line
-HiRes split lands exactly one byte column LEFT of a PAGE2 split on the same
-cycle. Measurement blocker from the earlier note (the standalone `oldskool.
-dsk` crashes to DOS after its SHADOW intro; live-driving auto-cycles) was
-sidestepped: the direction was derived from the fetch/display pipeline and
-confirmed on the live DIX-packaged OLDSKOOL screen.
-
-### 3 · 🟡 `Best1a.nib` did not boot — a write-back had eaten 20 bytes (fixed 2026-09-01, cause open)
-
-**What was wrong.** `disks_5.4/gist/Best1a.nib` had, at track 0, physical
-sector 7 (DOS logical 4 — the `$BA00` page of DOS itself), the 8 sync bytes,
-the `D5 AA AD` prologue and the first 12 nibbles of the data field replaced by
-`F0 FF FF FF BF FC FD F9 FC FB E7 CF BF BF FF FF FF FF FF FF FC FF F7`: 20
-bytes, offsets 2915-2937 of the track, *nothing else on the whole disk*.
-DOS 3.3's boot 1 reads track-0 sectors 0-9 through the PROM's read loop, which
-has no timeout, so the machine sat in the `$C65E` prologue hunt for ever,
-motor on. **Not a bad dump**: git has the file before and after commit
-`06f8d62` (2026-07-30, "Update gist disk images from emulator write-back"),
-and the earlier version is clean — POM2's own write-back did this. Restored
-from `f1e6bb6`; the disk boots to its menu (Montezuma's Revenge, Mario Bros,
-Shamus, H.E.R.O.), waiting for a key in the //e firmware's KEYIN loop at
-`$C27F` — which is also what `Best4a`, `Best5a` and `Best3b` do (earlier notes
-took that `$C2xx` loop for an empty-slot jump; it is the internal ROM).
-`Best1b`, `Best3a` are the data sides: "NOT A STARTUP DISK." / no boot sector,
-by design. The damaged copy is kept off-repo for the investigation below.
-
-**What is open — the cause.** Twenty bytes of almost-all-ones with a stray
-zero every 6-9 bits is what the LSS's *write* of a handful of self-sync `$FF`
-bytes looks like once re-serialised into a byte-aligned `.nib`: a write pulse
-of about 740 cycles at a random spot on track 0, then nothing — no data field
-followed, so it was not a sector write, and DOS never rewrites that sector
-anyway. Two candidates. (a) A **soft-switch write reaching the Disk II that
-was not meant for it** — the same class as the bus-traffic corruption fixed on
-2026-09-01 (`iic_external_smartport` case A, 8/31 flushes before the fix): on
-a //c the SmartPort firmware's probe drives `$C0ED/$C0EF` (Q6/Q7) behind the
-IWM decode, and on a 5.25" card those are "load" and "write". Case C now
-pins that an *empty* port leaves the 5.25" untouched (0 flushes today), but
-that is today's code: 2026-07-30 was the day of "Remove two per-instruction
-hotspots" + "Cache the plugged slot cards to shorten the per-instruction
-fan-out" (`6e9e0f2`, `d16d1bd`), i.e. the slot dispatch was being rewritten
-under the session that wrote the file. (b) A **write-back splice** landing at
-the wrong offset: `saveDirty` splices dirty quarter-tracks back into the
-stream (CHANGELOG 2026-08-22, "three ways a disk write could vanish"), and a
-splice of a *correct* rewrite at a 20-byte offset would look exactly like
-this — but nothing legitimately wrote that sector. To settle it (*½ d*): boot
-every `.nib` in `disks_5.4/gist` headless on the //e PAL, //c and //c PAL
-profiles with write-back on and diff the images after 60 M cycles plus a
-reset; then the same on a `6e9e0f2` worktree. Until then, a `.nib` that stops
-booting is to be diffed against git before anything else — `cmp -l` by
-track (6656 bytes) says in one line whether it is the disk or the emulator.
-`nibwalk.py` (address/data-field walk + 6&2 decode) and the `nibboot`
-harness (PC histogram + text page) live in the 2026-09-01 session scratchpad;
-worth landing as `tools/nibcheck.py` the next time one is needed.
+🟡 *Write that ruling.* Three buckets is enough: **core** (kept at parity, gets
+goldens), **supported** (works, fixed on report, no proactive work), **frozen**
+(present, documented as frozen, no promise). Put each subsystem in one. The
+value is not the list — it is being allowed to say "no" to the tail in writing,
+once, instead of re-deciding it every session.
 
 ## Priority order
 
-From the 2026-08-28 architecture assessment. **Not a second backlog** — feature
-items stay under [Backlog](#backlog); this says what to do *next* when choosing
-among them. Levels are sequential: P0 before anything else. Priorities that land
-are deleted here and written up in `CHANGELOG.md`.
+**History, kept for its rulings.** This was the ordering from the 2026-08-28
+architecture assessment; [Next up](#next-up) supersedes it as *what to do next*.
+It stays because P3 is a set of standing decisions rather than work, and because
+the standing rule below is wired to a mechanism that still runs.
 
-The assessment's finding in one line: POM2 was **well above average on the hard
+The 2026-08-28 finding in one line: POM2 was **well above average on the hard
 axes** (concurrency discipline, hardware fidelity, test density) and **below it
 on the easy ones** (one god-object, six hand-written ROMs with no assembler).
-Both weak axes had already produced a silent bug; **both are closed as of
-2026-08-28** — P0 and P1 are done, and what is left below is P2 and P3.
+Both weak axes had already produced a silent bug; both closed on that date —
+P0 and P1 landed, and P2 followed.
+
+The 2026-09-05 assessment ([The shape of the
+risk](#the-shape-of-the-risk-2026-09-05)) does not contradict it — it says the
+same sentence one layer out. The hard axes are still strong. The weak axis is no
+longer a god-object: it is that **the emulation core is pinned and the host side
+is not**, and that nothing asserts two sibling device paths obey one contract.
 
 Standing rule, and it is a mechanism now rather than a request: **do not grow
 the god-objects.** A new card gets its panel in its own `*_ImGui.cpp` and
@@ -400,9 +402,9 @@ size ratchet, the CI platform gap, the test-timing gap and most of the
 
 ## Quick wins
 
-High impact/effort ratio, and independent of the architecture work. When the
-two compete, [Priority order](#priority-order) wins — P0 is four hours and
-closes a bug class.
+High impact/effort ratio, and independent of the tracks above. When the two
+compete, [Next up](#next-up) wins — A3 is one hour and ends a class of silent
+red, A4 is half a day and ends another.
 
 | # | Item                                    | Effort  | Why                                |
 | - | --------------------------------------- | ------- | --------------------------------------- |
@@ -517,8 +519,10 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
 - 🟢 **Mid-scanline split residuals** — 40-col (280) + 80-col (560) mixed on
   the same line is undefined (separate `frame`/`frame80` buffers, scoped
   out). The exact transition cycle at character-clock is no longer a "later
-  refinement": DIX shows it as a one-cell error each side —
-  [Next up § 2](#2--mid-scanline-switch-lands-one-character-cell-off--dixs-rays). **Back-port to POM1** next (gated: LORES+TEXT rendering on
+  refinement": DIX showed it as a one-cell error each side. That symptom is
+  closed — it was the 6522 T1 read-back bias plus a per-kind column offset,
+  both fixed 2026-09-02 (`CHANGELOG.md` of that day; the offset was narrowed
+  to AN3/DHGR the same day after it slid MAD EFFECT left). **Back-port to POM1** next (gated: LORES+TEXT rendering on
   GEN2 — HGR-only today — + HBLANK flag Phase 2 per Bernie's spec).
 - 🟢 **PAL residuals** — device generator clocks (AY/IWM/SSI263) stay at the
   NTSC nominal (0.7 % delta = inaudible pitch, deliberately not retimed;
