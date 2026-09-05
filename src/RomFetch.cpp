@@ -214,7 +214,7 @@ bool extractZipMember(const fs::path& zip, const std::string& member,
     const std::string unzip = ChildProcess::findOnPath("unzip");
     if (!unzip.empty()) {
         return runHostTool(unzip,
-                           { "-o", "-j", zip.string(), member, "-d",
+                           { "-o", "-q", "-j", zip.string(), member, "-d",
                              destDir.string() },
                            {}, 30000, err);
     }
