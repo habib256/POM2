@@ -1,415 +1,805 @@
 # POM2 — TODO
 
-Status as of 2026-09-05 (v0.9.0). This file lists **open work only**: an item
+Status 2026-09-05 · **v0.9.0 → 1.0**. This file lists **open work only**: an item
 that ships is deleted here and its "why" is written up in `CHANGELOG.md`. MAME
 refs → `DEV.md`.
 
-**Format**: `🟠 high · 🟡 medium · 🟢 low` at the head of each item. Indicative
-effort in *italics*. File/line in `backticks`.
+**Format**: `🔴 blocks 1.0 · 🟠 high · 🟡 medium · 🟢 low · 🧊 frozen` at the head
+of each item. Indicative effort in *italics*. File/line in `backticks`.
 
 **Read in this order**:
 
-1. [The shape of the risk](#the-shape-of-the-risk-2026-09-05) — what a
-   measurement of the tree says about *where* defects can still hide. This is
-   the evidence the ordering below rests on; read it before disagreeing with
-   the ordering.
-2. [Next up](#next-up) — two tracks that compete for the same hours, named
-   as such: **A · verification shape**, **B · fidelity**.
-3. [The scope question](#the-scope-question) — the one thing nothing in this
-   repo currently answers.
-4. [Priority order](#priority-order) — the 2026-08-28 architecture plan, kept
-   as history. Its P0-P2 landed; its P3 are rulings.
-5. [Open, and known to be open](#open-and-known-to-be-open) — things POM2
-   currently gets wrong *on purpose*, with the reason.
+1. [What 1.0 means](#what-10-means) — the gate. Everything below is ordered
+   against it, and nothing else in this repo answered it before 2026-09-05.
+2. [The road to 1.0](#the-road-to-10) — six gates, ordered. This is the work.
+3. [The scope ruling](#the-scope-ruling) — core / supported / frozen, per
+   subsystem. It is what makes the rest of this file finite.
+4. [The shape of the risk](#the-shape-of-the-risk) — the measurement the
+   ordering rests on. Read it before disagreeing with the ordering.
+5. [Standing rulings](#standing-rulings) — decisions, not work. Do not
+   re-litigate without new evidence.
 6. [MAME ↔ POM2 parity](#mame--pom2-parity-dashboard) — the fidelity dashboard.
-7. [Backlog](#backlog) — everything else, by subsystem.
+7. [Backlog](#backlog) — **post-1.0 by default**, by subsystem.
 
-**A note on what the 2026-08-28 P0 pass actually found.** Three of the four
-items landed, and every one of them turned up something the plan had not
-predicted, always the same shape: *a mechanism that reported success while
-doing nothing.* The version header was generated to the wrong path, and a
-stale copy kept local builds compiling against a two-release-old version while
-no clean checkout could build at all. The file-size ratchet aborted on macOS's
-bash 3.2 **with exit status 0**. `POM2_FOUNDATION_SOURCES` was written down,
-commented, and never read. None of these fail loudly; all three were found by
-running the guard rather than by reading it. Worth remembering the next time a
-guard is added: write the test that makes it FAIL.
+**A method note, kept at the top because it has been earned three times.**
+*A mechanism that reports success while doing nothing* is this project's
+signature defect: the version header generated to the wrong path, the file-size
+ratchet aborting on bash 3.2 **with exit status 0**, `POM2_FOUNDATION_SOURCES`
+written down and never read, the TSan fix that passed one green run with the fix
+*reverted*. All were found by **running** the guard, never by reading it. Write
+the test that makes it FAIL. And prose volume is not verification: a
+well-written explanation of a fix is not evidence that it fixes anything.
 
-## The shape of the risk (2026-09-05)
+**A second one, new on 2026-09-05.** This file was audited against the tree and
+roughly twenty of its items were stale — three of the four rows in its own
+headline drift table were already fixed, an item called the SSC IRQ DIP
+unimplemented in two places while `SuperSerialCard.cpp:492` implements it, the
+`MainWindow.cpp` god-object item still said 8 319 lines against a file of 1 408,
+and a dozen `file:line` citations no longer pointed at what they named. **A TODO
+that describes a tree that no longer exists is the same class of defect as a
+guard that returns 0** — it reports work that is not there. Re-verify a citation
+before acting on it, and delete on landing.
 
-Measured, not felt. Numbers from `src/` excluding `third_party/`.
+## What 1.0 means
 
-**The test net is a donut.** 71 400 lines of tests against 159 300 of source is
-a serious ratio, and the emulation core is where they are. **25 % of
-`src/*.cpp` — 27 084 lines of 105 108 — is linked by no test at all**, and it
-is not spread evenly: it is the **host side**. 22 257 lines of `MainWindow_*` /
-`*_ImGui`, plus ~2 300 lines of coordinators.
+**1.0 is not "no known bugs" and not "the parity dashboard is green".** Neither
+is reachable: the dashboard can only grow, and the tail is infinite by
+construction. 1.0 is four claims, and each is falsifiable:
 
-That is not "the UI needs a GL context". **That region holds policy, not
-painting**: `persistMediaBay`, the write-back semantics, the profile-forced
-slot map, ROM resolution — what decides whether a session's work reaches the
-disk. Both causes of the 2026-09-04 HDV report were there.
+1. **Everything POM2 says about itself is true.** README, the card picker, the
+   ROM Status panel and the Welcome text describe the tree as it is — no card
+   billed as working that is silent, no feature credited to a platform whose
+   package does not contain it, no limitation listed that was closed in
+   September.
+2. **What POM2 does not promise is written down, once.** That is
+   [the scope ruling](#the-scope-ruling). Without it the tail is a debt; with
+   it, the same code is a documented strength.
+3. **The release is repeatable and lawful.** It can be built from a clean
+   checkout by someone who is not the author, on a schedule rather than on a
+   tag, and everything inside the package may be redistributed.
+4. **No known defect silently destroys or corrupts a user's data.** Media
+   write-back, settings persistence and snapshots are the only three paths that
+   can lose something the user cannot regenerate. All three currently have a
+   named defect ([G2](#g2--the-three-defects-that-reach-a-users-data-)).
 
-And it is untested **by coupling, not by choice**. Linking a settings
-round-trip for `StorageCoordinator` dragged in `EmulationController` and
-fifteen more sources, because the class mixes its pure capture/persist half
-with mount/eject calls that go through the controller. The most consequential
-file on the host side is hard to test *by construction*.
+**Explicit non-goals for 1.0**, so they stop competing for the same hours: the
+MAME `a2bus` port backlog (Videx, Mountain Music, E-Z Color, SCSI, The Mill, PC
+Transporter), the analog IIR composite pipeline, ayumi-grade FIR resampling, the
+Saturn 128K LC, the native `FujiNetDevice` phases 2-4, the Workstation Card's
+LocalTalk endpoint, and every fidelity residual the dashboard lists as 🟢. None
+of them is refused; all of them are *after*.
 
-**The signature failure is drift between parallel paths.** Three instances
-surfaced in a single day (2026-09-04), all the same shape — two siblings, one
-updated:
+**The one thing 1.0 buys that 0.9 does not** is the right to say no. Today every
+open item is implicitly owed. After the ruling, three quarters of them are not.
 
-| Contract | Sibling A | Sibling B |
+## The road to 1.0
+
+Six gates. They are **ordered by whether the next gate is worth doing if this
+one is wrong** — not by size, and not by appetite. G1 first because a package
+that cannot be distributed makes every other gate moot; G2 second because it is
+the only class that destroys something the user cannot get back.
+
+Total: roughly **12-16 working days** at this tree's measured pace, of which
+G1+G2 is under three.
+
+| Gate | What it is | Cost | Blocks 1.0? |
+|---|---|---|---|
+| [G1](#g1--what-we-are-allowed-to-ship-) | What we are allowed to ship | 1-2 d + one decision | **yes** |
+| [G2](#g2--the-three-defects-that-reach-a-users-data-) | Three defects that reach a user's data | ½ d | **yes** |
+| [G3](#g3--make-the-words-true-) | Make the words true | 1-2 d | **yes** |
+| [G4](#g4--a-release-that-can-be-rehearsed-) | A release that can be rehearsed | 1 d | **yes** |
+| [G5](#g5--the-donut-policy-without-a-test-) | The donut: policy without a test | 4-6 d | partly |
+| [G6](#g6--the-platforms-we-claim-) | The platforms we claim | 1-4 d | decision |
+
+### G1 · What we are allowed to ship 🔴
+
+*The gate nothing else survives. It is not a technical problem and it does not
+get cheaper by waiting.*
+
+The audit that produced this gate found that the licensing question recorded in
+this file was scoped wrongly: it was filed under [WASM] as *"shipping ROM dumps
+in a public web demo"*, a decision to be made before a marketing push. It is
+neither WASM-specific nor prospective. **It describes the repository as it
+stands, the desktop packages as they ship, and a demo that has been live for
+months.**
+
+- ◔ **Commercial software tracked in git — removed from the work tree
+  2026-09-05, still in history.** 907 files (286 MB) moved to
+  `/Volumes/TEST/pom2-media/`, each copy verified by SHA-256 before the
+  original was deleted, with a `MANIFEST.tsv` and a `RESTORE.sh` alongside:
+  the whole 4am/Asimov WOZ collection (`disks_5.4/woz`, 757 titles), the
+  personal game collection (`disks_5.4/gist`, 109), the commercial half of
+  `disks_5.4/dsk` (31), four `hdv/` volumes (**Nox Archaist**, AppleWorks,
+  Total Replay II, Wizard Replay) plus three volumes of unestablished
+  provenance, five `disks_3.5/` (Oregon Trail, both
+  Print Shop, Multiscribe, TheBestGames) and `floppyemu/Total Replay
+  v6.1.hdv`. Kept deliberately: the French Touch demos with their sources,
+  the Purplesoft / Chat Mauve preservation disks (the `purplesoft_eve_screens`
+  oracle), Apple system software, and the author's own projects.
+  Full suite re-run after the move: **240/240 green**.
+  **What is left, and it is the larger half**: the blobs are still in the
+  packfile, so GitHub still serves every one of them to anyone who clones.
+  A tip-only deletion does not undo that. *~1 d to rewrite history (306 MB
+  packfile), or accept it and document the risk.*
+  The three `hdv/` volumes whose contents were never established
+  (`2018-01-23 - ProDOS8.2mg`, `Bad.Apple.hdv`, `Mouseapps Apple2.hdv`, 96 MB)
+  went the same way on the same day, so `hdv/` now holds only the author's own
+  projects. **910 files, 382 MB** in the manifest.
+- 🔴 **The web demo now boots a file that no longer exists.**
+  `floppyemu/Total Replay v6.1.hdv` (~150 commercial titles) was removed on
+  2026-09-05, and `wasm/shell.html:84` still defaults to it — so the next push
+  to `main` deploys a demo whose boot disk 404s. **Deliberately left for a
+  product decision**, because it is not just a path: the shell also selects a
+  **//c profile** to suit Total Replay, and the obvious free replacement (DIX,
+  GPLv3) wants //e PAL with a Mockingboard. Cheapest shape that needs no
+  manifest or parser change: copy the chosen disk into `floppyemu/` (which
+  `bundle.manifest:64` already bundles as the browser-only extra — `disks_3.5`
+  is on the `deny` list, so a per-file `wasm` entry would need new parser
+  support), then repoint the two knobs in `shell.html`. *~2 h once the disk is
+  chosen.*
+- 🔴 **42 Apple firmware dumps in every package, while the UI says the
+  opposite.** `bundle.manifest:31` ships `apple2*.rom`, fifteen character
+  generators, `disk2.rom`, the mouse MCUs, `341-0358-A.bin`, `liron.rom` — and
+  `RomStatus_ImGui.cpp:416` and `MainWindow_MiscPanels.cpp:654` tell the user
+  *"POM2 ships no ROMs"* / *"Apple II firmware is copyrighted, so POM2 does not
+  ship it."* README § Download sells the bundled ROMs as a feature. **Shipping
+  them and claiming not to is the worst of the three available positions.**
+  **Decided 2026-09-05: keep the dumps, fix the words.** The ROMs stay in
+  `roms/` and in every package, and so does Apple's system software on disk
+  (the DOS 3.x masters, `AppleShare IIe Workstation.po`, Apple Présente //c) —
+  it is the same legal class and the same established emulator practice. What
+  changes is the tree stops contradicting itself: `RomStatus_ImGui.cpp:416`,
+  `MainWindow_MiscPanels.cpp:654` and the README all say the same true thing.
+  *~4 h.* This is now a [G3](#g3--make-the-words-true-) job, not a G1 one.
+  Third-party EPROMs sit in the same tree with no permission on record
+  (`cffa20ee02.bin`, `grappler_plus.bin`, `thunderclock_u9_v1.3.bin`, the Videx
+  chip).
+- 🟠 **No attribution file exists.** `find . -iname '*LICENSE*'` returns exactly
+  `./LICENSE`. Missing: DejaVu's Bitstream Vera notice, Font Awesome Free's
+  SIL OFL 1.1 + CC-BY-4.0, and a root `THIRD-PARTY.md` for MAME (GPL-2+ code,
+  BSD-3 samples), AppleWin (GPL-2+), Dear ImGui (MIT), GLFW (zlib) and the two
+  `pic/` photographs, which have no recorded provenance at all. Inbound code
+  licensing is otherwise **clean** — every port is GPL-2.0-or-later, which
+  upgrades to POM2's GPL-3.0 without friction. *~3 h.*
+
+### G2 · The three defects that reach a user's data 🔴
+
+*Found by measurement on 2026-09-05, not by report. Half a day for all three,
+and each is the only kind of defect 1.0 must not have: it takes something the
+user cannot make again.*
+
+- 🔴 **The status-bar eject is a hand-rolled duplicate that writes the wrong
+  settings key.** `MainWindow_Media.cpp:98-164` vs the covered
+  `StorageCoordinator::ejectMediaBay`. Two eject paths exist **in the same
+  file**: the File menu (`MainWindow_Chrome.cpp:328`) delegates to the
+  coordinator; the status-bar chip (`:998`, the most-clicked eject in the UI)
+  does not. Four divergences, one of them deterministic corruption:
+  * `MainWindow_Media.cpp:125` builds `"disk_path_slot" + N` for **both**
+    drives, while the canonical `diskIIPathSettingKey`
+    (`StorageCoordinator.cpp:63-68`) appends `_drive2` for drive 1. Eject
+    drive 2 from the status bar and you clear **drive 1's** path while leaving
+    drive 2's set — committed to `state.cfg` by the `settings->save()` on line
+    155. A clean quit self-heals it; a crash, a kill or a kiosk session does
+    not. The comment on line 122 claims it matches the shutdown keys.
+  * no `genericMediaCard` branch, so ejecting a **Liron** 3.5" leaves
+    `media_slot<N>_bay<B>_path` set and the image comes back next launch —
+    verbatim the bug `tests/storage_coordinator_test.cpp:439-441` records as
+    fixed in the coordinator.
+  * no auto-provision / host-folder guards (`StorageCoordinator.cpp:160-167`).
+  * a whole-file write-back under `stateMutex`, breaking the rule stated in
+    this file's own header (`MainWindow_Media.cpp:28-31`) and the reason
+    `StorageCoordinator.cpp:709-726` spends seventeen lines splitting the eject
+    into three critical sections.
+  **Fix: delete the body and delegate.** ~12 lines, and the fix *moves the call
+  into already-covered code*. Then one assertion that drive-2 eject clears the
+  `_drive2` key. *~1 h 15.*
+- 🔴 **A snapshot carries no machine identity, so a cross-profile load runs the
+  wrong ROM.** The header is magic + format version only
+  (`SnapshotIO.h:60-79`, validated `SnapshotIO.cpp:287-297`); the `uint32_t
+  flags` word is *"reserved, 0 for now"* (`SnapshotIO.h:24`). PC/A/X/Y/SP/RAM
+  restore unconditionally (`MachineSnapshot.cpp:161-170`) and `Memory::
+  loadSnapshotState` never checks `iieMode`. Live rewind **is** defended —
+  `applyProfile` clears the ring (`MainWindow_Slots.cpp:1153`) — but
+  `--snapshot-load` (`CliRunner.cpp:184-215`) and the AI server's `/snapshot`
+  endpoints are not. Save on //e Enhanced PAL, switch to //c, load: PC and RAM
+  land against a different ROM and memory map. Freeze or silent wrong
+  execution, no diagnostic. It also affects any snapshot shared between users,
+  which is the whole point of a snapshot file.
+  There is already a targeted mitigation for one instance of this — the CPU-mode
+  byte is read and **deliberately discarded** (`MachineSnapshot.cpp:145-155`)
+  because an NMOS blob forcing a //c's 65C02 ROM onto an NMOS core hits a KIL
+  and freezes. That comment is the argument for doing the general form.
+  **Fix: write the profile into the reserved `flags` word; refuse a mismatch
+  with a named error.** Test: capture, mutate the word, assert refusal.
+  *~2-3 h.*
+- 🔴 **`PhasorCard::onReset` zeroes the counter its sibling bumps.**
+  `PhasorCard.cpp:325-328` does `ayResetCount_[i] = 0`;
+  `Mockingboard.cpp:772-773` does `++ayResetCount_[...]`, with six lines of
+  comment naming the bug: *"BUMP, don't zero… zeroing it was a no-op whenever
+  it was already 0… the card droned on forever."* Both use the identical
+  change-detection compare (`PhasorCard.cpp:164`). On a Phasor, F12 / cold boot
+  / profile switch can therefore fail to reseed the AY generators and **the
+  card holds its last note through the reset** — the exact symptom the
+  Mockingboard fix was written to remove, reintroduced in the sibling.
+  *~30 min including the two-line contract assertion.*
+
+### G3 · Make the words true 🔴
+
+*Claim 1 of [What 1.0 means](#what-10-means). Cheaper than any code in this
+file, and it is the difference between a project that under-promises and one
+that cannot be trusted about anything.*
+
+- 🔴 **The Workstation Card is billed four paragraphs past what it does.**
+  README § Expansion Cards describes acquiring a LocalTalk node and reaching
+  the AppleShare menu — all true, and all of it one step short of the thing the
+  card exists for: **there is no network on the other end**, and `lapACK` does
+  not move the node. The card picker is already honest ("boots, host link
+  WIP"); the README is not. Rewrite to *"boots, self-tests and is identified by
+  period software; it does not netboot."* *~30 min.*
+- 🔴 **`echoplus_tms` is listed twice in README as a card.** It cannot make a
+  sound — the TMS5220 LPC decoder does not exist. **This closes the standing
+  P3-2 question ("ship or hide") as: hide.** Remove it from the README table
+  and from the picker, or gate it behind a developer filter. *~1 h.*
+- 🔴 **Uthernet I is credited to "Linux and macOS" and is in neither package.**
+  `package_macos_release.sh:44` sets `-DPOM2_ENABLE_SLIRP=OFF`, and
+  `build_in_bionic.sh` installs no `libslirp-dev` — bionic has none, libslirp
+  was split out of QEMU in 2019. So the feature exists **only in the three ARM
+  AppImages**, which are the least-downloaded packages. Either restate the
+  claim or enable it (macOS needs a universal-2 libslirp recipe, `~1 d`).
+  README:269 also lists the card with no platform caveat at all. *~3 h for the
+  words.*
+- 🟠 **README under-claims in two places, which is the same defect inverted.**
+  § Known Limitations still says the //c+ on-board 3.5" boot does not reach a
+  bootable disk — closed 2026-09-01, pinned `iicplus_boot35`. And **`liron` is
+  absent from the card table entirely**, a card with real firmware, a real IWM
+  and two pins. *~30 min.*
+- 🟠 **Tag the card picker with its scope bucket**, next to the LLE/HLE level it
+  already shows. Five of 24 catalog keys are frozen under the ruling. A user
+  choosing a card deserves to know that before filing the report. Same
+  hand-kept catalog, one more word. *~2 h.*
+- 🟡 **Demote what is billed above its verification.** The 3D voxel view (one
+  math test, no other pin) has a hardware-table row plus a video bullet; the
+  HGR paint + sprite editors have two bullets, two panels and a Tools group for
+  ~2 700 lines **no test can reach by construction** and that are duplicated
+  verbatim into POM1. Keep both features; drop the billing and say they are
+  frozen. Name Floppy Emu's four supported modes rather than listing it flat.
+  *~1 h.*
+- 🟡 **Fix the fresh-install `][+` fallback, which is dead code.**
+  `MainWindow.cpp:782-786` sets `defaultProfile = iiePresent ? "iie-pal" : ""`,
+  and an empty string means `applyProfile` never runs — so
+  `cfgAppleIIPlus`'s `roms/apple2p.rom` probe is **never reached on a first
+  run**. A user holding only `apple2p.rom`, `apple2o.rom`, `apple2c-32Kv0.rom`
+  or `apple2e_unenh.rom` gets "NO ROM", while README:231 promises the fallback.
+  The rest of the first-run path is in good shape: Welcome opens, nothing
+  crashes, the boot refusal points at Help ▸ Welcome. *~2 h.*
+- 🟢 Dead README cross-reference (`§ Disk images` does not exist; it is
+  `### 💿 ROMs and media`), and `roms/ae_transwarp_1.4.bin` is advertised while
+  the dashboard records it as undumped. *~1 h.*
+
+### G4 · A release that can be rehearsed 🔴
+
+*The sharpest fact in this gate: commit `955fa2b` pinned linuxdeploy after the
+moving tag broke the v0.9.0 build — and it touches a file only a release runs,
+so **the fix has never been executed**. That is not a hypothetical; it is the
+same shape as the ratchet that returned 0.*
+
+- 🔴 **A scheduled release rehearsal.** `grep stage_data|build_dist|
+  package_macos|package_windows|build_appimage .github/workflows/ci.yml` → zero
+  hits; `release.yml` has seven. Eleven packaging paths run **only** on a tag.
+  Add `schedule:` to `release.yml`; the `publish` job is already gated on
+  `github.ref_type == 'tag'`, so nothing publishes. Generalisation worth
+  keeping: *every path that only runs at release needs a scheduled dry run.*
+  *~½ d.*
+- 🔴 **Pin the moving dependencies.** Each is a release-day landmine, and the
+  publish job requires **exactly seven artifacts** (`release.yml:883`), so one
+  dead job kills the whole Release:
+  * `emsdk version: latest` (`ci.yml:404`, `release.yml:801`) — a wholly
+    unpinned compiler;
+  * `debian:bookworm` floating (`release.yml:416,538`, `pi400.yml:76`) — base
+    for two of four Linux packages, plus unversioned `apt-get` inside them;
+  * every `actions/*` pinned by moving major tag, with `checkout@v4` in ci.yml
+    against `@v5` in release.yml — drift already visible;
+  * the cross-repo GHCR image `habib256/pom1-bionic-builder` (digest-pinned,
+    but a permission change in **another repo** breaks the flagship package —
+    the workflow's own comment warns of the 403).
+  Already good and worth not disturbing: the imgui commit assertion, the
+  sha256-checked AppImage tools, GLFW's tag+hash, the vcpkg baseline, the Tom
+  Harte per-file manifest. *~2-3 h.*
+- 🟠 **`build_dist.sh` (.deb + tarball) runs in no workflow and is advertised at
+  README:500.** Add it to the rehearsal or delete the claim. `stage_data.sh
+  --self-test` is likewise called by nothing outside `bundle_manifest`. *~3 h.*
+- 🟠 **`bundle_manifest` is thinner than it reads.** It verifies the manifest
+  parses and every listed path exists, and negative-tests **only `DENY[0]`**
+  (`stage_data.sh:174-186`). It never plants a `denyglob` hit, never tests the
+  `wasm`-only rejection path, never cross-checks that CMake's `install()` rules
+  and the WASM `--preload-file` list — which parse the same manifest
+  independently — agree with the shell script, and never runs against a real
+  `.app` / `.zip` / AppImage. Given G1, this is the guard that must actually
+  hold. *~3 h.*
+- 🟡 **Version strings.** The single-source-of-truth claim **holds for compiled
+  code** and the release even asserts tag == `PROJECT_VERSION`. It does not
+  hold outside code: README carries **12** hardcoded `v0.9.0` strings including
+  package filenames, `CLAUDE.md:307`, and `vcpkg.json:4` is **already stale at
+  `"0.8"`** — proof the list is not being walked. `docs/releases/v1.0.md` must
+  exist and its name must match `PROJECT_VERSION` exactly, or the Release body
+  silently degrades to a generated commit list. Add a CI grep for
+  `v${PROJECT_VERSION}` in README. *~2 h + 2 h.*
+- 🟢 `roms/341-0358-A.bin` is mode 700 unlike every sibling at 644, copied
+  verbatim by `stage_data.sh` — unreadable to other users after a system-wide
+  install. *5 min.*
+- 🟢 No `CONTRIBUTING.md`, `SECURITY.md` or issue templates; the Pages deploy
+  lives in `ci.yml` rather than `release.yml`, so the live demo and the shipped
+  `web-wasm.zip` can be different builds and the README never says so.
+
+### G5 · The donut: policy without a test 🟠
+
+*The measurement is in [The shape of the risk](#the-shape-of-the-risk). This
+gate is the part of it that 1.0 needs; the rest is an investment that outlives
+1.0.*
+
+The distinction that makes this tractable: of the ~21 700 untested UI lines,
+**about 5 300 hold policy and about 14 000 hold painting.** Painting genuinely
+needs a GL context and genuinely decides nothing. Policy needs no context at
+all — it decides whether a session's work reaches the disk. Chase the 5 300.
+
+Densest policy files, none of them linked by any test:
+
+| File | Lines | policy hits / ImGui calls |
 |---|---|---|
-| Write-protect | `DiskImage` / `Disk35Image` fold in `!writeBackEnabled` | `Block512Backing` does not |
-| Resync before a slot rebuild | Disk II and CFFA: path **and** write-back | HDV: path partly, write-back never |
-| CRT glass pitch | Scanlines from source height (right) | Shadow mask from source width (wrong) |
+| `MainWindow_Session.cpp` | 358 | **81 / 0** — the entire shutdown persist |
+| `MainWindow_Media.cpp` | 540 | **30 / 0** — mount/eject/boot routing |
+| `MainWindow_Slots.cpp` | 1 627 | 65 / 162 — `applyProfile` + `kDefaults[]` |
+| `MainWindow_SlotConfig.cpp` | 791 | 8 / 0 |
+| `AudioCoordinator.cpp` | 444 | 22 / 0 |
+| `CliRunner.cpp` | 238 | 0 / 0 — every deferred CLI action |
+
+- 🟠 **G5-1 · One contract test across the parallel media paths.** *≈1 d.* The
+  direct antidote to the drift shape. Enumerate every medium — `DiskImage`,
+  `Disk35Image`, `Block512Backing`, the SmartPort units — and assert one rule
+  on each: what `isWriteProtected()` reports with write-back off, whether an
+  eject clears the persisted path, whether a mount preserves the write-back
+  opt-in, whether a flush is a no-op when nothing is dirty. Where a path
+  diverges **on purpose**, the test states the divergence. It has a live
+  target: `SmartPortUnit.h:92-95` declares the contract as *"physically WP OR
+  no write-back opt-in"*, `SmartPort35Unit.h:50` honours it and
+  `SmartPortHdvUnit.h:60-62` contradicts it — two bays of one card, one panel,
+  one toggle, opposite answers. **That also settles standing ruling R1.**
+- 🟠 **G5-2 · The same shape for slot-card snapshots.** *≈4 h.*
+  `tests/card_snapshot_state_test.cpp` covers 6 of 21 cards and asserts exactly
+  the right thing for each, including *"every loader must ignore a foreign blob
+  rather than misparse it"* — the property `MachineSnapshot.cpp:199-201` relies
+  on. `LironCard`, `PhasorCard` and `IIcExternalSmartPort` have no round-trip
+  test anywhere. Generalise the file into a loop over `SlotCardFactory`'s
+  catalog: ~80 lines, covers 21 cards today and every future card for free.
+  *(The related fear that cards lack magic/version was checked and is
+  unfounded — all ten inspected loaders check both inline.)*
+- 🟠 **G5-3 · The same shape for device clocks.** *≈3 h.*
+  `EmulationController::setVideoStandard` retunes memory, speaker, cassette and
+  every slot card, and `SlotPeripheral::setCpuClock` defaults to a no-op
+  (`SlotPeripheral.h:107`). `IWMDevice` and `Sony35Drive` override nothing and
+  hardcode the compile-time NTSC constant (`Sony35Drive.cpp:92-96,325,332`), so
+  on both PAL profiles 3.5" timing runs ~0.7 % off — the same drift the
+  speaker/cassette retune exists to remove, except that one is documented and
+  deliberate and this one is neither. Extend `pal_timing_test.cpp` to enumerate
+  every clock-bearing device and assert each reports the PAL clock.
+- 🟠 **G5-4 · Split `StorageCoordinator`'s pure half.** *≈1 d.*
+  `captureRebuildSnapshot`, `persistRebuildSettings`, `persistSessionSettings`
+  and the snapshot structs need no `EmulationController`. Extracted, ~600 lines
+  become testable without linking the emulator, and
+  `tests/storage_rebuild_persist_test.cpp` stops dragging **19** sources. The
+  2026-09-04 resync gap would have been impossible to introduce. The coordinator
+  itself is otherwise in good shape and worth not re-auditing.
+- 🟠 **G5-5 · A CLI test, and a usage/parser symmetry check.** *≈4 h.*
+  `CliRunner.cpp` is linked by **zero** test targets — `cli_kiosk` links the
+  *parser* only. Unpinned: `--load`, `--run`, `--paste`, `--step`, `--tape`,
+  `--save-tape[-format]`, `--35-disk1/2`, `--display`, `--cpu-max`,
+  `--ai-control`, `--play/--rec/--rewind`, `--snapshot-save/-load`,
+  `--rgb-card-invert-bit7`, `--trace-brk`, `-h`. And `--prodos-folder` **parses
+  but is absent from `printUsage()`** — shipped and undocumented, in the file
+  CLAUDE.md names as the source of truth. A table-driven test plus a symmetry
+  check that fails when a flag exists in one and not the other catches that
+  today and the whole class after. **Trap worth knowing**: `pom2_headless` has
+  its own second parser, and it is the one CI exercises — the parser users get
+  is the one nothing runs.
+- 🟡 **G5-6 · `applyProfile`'s 14 steps.** *≈1 d.* `system_profile_smoke`
+  states in its own header that it cannot reach `MainWindow::applyProfile`, and
+  replays five of fourteen steps by hand — not the ones that can lose data
+  (slot-bus rebuild ordering, remount after cold reset, rewind clear,
+  video-standard change, persistence gating). Nine profiles, a CLI flag and a
+  menu all lead here, and it holds `stateMutex` across file I/O on purpose.
+  Extract the fourteen steps into a free function taking
+  `(EmulationController&, SlotBus&, Settings&, SystemProfile)` — no ImGui
+  needed — and assert per-step post-conditions for //e→//c, NTSC→PAL, //c→//e.
+  Same refactor shape as G5-4.
+- 🟡 **G5-7 · Settings key symmetry.** *≈3 h.* `settings_roundtrip` pins the
+  storage engine thoroughly (`#` mid-value, embedded newlines, float precision,
+  oversized-file rejection) and exactly one production key. It proves nothing
+  about `system_profile`, `slot_N_card`, `hi_res_mode`, `chatmauve_variant`.
+  A latent instance is already in the tree: `mockingboard_volume/_muted`,
+  `phasor_*` and `echoplus_*` are **read with a hardcoded default and written by
+  nothing** — harmless only because no slider exists yet. Collect every literal
+  passed to `Settings::get*`/`set*` and fail on a reader with no writer, or the
+  reverse, outside an allowlist.
+- 🟡 **G5-8 · Settle the `hdv_path` guard, which is described three ways and
+  implemented two.** *≈2 h.* `MainWindow_Session.cpp:70-71` says *skip*; its
+  `else` at `:83-85` **clears**; the sibling `hdv_writeback` sixty lines below
+  gets it right and claims to implement *"the same guard"*.
+  `StorageCoordinator.cpp:474-485` repeats the asymmetry, and
+  `storage_coordinator_test.cpp:225-227` **pins the surprising branch** — the
+  test locks in the divergence rather than the contract. The `else` also fires
+  when no HDV card is plugged at all, which is the shipped default map and both
+  //c profiles, so `hdv_path` is cleared on nearly every quit. Damage is bounded
+  (a stale path, not data); it is listed because it is this file's own
+  "prose substituting for verification" risk caught in the act, in the densest
+  policy file in the untested set.
+- 🟠 **G5-9 · Notify on a red nightly.** *≈1 h.* `ci.yml:258-261` runs the
+  sanitizers on `schedule` only, with no failure path anywhere in the job; push
+  CI is a different workflow and stays green. The three defects fixed on
+  2026-09-04 sat invisible since 09-03. A few lines of YAML, and the
+  cost/benefit is absurd in its favour.
+- 🟡 **G5-10 · A CI leg with software GL.** *≈1 d.* Mesa llvmpipe + Xvfb.
+  `crt_barrel_view` is `EXCLUDE_FROM_ALL` with **no `add_test`**, so a whole
+  half of the render path — mask pitch, bandwidth — rests on review. More
+  importantly it is the precondition for ever reaching the 14 000 painting
+  lines, and for `tests/frontend_device_panel_concurrency`, the headless ImGui
+  frame driven while cards are replugged that would close the UI-deadlock class
+  rather than scanning for it with `tools/check_coordinator_locks.sh`.
+- 🟢 **G5-11 · Pin the hot path's hash identity.** *≈1 h.* `docs/PERFORMANCE.md`
+  § 9 requires every optimisation to leave `pom2_bench`'s RAM and framebuffer
+  hashes byte-identical, and the only automated gate for it lives in the
+  **Raspberry Pi release job**. One `add_test` against a checked-in golden turns
+  the project's central perf discipline from a review convention into a gate.
+  The bus fast path itself is exemplary — `bus_fastpath_test.cpp` is
+  differential over 1024 paging states × every address, and is the model the
+  rest of the tree should copy.
+- 🟢 **G5-12 · WASM CI is compile-only.** *≈1 d.* The job builds and checks
+  three files are non-empty; it never boots the module, never touches
+  `PersistentFs`/IDBFS. The browser build **never destroys its `MainWindow`**,
+  so the only thing that persists a visitor's state is a 10-second heartbeat. A
+  regression that compiles but breaks the mount passes green and surfaces as
+  *"my browser forgets everything."* A node smoke — load, run N frames, write a
+  setting, `pom2_persist_now()`, reload, assert — closes it.
+- 🟢 **G5-13 · The three transports still at 0 %** (`SlirpNetworkBackend`,
+  `SpSerialTransport`, `SuperSerialTcpTransport`). Seams exist for all three
+  (`ssc_transport_seam`, `fujinet_link_seam`), so they are testable in a way
+  they were not before the 2026-08-27 seam work.
+- 🟢 **G5-14 · Extend `-Werror` to the GCC leg.** It is on for macOS only
+  (`ci.yml:195`). GCC's warning set is not clang's — transitive includes, the
+  `-Wmaybe-uninitialized` family — so build the Linux job once with it, fix
+  what it names, then wire it. It is the leg that catches what clang does not.
+- 🟢 **G5-15 · `ctest -L rom` + ROM Status "degraded".** No `LABELS rom` exists
+  anywhere (only `slow`), so every ROM-gated test SKIPs silently when a dump is
+  absent and the L0 path can rot behind a green suite. ROM Status reports
+  *missing*, never *"running the synthetic fallback"*. Fold in the related hole:
+  nothing asserts the real ClockCard ROM path is taken when the dump is present,
+  and the same is true of Disk II P6, the mouse MCU and the Grappler EPROM. →
+  `docs/lle_vs_hle.md` § Keeping a level once you have it.
+
+### G6 · The platforms we claim 🟡
+
+*A decision, then possibly work. Either answer is defensible; shipping without
+choosing is not.*
+
+- 🔴 **Windows ships a binary against which no test has ever run.** Both
+  `ci.yml:230-236` and `release.yml:707` set `-DPOM2_ENABLE_TESTS=OFF`, and the
+  CI comment concedes: *"the suite has never been built for MSVC."* README
+  lists Windows as a first-class platform. **Either** get a core subset green
+  under MSVC (*~1 d for a first 20 headless tests; 2-4 d for the unknown
+  portability backlog*) **or** say plainly in README that Windows is
+  build-verified only. The first is better; the second is honest; the current
+  state is neither.
+- 🟡 **Linux aarch64 / Raspberry Pi are never built outside a release** and
+  never tested at all — three of the seven shipped packages. The rehearsal in
+  G4 covers the build; rendering on real hardware cannot be proven by CI and
+  should be a checklist line.
+- 🟡 **macOS x86_64 slice is never executed** — no Rosetta on the runner, so
+  the universal binary gets a structural `lipo` check only.
+- 🟢 **Notarization / signing.** Both macOS and Windows refuse the first launch;
+  README documents the workaround. Absent from this file entirely until now. A
+  1.0 where two of three desktop platforms show a security warning reads as
+  unfinished. *~1 d + $99/yr Apple, $200-400/yr Windows EV.*
+
+### The 1.0 release checklist
+
+Keep this in the repo and walk it. Every line is falsifiable.
+
+```markdown
+## Legal — all must be YES before tagging
+- [ ] No commercial disk images in the work tree (done 2026-09-05) AND none
+      reachable in git history, or the history risk accepted in writing
+- [ ] The web demo boots a disk that exists and is freely licensed
+- [ ] The web demo's boot disk is freely licensed; provenance recorded
+- [ ] The bundled-firmware decision is made, and README + RomStatus_ImGui +
+      MainWindow_MiscPanels + packaging/roms_README.txt all agree with it
+- [ ] THIRD-PARTY.md exists (MAME, AppleWin, Dear ImGui, GLFW, DejaVu,
+      Font Awesome, the two pic/ photos)
+- [ ] fonts/ ships its two license files
+
+## Version
+- [ ] CMakeLists.txt project(... VERSION 1.0 ...)
+- [ ] docs/releases/v1.0.md written — the filename MUST equal PROJECT_VERSION
+- [ ] README's 12 version strings, CLAUDE.md § Version string locations,
+      vcpkg.json version-string (stale since 0.8)
+- [ ] grep -c 'v0\.9' README.md == 0
+
+## Build repeatability
+- [ ] Release rehearsal green within the last 7 days
+- [ ] emsdk pinned; debian:bookworm pinned by digest; actions/* pinned by SHA
+- [ ] ghcr.io/habib256/pom1-bionic-builder digest still pullable from this repo
+- [ ] ./build_dist.sh (.deb + tarball) builds — the path CI never touches
+- [ ] packaging/stage_data.sh --self-test passes
+
+## Platform truth
+- [ ] Windows: core ctest subset green under MSVC, OR README says
+      "build-verified only"
+- [ ] libslirp/Uthernet I: README's per-platform claim matches each package
+- [ ] Raspberry Pi packages launched on real hardware
+- [ ] README § Known Limitations reconciled against this file
+
+## First run
+- [ ] Fresh profile + empty roms/ on each platform: Welcome opens, no crash
+- [ ] A roms/ holding only apple2p.rom resolves to a working ][+
+- [ ] Every internal README anchor resolves
+- [ ] The live demo serves the 1.0 build
+
+## Tag
+- [ ] 7 packages + SHA256SUMS.txt attached; body is v1.0.md, not generated notes
+- [ ] Download one package per platform and launch it
+```
+
+## The scope ruling
+
+*This answers the question that nothing in this repo answered before
+2026-09-05, and it is what makes every list below finite. The value is not the
+classification — it is being allowed to say "no" to the tail **in writing,
+once**, instead of re-deciding it every session.*
+
+**The criterion.** A subsystem is **core** if and only if a silent regression in
+it breaks one of three things: (1) the **DIX** run and the rest of
+`docs/test_corpus.md`; (2) the **`Apple //e Enhanced PAL` fresh-install
+profile** booting and running a disk; (3) the **user's files** — write-back, the
+atomic commit, the persistence policy that decides whether a session's work
+reaches the disk. Nothing else is core, however well built. Being
+verbatim-from-MAME, being pinned, being in the README, and having been expensive
+to write are **not** arguments for core: they are arguments that the thing
+works, which is what *supported* means.
+
+**What each bucket obliges.** **Core** — kept at oracle parity, carries goldens
+(hashes, not smoke assertions); a regression blocks a release. **Supported** —
+it works and is pinned; bugs are fixed on report; **no proactive fidelity work,
+no gap-closing, no backlog grooming**. **Frozen** — present and shipped,
+documented as frozen in README and in the card picker; no promise; its open
+backlog items are closed as *won't do* unless somebody arrives with a need.
+
+**Core is 14 rows out of ~60. That ratio is the point.**
+
+### Core
+
+| Subsystem | Why | What it obliges |
+|---|---|---|
+| **6502 / 65C02 / Rockwell / WDC** | 100 % Tom Harte on 178 NMOS opcodes + both Klaus suites; Crazy Cycles II uses `JMP (IND)` 5-vs-6 as a CPU *identifier* | A timing change needs a Harte diff, not a smoke test |
+| **Memory / IIe paging / aux / LC / floating bus** | `floatingBus()` is what makes vapor lock possible; DIX needs 128 K aux | `bus_fastpath` is the differential oracle for any `memRead` change |
+| **Video standard + frame timing** | DIX is PAL-only; `DEFAULT_SYNC_TIMER=7479` places its effects vertically | `pal_timing` + `video_event_publish` are goldens; every `emuCycles` device must take `setCpuClock` (see G5-3) |
+| **Display — beam-raced reconstruction** | 14 211 mode events over 2 500 DIX frames; MODPAGE ~1 switch/scanline | `display_golden_hash` (164 pins) may only grow; a re-hash needs a stated reason |
+| **Composite NTSC (OpenEmulator)** | The fresh-install pipeline — the first thing every user sees | `oe_demod_gpu_cpu_parity` + `text_oecpu_crisp` block a release |
+| **Speaker** | The only audio a default machine has before any card | Verbatim; `speaker_smoke` + `speaker_overflow` block a release |
+| **Mockingboard A/C (6522 + AY)** | DIX's whole frame sync is the T1 IRQ; the OLDSKOOL crash and the "DIX raster offset" were both 6522 timing | `via_t1_*`, `via_t2_timing`, `mockingboard_t1_irq_phase` are goldens. **A Mockingboard test is credible only once shown to FAIL against the reverted fix** |
+| **SlotBus + wire-OR IRQ** | One aggregation bug silences the whole corpus | `slot_bus_smoke`, `irq_aggregator_smoke` block a release |
+| **DiskImage / WOZ / Disk II LSS** | Real P6 PROM + flux model; the boot path of every 5.25" corpus title | Keep the MAME port verbatim; `mame_lss_parity` is the oracle |
+| **SmartPort card, Liron-class HLE (`smartport35`)** | DIX's actual boot path (`disks_3.5/DIX.po` at slot 5) | The `$Cn0A`/`$Cn0D` entry convention is frozen contract |
+| **Media write-back + durability** | Criterion (3) — the only defect class that destroys what a user cannot regenerate; three paths drifted in one day | **G5-1 is a core obligation, not a nice-to-have** |
+| **Host-side storage policy** | Both causes of the 2026-09-04 HDV report, and the G2 eject defect, live here | **G5-4 is a core obligation.** The pure half must test without linking the emulator |
+| **System profiles + reset architecture** | Everything above is selected by it; an ordering bug presents as a defect in whatever card loaded last | `system_profile_smoke` + `slot_config_smoke` block a release; G5-6 closes the gap |
+| **Le Chat Mauve — Féline + Eve variants only** | The one non-DIX admission, made deliberately: the project's differentiator, two golden suites, its own corpus section | Keep both suites frozen. **Scope is the two variants** — `rvb` and the //c-adapter quirk are frozen |
+
+### Supported — works, pinned, fixed on report, no proactive work
+
+Z80 core + SoftCard *(a finished subsystem — its cleanup list is quality, not
+correctness: do not schedule it)* · RamWorks III above 128 K · AppleWin NTSC,
+artifact-colour LUT modes, mono phosphor, CRT glass pass *(no ctest at all until
+G5-10; say so)* · Cassette · Mockingboard Sound II, SSI263, Cricket/Echo ·
+Phasor *(the missing cycle-stamped queue is now a **stated limit**, not an owed
+fix)* · Floppy mechanical sounds · Disk II drive 2, `.d13`, `.nib`/`.nib2`,
+2MG, MacBinary, skew sniffing · CFFA 2.0 *(**CHD closed as won't-do**)* ·
+ProDOS HDV card *(its write-back is core; its device model is not)* · ProDOS
+host folder · IWM + Sony 3.5" + SmartPort hub · Liron card *(the fidelity
+alternative to the core `smartport35`)* · //c-class on-board SmartPort + the
+`$C500` stub + `IIcExternalSmartPort` · Super Serial Card + telnet *(the "real
+SSC ROM" move is closed as won't-do)* · Uthernet II *(**`LISTEN` closed as
+won't-do**)* · FujiNet relay *(relay side only; three of its five open items are
+upstream bugs POM2 has nothing to fix; the native device's phases 2-4 are
+unscheduled)* · TNFS media · Grappler+, parallel PrinterCard, ImageWriter II +
+PDF, screen dump, print history *(`printer_plan_2`'s remaining phases are
+unscheduled; the `ImageWriter.cpp` file-size debt is still owed as a **ratchet**
+obligation)* · ThunderClock+ and No-Slot Clock · Mouse Card, both models ·
+Joystick / paddles / 4play *(**4play is complete** — mark it so)* · TransWarp ·
+Rewind + snapshot *("redo" and writable-WOZ undo closed as won't-do)* ·
+Debugger and memory panels · AI control server + SDK *(a break here is urgent —
+the project's own verification method depends on it)* · CLI + kiosk · Panel
+registry, theme, docking, palette · WASM build · Packaging.
+
+### Frozen — present, shipped, no promise
+
+| Subsystem | Why frozen |
+|---|---|
+| 🧊 **Echo+ TMS5220** (`echoplus_tms`) | A stub kept for detection; nobody writes the TMS5220. **Closes P3-2 as *hide*** → G3 |
+| 🧊 **Apple II Workstation Card** | Steps 2 and 3 are ❌ with no network on the other end; it buys an alternative transport for PostScript the SSC already carries, and doubles emulation cost while plugged. **Close items 2 and 3** |
+| 🧊 **Zilog Z8530 SCC** | Its only consumer is the card above; SDLC is datasheet-derived with no MAME oracle. `scc8530_smoke` stays as a build guard |
+| 🧊 **Uthernet I + libslirp backend** | No Windows transport (vcpkg's port drags glib into CI), none on WASM, and absent from the .dmg and the x86_64 AppImage. Uthernet II covers the need everywhere with no dependency. **Close both transport items** |
+| 🧊 **Le Chat Mauve `rvb` variant + the //c-adapter quirk (P4, P5)** | P4 is gated on a manual that has never surfaced; P5's only source sits behind a proof-of-work wall `WebFetch` cannot pass. Deliberately unmodelled rather than invented |
+| 🧊 **3D voxel view** | A framebuffer effect with a math test and no other pin, no corpus, no reports. 431 lines that work. Close the heightfield-mesh option |
+| 🧊 **HGR/DHGR paint + sprite editors** | **Unreachable by ctest by construction**, which is how three OOB accesses survived four weeks green — *and* duplicated verbatim into POM1, so every fix must be applied twice with nothing flagging the omission. Ship it, add nothing. The one admissible piece of work is the shared `EditorTestAccess` seam, and only on a report |
+| 🧊 **Floppy Emu** | 4 of 6 modes; the two missing were already "out of scope for v1" |
+| 🧊 **Printer mechanical sounds** | Synthesised because **no sample set exists** — there is no oracle and never will be |
+| 🧊 **PostScript by delegation** | Delegates to a host Ghostscript; document the dependency, no in-process renderer |
+| 🧊 **WASM browser extras** (file picker, touch input, worklet latency, 50 Hz RAF) | Open since the WASM build landed; the demo is blocked on G1, not on code |
+| 🧊 **Apple ][ Original (1977) profile** | No profile-specific test, no corpus title, no report. Do not chase rev-0 quirks |
+| 🧊 **The whole `a2bus` port survey** + Saturn 128K LC + Passport MIDI + 8-bit DAC + Apple II VGA + E-Z Color | **This is the tail the ruling exists to say no to.** A card leaves *Parked* only when a named piece of software needs it |
+
+### The four cards missing from `docs/lle_vs_hle.md`
+
+They have no row in the doc and no key in `abstractionCatalog()`, so the picker
+shows no level for them. Land both in one commit — they are kept in step by hand.
+
+| Card | Level | The seam to record |
+|---|---|---|
+| `liron` | **L2 firmware + L0 media path, H2 drive** — a composite | The UniDisk's drive-side 65C02 is not emulated; the protocol is the contract. Say explicitly that this is the strictly *lower* sibling of the `smartportcard` L2 veneer, since the picker now shows both |
+| `workstation` | **L0 CPU + L1 SCC, with no transport** | A third failure category, the one the FujiNet's "no peer" row also names: **the network on the other end does not exist.** Level is high; reach is zero |
+| `4play` | **L1 — and complete** | Nothing below the register to model. Needs an explicit *complete* marker, or "L1" reads as "something is missing" |
+| `transwarp` | **L1 registers / host retiming** | The doc's first entry whose abstraction is in the **time domain**. Multiplier sampled once per frame: unbiased in aggregate, wrong about where in a frame the slow cycles land |
+
+## The shape of the risk
+
+Measured 2026-09-05, re-measured the same day. Numbers from `src/` excluding
+`third_party/`.
+
+**The test net is a donut.** 71 413 lines of tests against 159 339 of source is
+a serious ratio, and the emulation core is where they are. **26.5 % of
+`src/*.cpp` — 27 816 lines of 105 108 — is linked by no test at all**, and it is
+not spread evenly: it is the **host side**. ~21 700 lines of `MainWindow_*` /
+`*_ImGui`, plus 1 934 lines of coordinators. 55 of 155 `src/*.cpp` are linked by
+nothing.
+
+**But the donut has two halves, and only one matters.** ~5 300 of those lines
+hold *policy* — `MainWindow_Session.cpp` is 358 lines with 81 settings calls and
+**zero** ImGui calls — and ~14 000 hold *painting*. Policy needs no GL context
+and decides whether a session's work reaches the disk; painting needs a context
+and decides nothing. The earlier framing ("the UI needs a GL context") was the
+reason this region went unexamined; it is wrong for the half that matters.
+→ [G5](#g5--the-donut-policy-without-a-test-).
+
+**And the coverage ratchet is structurally blind to it.** `tools/coverage.sh`
+says outright that its denominator is *"the code the test suite LINKS, not the
+whole program"* — so the 78.39 % floor is 78.39 % of 73.5 %, about **58 % of
+`src/`**, and adding a thousand untested `MainWindow_*` lines moves the floor by
+**zero**. The metric cannot regress in the region where both 2026-09-04 defects
+and the G2 eject defect were found.
+
+**The signature failure is drift between parallel paths** — two siblings, one
+updated. The three instances recorded on 2026-09-04 are **all fixed** (write-back
+resync `8991c33`; CRT mask pitch `1c38db0`; write-protect, which G5-1 settles).
+The four found on 2026-09-05 replaced them, which is the point:
+
+| Contract | Sibling A (right) | Sibling B (wrong) |
+|---|---|---|
+| Eject → settings key | `StorageCoordinator::ejectMediaBay` | `MainWindow_Media.cpp:98` — wrong drive key, no generic-media branch, no guards, lock held over file I/O |
+| AY reset counter | `Mockingboard.cpp:772` bumps | `PhasorCard.cpp:325` zeroes |
+| `setCpuClock` fan-out | speaker, cassette, every slot card | `IWMDevice` / `Sony35Drive` hardcode the NTSC constant |
+| Atomic write-back | ten call sites incl. the PNG export | `ImageWriterPdf.cpp:181-191` writes straight onto the destination |
+| Write-protect (still open) | `SmartPort35Unit.h:50` honours the base contract | `SmartPortHdvUnit.h:60-62` contradicts it |
 
 Each path is tested on its own; nothing asserts that all of them obey the same
-rule. That is what a **contract test** is for, and POM2 has none.
+rule. **That is what a contract test is for**, and G5-1/2/3 are three of them.
+The pattern has now recurred across four unrelated subsystems in two days, which
+makes it the tree's most productive place to look.
 
 **Three blind spots, by construction rather than by neglect:**
 
-- *Anything needing a context is unpinned.* The shaders have no ctest — CI has
-  no GL — so the checks live as exit codes inside `crt_barrel_view`. A whole
-  half of the render path rests on review.
-- *The nightly can be red without anyone knowing.* Sanitizers run only on
-  `schedule`; push CI stays green. Three real defects waited two days
-  (2026-09-03 → 05).
-- *A path exercised only at release can only break at release.* linuxdeploy's
-  moving `continuous` tag rotated on 2026-09-01 and was discovered during the
-  v0.9.0 run, after four other platforms had already gone green.
+- *Anything needing a context is unpinned.* `crt_barrel_view` is
+  `EXCLUDE_FROM_ALL` with no `add_test`; the WASM job checks three files are
+  non-empty and never boots the module. Half the render path and the whole
+  browser-durability path rest on review.
+- *The nightly can be red without anyone knowing.* Sanitizers run on `schedule`
+  with no failure path; push CI is a different workflow and stays green.
+- *A path exercised only at release can only break at release.* Eleven packaging
+  paths, and the linuxdeploy fix for the v0.9.0 break has itself never run.
 
-**A method risk worth naming**, evidenced on 2026-09-04: prose volume can
-substitute for verification. The TSan fix passed one run with the fix
-*reverted* — a single green run would have "confirmed" a change that did
-nothing. Looping gave the real answer (9 races in 15 runs without it, 0 in 30
-with it). A well-written explanation of a fix is not evidence that it fixes
-anything.
+**What was checked and found solid**, so it does not need re-auditing:
+`StorageCoordinator` itself (three-phase eject, auto-provision guards, generic
+keyspace, CFFA-outranks-HDV); the HDV family's now-identical `detachImage`;
+`bus_fastpath_test.cpp`; IRQ wire-OR across all seven raising cards; the display
+painters' single line-count source of truth; and the foreign-blob magic/version
+check in all ten card loaders inspected.
 
-## Next up
+## Standing rulings
 
-Two tracks. They **compete for the same hours**, and saying so is the point of
-splitting them: track A changes how fast defects are found, track B changes
-what POM2 can show. Do not pretend one list orders both.
+Decisions, not work. Do not re-litigate without new evidence.
 
-### Track A · verification shape
-
-Ordered by return, not by size.
-
-#### A1 · 🟠 One contract test across the parallel media paths — *≈1 d*
-
-The direct antidote to the drift table above. One test that enumerates every
-medium — `DiskImage`, `Disk35Image`, `Block512Backing`, the SmartPort units —
-and asserts the same invariants on each:
-
-- what `isWriteProtected()` reports with write-back off;
-- whether an eject clears the persisted path;
-- whether a mount preserves the write-back opt-in;
-- whether a flush is a no-op when nothing is dirty.
-
-Where a path diverges **on purpose** — `Block512Backing` presents a writable
-volume because "a real hard disk is read/write to ProDOS"
-(`ProDOSHardDiskCard::writeDataByte`) — the test states the divergence rather
-than papering over it. A contract that is written down once is a contract the
-next card cannot quietly fail.
-
-#### A2 · 🟠 Split `StorageCoordinator`'s pure half — *≈1 d*
-
-`captureRebuildSnapshot`, `persistRebuildSettings`, `persistSessionSettings`
-and the snapshot structs need no `EmulationController`. Extracted, ~600 lines
-become testable without linking the emulator, and
-`tests/storage_rebuild_persist_test.cpp` stops dragging fifteen sources.
-The 2026-09-04 resync gap would have been impossible to introduce.
-
-#### A3 · 🟠 Notify on a red nightly — *≈1 h*
-
-A few lines of YAML on the `sanitizers` job. Cost/benefit is absurd in its
-favour: the three defects fixed on 2026-09-04 had been sitting since 09-03,
-invisible because push CI is a different workflow.
-
-#### A4 · 🟡 A weekly release rehearsal — *≈½ d*
-
-Run the packaging path — fetch, build, verify, **do not publish** — on a
-schedule. `packaging/linux/fetch_appimage_tools.sh` is only ever executed by a
-release, so its pins can only ever fail during one. A rehearsal would have
-caught the linuxdeploy rotation on 09-01 instead of 09-05. Cheap generalisation:
-*every path that only runs at release needs a scheduled dry run.*
-
-#### A5 · 🟡 A CI leg with software GL — *≈1 d*
-
-Mesa llvmpipe + Xvfb on a Linux runner. Turns `crt_barrel_view`'s mask-pitch
-and bandwidth checks into real ctest entries, and — more importantly — stops
-the UI being out of reach *on principle*. It is the precondition for ever
-testing the 22 000 lines in track A's donut hole.
-
-### Track B · fidelity
-
-#### B1 · 🟠 Le Chat Mauve at the silicon — `docs/chatmauve_plan.md`
-
-**P0-P2 landed 2026-09-01** (CHANGELOG of that day): one card, four variants
-(Féline · Adaptateur //c · Eve · Video-7 by `chatmauve_variant`), the Féline's
-mixed-DHGR and HGR rules dot-exact against AppleWin's hardware-validated
-oracles, the Eve's sixteen switches + CPREG auto-write (`Memory::setAuxShadow`)
-+ TXT16 / TXTGREEN + table IX-1 — with the table corrected three times by
-Purplesoft's own code (BW560 = HR2+HR3; the latch plays no part on the Eve;
-CP280 runs with 80COL off) and the COL280 bit order read off `& PLOT`'s bytes
-(2-dot cells of the 560 stream). `tests/purplesoft_eve_probe.cpp` boots the
-demo disk with an Eve and writes the frames; `DEMO GR16K` / `DEMO TEXTE` come
-out as the maker drew them.
-
-The card also got its **second connector** on 2026-09-04:
-`NtscParams::rgbBandwidthMHz` low-passes the RGB on its own sample grid, so the
-TTL header and the analog Péritel cable no longer render identically. The three
-trim pots (R/G/B gain, Féline manual p. 13) are **not** modelled; they belong in
-the same pre-pass.
-
-**What is left, in order** (plan § 5):
-
-- ✅ **Pin the Purplesoft screens** — done 2026-09-01 evening:
-  `purplesoft_eve_screens` boots the demos disk (tracked since `7c8eba4`),
-  runs both demos and freezes every STABLE screen (switch state + frame hash
-  unchanged for 2 s of machine time = the demo's `FOR T` pauses): 6 GR16K
-  screens (COL140 / COL280A / COL280B / CP280 / BW560 / final prompt) + 7
-  TEXTE screens. ~4 s of wall time; SKIPs without the disk; regenerate with
-  `POM2_GOLDEN_RECORD=1` after an intentional timing change.
-- ✅ **P3 — closed as bounded** (2026-09-02): the PLA is decoded, simulated
-  and understood — a dot-stream router/cell assembler, NOT the colour
-  decoder (plan § 3.5.1). SPEC1/2/DASH/COL280 palettes stay modelled from
-  the manual + Purplesoft's bytes; reopen only on a schematic/board trace.
-- ◔ **P6 — first rung landed** (2026-09-02): the mode latch beam-races
-  (`chatmauve_latch_split`). Remaining: the Eve's `$C0Bx` as loggable
-  events, the exact in-cell dot position, the TTL-RGBI palette option, and
-  DIX / PoP golden screens.
-- 🟡 **Extasie / Arlequin goldens**: both boot headless now (Extasie's
-  editor with the slot-4 mouse; Arlequin side 2 to its mixed-mode demo
-  menu — corpus § 5). Next: pin the Arlequin demo-menu screen and an
-  Extasie editor screen as goldens; Eve Leonard still to find.
-- ◔ **P4 — RVB Graph, partial** (2026-09-02): variant `rvb` with the four
-  documented `$C0F0-$C0F3` strobes (colour/mono × white/green text) at the
-  card's device select. The text-colour and HGR-colour registers and the
-  dotted-lines option stay gated on the manual (never surfaced online).
-- 🟢 **P5 — //c adapter quirk** (inferred 80COL; PoP's attract loop dropping
-  to mono): NO grounded mechanism on record — fenarinarsa's articles give
-  the symptom only, and the silicium.org clone thread (t=21639, LCM chip
-  reverse-engineering, CPLD equations) sits behind an Anubis proof-of-work
-  wall that WebFetch cannot pass; needs a real browser session. Blocked on
-  that source, deliberately unmodelled rather than invented.
-- 🟢 **P7 — docs**: `DEV.md` § Le Chat Mauve and `docs/lle_vs_hle.md` are
-  rewritten; `docs/chatmauve_plan.md` § 2.1 is the model as built. Remaining:
-  fold § 3.4's corrected table back into § 3 prose (today it is a note under
-  the table), and the README's Chat Mauve paragraph.
-
-**Slot Config now tags each card with its LLE/HLE level** from the
-abstraction catalog (2026-09-02). 🟢 Four cards have no row in
-`docs/lle_vs_hle.md` (hence no tag in the picker): **liron** (silicon-level
-card), **workstation**, **4play**, **transwarp**. Classify them in the doc
-AND `abstractionCatalog()` together — the two are kept in step by hand.
-
-## The scope question
-
-Nothing in this repo answers it, and it is the largest long-term risk — larger
-than any open defect.
-
-POM2 covers nine machine profiles, dozens of slot cards, three network stacks,
-printers down to character ROMs and PDF export, an HGR/DHGR paint editor, a
-sprite editor, a 3D voxel view, a run-control debugger, an HTTP control server,
-a WASM build, an SDK, Floppy Emu, TNFS and PostScript by delegation. Every one
-of them has a long tail. The parity dashboard can only grow.
-
-`docs/lle_vs_hle.md` answers "at what **level** do we model this?" — well, and
-per subsystem. Nothing answers **"what is central, and what may freeze without
-guilt?"** Those are different questions, and the second one is what decides
-whether the tail is a strength or a debt.
-
-🟡 *Write that ruling.* Three buckets is enough: **core** (kept at parity, gets
-goldens), **supported** (works, fixed on report, no proactive work), **frozen**
-(present, documented as frozen, no promise). Put each subsystem in one. The
-value is not the list — it is being allowed to say "no" to the tail in writing,
-once, instead of re-deciding it every session.
-
-## Priority order
-
-**History, kept for its rulings.** This was the ordering from the 2026-08-28
-architecture assessment; [Next up](#next-up) supersedes it as *what to do next*.
-It stays because P3 is a set of standing decisions rather than work, and because
-the standing rule below is wired to a mechanism that still runs.
-
-The 2026-08-28 finding in one line: POM2 was **well above average on the hard
-axes** (concurrency discipline, hardware fidelity, test density) and **below it
-on the easy ones** (one god-object, six hand-written ROMs with no assembler).
-Both weak axes had already produced a silent bug; both closed on that date —
-P0 and P1 landed, and P2 followed.
-
-The 2026-09-05 assessment ([The shape of the
-risk](#the-shape-of-the-risk-2026-09-05)) does not contradict it — it says the
-same sentence one layer out. The hard axes are still strong. The weak axis is no
-longer a god-object: it is that **the emulation core is pinned and the host side
-is not**, and that nothing asserts two sibling device paths obey one contract.
-
-Standing rule, and it is a mechanism now rather than a request: **do not grow
-the god-objects.** A new card gets its panel in its own `*_ImGui.cpp` and
-**zero** business logic in `MainWindow.cpp`. `cmake` fails if any
-`src/MainWindow*.cpp` passes 2000 lines, and `tools/check_file_sizes.sh` fails
-if any first-party file passes its recorded ceiling. The rule went from 5590 to
-11511 lines while it was only written down; both numbers are why it is wired to
-something now.
-
-### P0 — close what is bleeding · *landed 2026-08-28*
-
-**P0 is closed.** 0-5 landed too: `TnfsClient` is wired rather than deleted —
-`POM2 tnfs://host/path/image.po` fetches the image into a local cache and boots
-it like any other disk (`TnfsMedia.*`). It needed a socket-less path first, as
-recorded here, and got one. Phase 1 of the built-in FujiNet
-([Network](#network)) now has a caller.
-
-**0-1 to 0-4 landed on 2026-08-28** — see `CHANGELOG.md`. Doing them turned up
-three things the plan did not know about, all recorded there: the version
-header was never generated (no clean checkout could build); the ratchet had
-never run on macOS *and reported success*; and `POM2_FOUNDATION_SOURCES` was
-listed but never read, so the layer hole was 14 files, not 13.
-
-### P1 — the two structural causes · *landed 2026-08-28*
-
-**All four items are done.** Both weak axes the assessment named are closed.
-
-**1-1 / 1-2 — the hand-written ROMs.** `SlotRomAsm.h`, and all six pages
-rewritten on it, each verified **byte-identical** to what it produced before.
-Two corrections to the plan, recorded because they are the kind of thing that
-gets re-proposed: it is *not* `constexpr` (a slot page is parameterised by the
-slot, which comes from settings at runtime, so there is no constant to fold),
-and there were **six** hand-written ROMs, not seven — `ClockCard` writes nine
-fixed bytes with no cursor and `DiskIICard`'s boot PROM is a verbatim dump.
-
-**1-3 / 1-4 — the god-object.** `MainWindow.cpp` 8316 → ~1680, holding only
-construction, the dock and the frame loop. Eleven sibling TUs, each named for
-what it owns; the split worth knowing is `MainWindow_Media.cpp` (what happens
-to a disk image) vs `MainWindow_StoragePanels.cpp` (drawing it). The ratchet
-was lowered in the same commit — in fact `MainWindow.cpp` **left the budget
-file entirely**, being under the 2000-line watch threshold — and a *hard* cap
-now fails `cmake` if any `src/MainWindow*.cpp` passes 2000 lines. Family-wide
-on purpose: the failure mode was never "MainWindow.cpp grows", it was "the file
-that grows is whichever one is convenient".
-
-Details for all four in `CHANGELOG.md`, structure in
-[DEV § The MainWindow family](DEV.md#the-mainwindow-family).
-
-### P2 — make the holes visible · *landed 2026-08-28*
-
-**2-3 — warnings to zero, and a leg that keeps them there.** 14 → 0, and
-`-DPOM2_WERROR=ON` on the macOS job. One of the fourteen was not a style nit:
-a value-returning lambda in the Super Serial panel fell off its end (UB,
-working only because NRVO put the object where the caller was going to read
-it). Another was an initialiser list in a different order from the
-declarations it initialises. Both are the argument for the flag.
-
-**2-1 — coverage in CI.** `tools/coverage.sh` + a `Line coverage (floor)` job.
-Clang source-based coverage over the code the tests link; the floor may go up
-freely and may not go down, the same ratchet shape as the file-size budget.
-**First measurement: 78.90 %**, floor recorded at 78.40 % (half a point of
-margin — two runs of the same tree differ by ~0.1 %, and a floor that fails on
-noise is a floor somebody switches off). It named real holes on its first run:
-`CharRomCatalog.cpp`, `RomLoader.cpp`, `SlirpNetworkBackend.cpp`,
-`SpSerialTransport.cpp` and `SuperSerialTcpTransport.cpp` are all at **0 %**.
-
-**2-4 — `FloppyEmuDevice`.** Already tested, and the plan's third wrong
-premise. `tests/floppy_emu_smoke_test.cpp` covers the mode label/key
-round-trip, per-mode format filtering, SD navigation bounded to the root
-(including the symlink escape), and `favdisks.txt` parsing. Nothing worth
-adding was missing.
-
-**2-2 — `FujiNetNetDevice`.** The plan's premise was wrong, in the same way
-P0-5's was: it is **not** untested. `tests/fujinet_net_device_test.cpp`
-already covered the happy path, the header split, the STATUS cap, a stalled
-server and a blackholed host. What it did not cover has been added — a reply
-over the 512 KB cap, a reply with no CRLFCRLF, the port-number and empty-host
-refusals, a refused connection, `close()`, and the **error bytes**, which are
-a contract with the guest rather than an implementation detail (FILE NOT FOUND
-is how the firmware's table spells "no such host"; a guest that cannot tell a
-typo'd hostname from a dead server has nothing to show the user). Both new
-paths mutation-checked.
-
-**What the number says to do next**, now that there is one — these are the
-0 % files above, and they are a better backlog than guessing was:
-
-| # | Item | Why |
-| - | ---- | --- |
-| 2-5 | ✅ **`RomLoader.cpp` and `CharRomCatalog.cpp` at 0 %** — *landed 2026-09-01, and the premise was wrong a fourth time.* `RomLoader` was not untested, it was **dead**: zero call sites anywhere in the tree (cards keep their ROM in their own byte array and serve it from the slot bus; nobody has flashed a card ROM into `Memory` for a long time), yet it was compiled into the app and nine test binaries. Deleted. `CharRomCatalog` got the test it was actually missing (`char_rom_catalog`), both new assertions mutation-checked. | — |
-| 2-6 | 🟢 **The three host transports at 0 %** — `SlirpNetworkBackend`, `SpSerialTransport`, `SuperSerialTcpTransport`. | Seams exist for all three now (`ssc_transport_seam`, `fujinet_link_seam`), so these are testable in a way they were not before the 2026-08-27 seam work. |
-| 2-3b | 🟢 **Extend `-Werror` to the GCC leg** — it is on for macOS/AppleClang (2026-08-28). GCC's warning set is not clang's and nobody has cleaned it, so turning it on blind would red `main`. Build the Linux job once with it, fix what it names, then wire it. | The leg that catches what clang does not — transitive includes, and its own `-Wmaybe-uninitialized` family. |
-
-### P3 — rulings, not development
-
-| # | Item | Why |
-| - | ---- | --- |
-| 3-1 | 🟡 **Write-protect: one rule per card** — see [Storage](#storage-disks--images). | Two bays of the *same* SmartPort card answer "can I write?" differently. Either rule is defensible; one card doing both is not. |
-| 3-2 | 🟡 **Echo+ TMS5220: ship or hide** — see [Cards](#cards-slot-cards--peripherals). | A detect-only stub in the catalog is the wrong third option, and the backlog already says so. |
-| 3-3 | 🟡 **CI `ctest -L rom` + ROM Status "degraded"** — running the synthetic fallback is not "missing". | Otherwise the L0 path rots behind a green suite that SKIPs when dumps are absent. |
-| 3-4 | 🟢 **One `Config`** (env → CLI → Settings → defaults), consistent `pom2::` namespace. | Hygiene for the second contributor. |
-
-**Explicitly not architecture** — do not pick these ahead of P0-P3. They stay in
-the backlog as features: the analog IIR composite pipeline (*5-10 d*), the
-Saturn 128K Language Card, ayumi-grade FIR resampling (a deliberate MAME
-departure plus WASM cost), and Apple IIgs (already a separate **pom2gs**
-project — see [Out of scope](#out-of-scope)).
+- **R0 · Do not grow the god-objects.** A new card gets its panel in its own
+  `*_ImGui.cpp` and **zero** business logic in `MainWindow.cpp`. `cmake` fails
+  if any `src/MainWindow*.cpp` passes 2 000 lines; `tools/check_file_sizes.sh`
+  fails if any first-party file passes its recorded ceiling. The rule went from
+  5 590 to 11 511 lines while it was only written down — that is why it is wired
+  to a mechanism. *(The 2026-08-28 decomposition is done: `MainWindow.cpp` is
+  1 408 lines, every "left" sub-item moved, the family is under the cap.)*
+- **R1 · Write-protect: one rule per card.** Two bays of the *same* SmartPort
+  card answer "can I write?" differently. Either rule is defensible; one card
+  doing both is not. Physically write-protect belongs to the medium; the
+  counter-argument is that accepting a write with write-back off loses it
+  silently. **Settled by G5-1**, which must *state* the divergence where one is
+  deliberate rather than paper over it.
+- **R2 · Echo+ TMS5220: ship or hide.** A detect-only stub in the catalog is the
+  wrong third option. **Answered by the scope ruling: hide** → G3.
+- **R3 · One `Config`** (env → CLI → Settings → defaults), consistent `pom2::`
+  namespace (255/336 files today, up from 163/233). Hygiene for the second
+  contributor. Post-1.0.
+- **R4 · The file-size debt is owed, not forgiven.** Two ceilings were raised on
+  2026-08-31 to get a gate green that had been red since 08-29 — in 15 s, before
+  the Linux job compiled anything, so it was also hiding that build. Both are
+  recorded at their **exact** current size, so the ratchet fails on the next line
+  either gains. `src/ImageWriter.cpp` 2 501 wants splitting (the head, the paper
+  tray, PDF export and the PostScript/screen-dump seams are separate concerns in
+  one TU); `src/Memory.cpp` 2 442 is 40 lines, one of which is the foreign-bus
+  dispatch. *~1 d for ImageWriter, less for Memory.* Post-1.0.
+- **R5 · A card CPU gets a `Memory::ForeignBus`, never a branch in `M6502`.**
+  → CLAUDE.md, `docs/PERFORMANCE.md` §§ 8.2/8.5/9.
+- **R6 · MAME path drift refresher** — re-check upstream renames ~every 6
+  months (recent: `wozfdc.cpp` `bus/a2bus → machine`).
 
 ## Open, and known to be open
 
-Findings that are **deliberately not fixed**. They sit at the top because each
-is something POM2 currently gets wrong that somebody would otherwise rediscover
-the hard way — and because the reason for leaving them is part of the finding.
+Findings **deliberately not fixed**, because the reason for leaving them is part
+of the finding.
 
-The 2026-08-22 architecture audit closed the exception-barrier gap, the file
-size ratchet, the CI platform gap, the test-timing gap and most of the
-`stateMutex` family; what it left is recorded below and in `CHANGELOG.md`.
-
-- 🟠 **Blocking work under `stateMutex` — what is LEFT of the family.** The
-  state mutex is taken by the CPU worker for each 4096-cycle chunk AND by the
-  UI thread to paint every frame, so anything slow holding it freezes the
-  machine *and* the window, buttons included. The 2026-08-22 audit found the
-  family was ~20 sites rather than the four first recorded, and fixed the
-  structural cause for most of them (`MediaMount.h`: read + decode unlocked,
-  swap the finished object in under the lock). **Done**: every Disk II 5.25"
-  mount (17 sites), `EmulationController::mount35`, and the AI server's
-  `/snapshot/save` + `/snapshot/load` (which now serialise into RAM under the
-  lock and commit through `pom2::writeFileAtomic` outside it). **Left**:
-  - 🟢 **The thread `join()`s — examined 2026-08-23, deliberately left.** Both
-    turn out to be defensible, and the analysis is recorded so nobody
-    re-derives it:
-    * `slotBus().clear()` on a profile switch is not a machine freeze at all —
-      `applyProfile` has already stopped the CPU worker, so only the UI blocks,
-      during a modal operation that is a full cold reset anyway. Same class as
-      the profile-switch remount above.
-    * The FujiNet **Stop / Drop-peer** buttons genuinely need that lock. It is
-      not there for tidiness: `FujiNetCard` reaches `transact()` from the CPU
-      thread *under* `stateMutex`, and `stop()` ends in `transport_.reset()` —
-      so dropping the lock trades a 200 ms wait for a use-after-free on a live
-      `SpTransport*`. The clean fix is to move that mutual exclusion onto the
-      link's own `callMtx_` (lock order `callMtx_` → `stateMtx_` is already
-      what `transact` uses, so there is no inversion), letting the caller stop
-      taking `stateMutex`. It is worth doing, but it is a lock-order change in
-      a three-thread subsystem to save 200 ms on a button the user pressed on
-      purpose — a one-off, expected pause, not the repeated freeze the item
-      above was. Not a good trade to make in a hurry.
-  - 🟢 Deliberate, documented, and staying: the profile-switch remount in
-    `MainWindow_Slots.cpp` (the SlotBus rebuild and the remounts must be one
-    atomic step against the AI server, and the CPU worker is stopped anyway),
+- 🟢 **Blocking work under `stateMutex` — what is LEFT.** The 2026-08-22 audit
+  found ~20 sites and fixed the structural cause (`MediaMount.h`: read + decode
+  unlocked, swap under the lock). What remains was examined on 2026-08-23 and
+  left on purpose:
+  * `slotBus().clear()` on a profile switch is not a machine freeze —
+    `applyProfile` has already stopped the CPU worker, so only the UI blocks,
+    during a modal full cold reset.
+  * The FujiNet **Stop / Drop-peer** buttons genuinely need the lock:
+    `FujiNetCard` reaches `transact()` from the CPU thread *under* `stateMutex`,
+    and `stop()` ends in `transport_.reset()`, so dropping it trades a 200 ms
+    wait for a use-after-free on a live `SpTransport*`. The clean fix moves that
+    exclusion onto the link's own `callMtx_` (the lock order `callMtx_` →
+    `stateMtx_` is already what `transact` uses, so no inversion) — but it is a
+    lock-order change in a three-thread subsystem to save 200 ms on a button the
+    user pressed on purpose. Not a trade to make in a hurry.
+  * Deliberate and staying: the profile-switch remount in `MainWindow_Slots.cpp`
+    (atomicity against the AI server outranks latency, and the worker is stopped)
     and the outgoing medium's write-back inside `installDisk` (swapping before
     knowing the old medium could be written loses the user's changes).
-  Deliberate and bounded, so listed for completeness rather than as a defect:
-  the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms, `W5100Device.h`).
-
-## Quick wins
-
-High impact/effort ratio, and independent of the tracks above. When the two
-compete, [Next up](#next-up) wins — A3 is one hour and ends a class of silent
-red, A4 is half a day and ends another.
-
-| # | Item                                    | Effort  | Why                                |
-| - | --------------------------------------- | ------- | --------------------------------------- |
-| 1 | ~~WASM IDBFS settings persistence~~     | *done*  | landed 2026-09-01 — see [WASM](#wasm) |
-| 2 | WOZ1 splice point TRK+6650              | 1 d     | Applesauce re-master parity             |
+  * Bounded and documented: the Uthernet II guest DNS wait (`kDnsWaitMs` = 120 ms).
+- 🟢 **`persistSession()` reaches `controller->memory()` unlocked, and it is
+  safe by construction — but the invariant is unenforced.** `~MainWindow` calls
+  `controller->stop()` first, and the WASM heartbeat runs on the CPU-stepping
+  thread because the worker does not exist under Emscripten. Nothing in the file
+  says so, and nothing stops a third caller from adding a mid-session call on
+  the desktop, where the sibling `MainWindow::flushSlotMedia` does take the lock
+  around the identical `flushAll`. Worth a comment at minimum.
+- 🟡 **ThreadSanitizer: the GUI half is still open.** The controller half is
+  done and clean (2026-08-17) — a harness drove the real thread shape without a
+  GUI: CPU worker, UI transport verbs, an AI-server thread doing `lockState()`
+  reads plus snapshot capture/restore and key injection, the live miniaudio
+  callback, and a Mockingboard fed by a guest loop so the emuCycles AY queue is
+  exercised. Zero races. **Caveat worth keeping**: TSan instruments the
+  interpreter's hot loop, so the CPU manages ~400-1 400 emulated cycles/s — the
+  *lock protocol* is covered thoroughly, *emulated execution* thinly. What
+  remains is ImGui panels, `demodMutex`, slot re-plug under load — which is the
+  same thing G5-10 unblocks.
+- 🟡 **`ImageWriterPdf.cpp:181-191` skips `AtomicFileReplace`.** CLAUDE.md says
+  every write-back goes through it, and ten call sites do — including the PNG
+  export in the same subsystem. Save PDF writes straight onto the destination,
+  so a crash mid-save leaves a truncated file where the old one was. Four lines.
+  *~1 h.*
+- 🟡 **Three divergent copies of the atomic file-write helper** remain:
+  `DiskImage.cpp:2311`, `Disk35Image.cpp:329`, `ProDOSVolume.cpp:709` — temp-file
+  naming, permission carry-over and error strings hand-repeated. `DiskImage`
+  caught up on permission preservation on 2026-08-08 (it had been resetting the
+  image's mode to the umask default on every write-back); `ProDOSVolume` still
+  has not. The home is `AtomicFileReplace.h`, next to `pom2::replaceFileAtomic`,
+  not a new file.
 
 ## MAME ↔ POM2 parity (dashboard)
 
@@ -447,7 +837,7 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 | 14bis | ProDOSHardDiskCard (key `hdv`) | POM2-original (H1) | No MAME/AppleWin analogue — hand-assembled 256 B slot ROM + an invented 4-register streaming port | 🟢 deliberate: mounts `.hdv`/`.2mg` with **no card ROM dump required**; no GCR/flux/ATA below it; `$Cn07 = $01` so the F8 autostart never scans it (use `PR#n` / `bootFromSlot`); pinned `hdv_card_smoke`, `hdv_writeback_smoke`, `hdv_mass_storage_smoke` |
 | 15 | ClockCard / ThunderClock+      | Partial-verbatim | `upd1990a.cpp:248-267`, `:312-327`; Thunderware Rev 1.3 EPROM (`roms/thunderclock_u9_v1.3.bin`) | 🟡 MODE_SHIFT lax; 🟡 DATA_OUT live vs MAME latch; 🟢 real EPROM loads from the ctor (synth ROM = fallback, untested from `$C800`) |
 | 15bis | NoSlotClock (DS1216E, no slot used) | Verbatim | MAME `ds1216.cpp`; protocol verified against AppleWin `NoSlotClock.cpp` (Nick Westgate csa2 + Dallas datasheet) | 🟢 full 64-bit pattern-match state machine on reads **and** writes (key bit rides on the address); window follows the machine — `$F800-$FFFF` on II/II+, `$C300`/`$C800` on //e + //c-class; injectable time source; pinned `no_slot_clock_smoke` |
-| 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | 🟢 IRQ gate SW2:6 DIP not gated                                                          |
+| 16 | SuperSerialCard                | Partial-verbatim | `mos6551.cpp:46`, `:542-543`, `a2ssc.cpp:373`                            | — (the SW2:6 IRQ gate landed: `SuperSerialCard.cpp:492` gates `assertIrq` on `irqDipEnabled()`, line-cited to MAME) |
 | 17 | MouseCard (MAME)               | Verbatim         | `bus/a2bus/mouse.cpp`, M68705 + MC6821                                   | 🟢 PIA out_a/b without `scheduler.synchronize`                                          |
 | 18 | MouseCard (AppleWin HLE)       | Verbatim         | AppleWin `source/MouseInterface.cpp`                                     | — (slot EPROM only, MCU synthesized)                                                      |
 | 19 | Phasor (AE — 2×VIA, 4×AY)      | Partial-verbatim | MAME `a2bus/phasor.cpp` + AppleWin                                       | 🟢 EchoPlus mode (=7) routed as native Phasor; stereo L/R per VIA pair done (2026-08-01). 🟡 **no cycle-stamped event queue** — the AY writes are applied when the audio callback runs, not at their `emuCycles` stamp the way Mockingboard's are, so beam-raced register changes quantise to the buffer. Bus decode is verbatim; the audio timeline is not, hence Partial not Verbatim. |
@@ -465,27 +855,20 @@ port can be high-level (`ImageWriter`) and a POM2-original can be low-level
 
 ## Backlog
 
-- **[Storage] //c + ProDOS : RESOLU (2026-08-30).** Trois couches, chacune
-  masquant la suivante : l'auto-interblocage du montage (routeMountHdv), la
-  banque $C800 du stub jamais percee sur //c-classe (iicCardWindow_), et --
-  la racine -- l'entree ProDOS $Cn0A du stub SANS le `BIT $CFFF` du vrai
-  firmware Liron : appelee par le noyau APRES que le firmware 80 colonnes a
-  latche INTC8ROM, ses JSR vers $CD00/$CD10 executaient la banque INTERNE,
-  le scan //c de P8 2.4.3 partait dans le decor et sa table de devices
-  restait vide (RESTART SYSTEM-$0A au premier MLI du programme, dissection
-  complete au traceur : dispatch $E1C2, installateur $EE82, bloc de config
-  $FExx). Verifie en jeu : SCOSWAMP boote et se joue sur --preset iic.
-  Le harnais de dissection reste dans le test epingle
-  (`POM2_TRACE_HDV=<hdv> test_iic_onboard_smartport`, + oracle //e).
+**Everything below is post-1.0 by default.** An item leaves this section only
+when a gate in [The road to 1.0](#the-road-to-10) names it, or when a report
+arrives against a subsystem the [scope ruling](#the-scope-ruling) calls *core*
+or *supported*. Items under a **frozen** subsystem are marked 🧊 and are closed
+as *won't do* — kept for the reasoning, not as work.
 
-Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each item.
+Grouped by subsystem. Severity encoded by 🔴/🟠/🟡/🟢/🧊 at the head of each item.
 
 ### [Memory] paging & RAM expansion
 
-- 🟡 **Saturn 128K LC** (Saturn Systems) — 16 banks ×16 KB on LC
+- 🧊 **Saturn 128K LC** (Saturn Systems) — 16 banks ×16 KB on LC
   `$D000-$FFFF`, switches `$C080-$C08F` slot-relative. MAME refs
   `bus/a2bus/a2memexp.cpp`. *2-3 d.*
-  Feature, not architecture — do not pick ahead of P0–P4.
+  Frozen by the scope ruling: it leaves *Parked* only when named software needs it.
 - 🟡 **`Memory::memRead` hot path** — the multi-level `if` cascade is
   `Memory::memReadSlow`; `memRead` itself is the inline fast path (RAM, ROM
   window, and since 2026-08-20 the //e internal `$C100-$CFFF` ROM;
@@ -510,9 +893,9 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   ALTCHAR/mousetext + char-ROM glyphs (need a user ROM), PAL beam-raced
   splits (stay behavioural). Also: OE-GPU uploads the unused ~430 KB
   fallback framebuffer every frame (minor perf).
-- 🟢 **Pure-analog signal-level composite pipeline** *(deferred, academic)* —
+- 🧊 **Pure-analog signal-level composite pipeline** *(deferred, academic)* —
   IIR on the signal itself before demod, against today's 1-bit signal + FIR.
-  *5-10 d.* Feature, not architecture — do not pick ahead of P0–P4.
+  *5-10 d.* Frozen: an alternative to a pipeline that is already core and green.
 - 🟢 **Beam-racing residuals** — `signalPhaseOffset_` stays a per-frame
   constant, so a mid-frame HGR↔DHGR split is approximated; lo-res clips at
   block-row (4 lines), like the RGBA path.
@@ -549,9 +932,27 @@ Grouped by subsystem. Severity encoded by 🟠/🟡/🟢 at the head of each ite
   - **F6** row-dim mask ×0.7 ⚠ (make luminance-neutral, don't drop hard).
   - *(Non-items, documented: F1 clamp double > AppleWin float; F8/F9 amber/green
     tints assumed — optional "AppleWin-faithful" preset.)*
-- 🟠 **Le Chat Mauve EVE / Féline / RVB Graph / //c adapter** — now
-  [Next up § 1](#1--le-chat-mauve-at-the-silicon--docschatmauve_planmd),
-  planned in `docs/chatmauve_plan.md`. Still parked alongside: **Video-7
+- 🟡 **Le Chat Mauve — what is left after P0-P2** (landed 2026-09-01; the
+  model as built is `docs/chatmauve_plan.md` § 2.1). **Féline and Eve are
+  core** — dot-exact against AppleWin's hardware-validated oracles, two golden
+  suites (`purplesoft_eve_screens`, `chatmauve_dot_rules`), the Eve's sixteen
+  switches + CPREG auto-write + table IX-1 corrected four times by Purplesoft's
+  own code. `rvb` and the //c-adapter quirk are 🧊 **frozen**, both gated on
+  sources that have never surfaced (P4's manual; P5's silicium.org thread
+  behind a proof-of-work wall `WebFetch` cannot pass). **P3 is closed as
+  bounded** (2026-09-02): the PLA is a dot-stream router / cell assembler, NOT
+  the colour decoder — reopen only on a schematic or a board trace.
+  Remaining and not frozen: **P6's residuals** (the Eve's `$C0Bx` as loggable
+  events, the exact in-cell dot position, the TTL-RGBI palette option, DIX /
+  PoP golden screens — the first rung, a beam-racing mode latch, landed as
+  `chatmauve_latch_split`); the **Extasie and Arlequin goldens** (both boot
+  headless now — pin the Arlequin demo-menu screen and an Extasie editor
+  screen; Eve Leonard still to find); the **three Féline trim pots** (R/G/B
+  gain, manual p. 13), which belong with the `NtscParams::rgbBandwidthMHz`
+  pre-pass that gave the card its second connector on 2026-09-04; and **P7's
+  last doc step** — fold § 3.4's corrected table back into § 3 prose, and
+  rewrite the README's Chat Mauve paragraph.
+  Still parked alongside: **Video-7
   AppleColor RGB** (its 160×192 chunky mode and F/B text are the only things
   the plan's Féline decoder does not cover), **Color killer Rev 1**,
   **Strapping RAM 4K→48K**.
@@ -589,10 +990,11 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 
 **Landed:**
 
-- ⚠️ **Probe gotcha:** `tests/dd2_ay_trace` never calls `setCpu()`, so
+- ⚠️ **Probe gotcha:** `tests/dd2_ay_trace` calls `Memory::setCpu` but
+  never `MockingboardCard::setCpu` (`Mockingboard.h:134`), so the *card's*
   `lastSyncCycle_` stays 0, every event is stamped cycle 0 and the whole
   replay path is silently bypassed. Any new Mockingboard probe must wire
-  the CPU or it measures nothing.
+  the card's CPU pointer or it measures nothing.
 - ⚠️ **Methodology.** Two successive synthetic harnesses PASSED against
   the bugs they were written to catch (NTSC bursts vs PAL-sized lag; an
   unbroken write stream vs a production gap). The fault needs the audio
@@ -611,9 +1013,10 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   Every register write inside a buffer still collapses to its last value,
   and PAL clocks its AYs 0.7 % fast. Now the only divergence from
   Mockingboard rather than a hidden one.
-  Architect order: **P3** — until this lands, « verbatim » is an audio lie
-  ([Priority order](#priority-order)).
-- 🟢 **ayumi-grade resampling** (native clock/8 → 8× quadratic interp →
+  Under the [scope ruling](#the-scope-ruling) Phasor is **supported**, so this
+  is a stated limit rather than an owed fix — but the dashboard says *Partial*,
+  not *Verbatim*, for exactly this reason, and it must keep saying so.
+- 🧊 **ayumi-grade resampling** (native clock/8 → 8× quadratic interp →
   192-tap FIR decimation + moving-average DC filter,
   `true-grue/ayumi`, MIT). Strictly better than the box filter and what
   chiptune players use; ~8× the inner iterations plus ~96 MACs per sample
@@ -621,15 +1024,15 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   delay — a real cost on the **WASM** target. Only worth it if listening
   shows the box filter is insufficient. Note this would be a deliberate
   departure from "MAME = source of truth" for the audio path.
-  Feature, not architecture — do not pick ahead of P0–P4.
+  Frozen by the scope ruling.
 - 🟢 **Analog output stage.** The real Sweet Micro board's LM386 pair
   makes the output *triangular*, not square (deater's scope capture:
   `deater.net/weave/vmwprod/chiptune/mock_problem/`). No emulator models
   it and there is no MAME oracle, so it would have to be an off-by-default
   toggle labelled non-authoritative — and only after band-limiting, since
   a low-pass over an aliased signal muffles rather than removes.
-- 🟢 **Mutex contention.** Architect **P1** (SPSC handoff *if* a profile
-  still shows it after TSan-GUI). `advanceCycles` takes the card mutex on every
+- 🟢 **Mutex contention.** SPSC handoff *if* a profile still shows it after
+  the GUI TSan half ([Arch](#arch-refactor--tooling)). `advanceCycles` takes the card mutex on every
   emulated instruction (~1 M/s) and the realtime audio callback needs the
   same one, holding it across the whole SSI263 render on Sound II.
   Classic priority inversion; wants an SPSC handoff.
@@ -637,13 +1040,27 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `pending` has been drained, so writes are lost while muted and `vol`
   changes are applied as a hard step at buffer boundaries (click).
 
-- 🟢 **8-bit DAC (Marczewski)** — 8-bit slot latch → R-2R DAC. Niche
+- 🧊 **8-bit DAC (Marczewski)** — 8-bit slot latch → R-2R DAC. Niche
   demos (Music Studio, trackers). AppleWin refs `Card::CT_DX1`. *1 d.*
-- 🟢 **Passport MIDI Music Card** — 6840 + 6850, Master Tracks Pro /
+- 🧊 **Passport MIDI Music Card** — 6840 + 6850, Master Tracks Pro /
   Performer. MAME refs `mc6840.cpp` + `acia6850.cpp`. *3 d.*
 - 🟢 **AY Port A read mask by DDR** (R14/R15) — academic.
 
 ### [Storage] disks & images
+
+- ✅ **//c + ProDOS — resolved 2026-08-30, kept as a record because the "why"
+  is nowhere else.** Three layers, each hiding the next: the mount's own
+  deadlock (`routeMountHdv`); the stub's `$C800` bank never opened on
+  //c-class (`iicCardWindow_`); and — the root — the stub's ProDOS entry at
+  `$Cn0A` **without** the real Liron firmware's `BIT $CFFF`. Called by the
+  kernel *after* the 80-column firmware has latched INTC8ROM, its `JSR`s to
+  `$CD00`/`$CD10` ran the **internal** bank, ProDOS 8 2.4.3's //c scan went off
+  into the weeds and its device table stayed empty — `RESTART SYSTEM-$0A` at
+  the program's first MLI call. Dissected with the tracer end to end (dispatch
+  `$E1C2`, installer `$EE82`, config block `$FExx`) and verified in play:
+  SCOSWAMP boots and plays under `--preset iic`. The dissection harness lives
+  in the pinned test (`POM2_TRACE_HDV=<hdv> test_iic_onboard_smartport`, plus
+  the //e oracle).
 
 - 🟢 **`DiskImage` is a 242 KB object, and the stack-overflow class is only
   patched, not closed.** *1 d, measure first.* The 2026-08-23 macOS SIGBUS
@@ -669,13 +1086,13 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   happen, which is why this has never bitten in practice. *~1 h.*
 - 🟡 **WOZ1 splice point (TRK+6650)** — `DiskImage::writeFlux` splices
   bit-cells but the full `set_write_splice` handling (TRK +6650
-  splice_point/nibble/bit_count fields, parsed at `DiskImage.cpp:827`)
-  is ignored; IWM call site wired (`IWMDevice.cpp:235`, see the comment
-  at `IWMDevice.cpp:48`). Applesauce re-master parity. *1 d.*
+  splice_point/nibble/bit_count fields, parsed at `DiskImage.cpp:867-869`)
+  is ignored; IWM call site wired (`IWMDevice.cpp:412`, see the comment
+  at `IWMDevice.cpp:56-61`; the stub is `DiskImage.h:283`). Applesauce re-master parity. *1 d.*
 - 🟡 **SmartPort ProDOS multi-partition** — 1 image = 1 unit = 1
   volume today; multi-volume CFFA3000-style not supported.
 - 🟢 **UI "Force DOS / Force ProDOS"** — backend ready
-  (`DiskImage::loadFile(path, SectorOrder)` at `DiskImage.cpp:725`),
+  (`DiskImage::loadFile(path, SectorOrder)`, log at `DiskImage.cpp:820-827`),
   button missing in `DiskLibrary_ImGui` / `DiskController_ImGui`.
   Auto-detect (extension + vol-dir content sniff `0x400`/`0xB00`)
   already covers 99 % of cases; manual override useful for ambiguous /
@@ -683,9 +1100,9 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
 - 🟢 **Half-tracked NIB (88)** — deliberately out of scope as long as
   WOZ covers it. Its two former companions are done: **Disk II in
   snapshot** (snapshot v2 with nibble track buffers,
-  `DiskIICard.h:254-255`, pinned `rewind_disk_write` — see [UI/UX]
+  `DiskIICard` snapshot v2, pinned `rewind_disk_write` — see [UI/UX]
   Rewind) and the
-  **Applesauce CNib2 format** (`DiskImage.cpp:505`, pinned
+  **Applesauce CNib2 format** (detected at `DiskImage.cpp:544`, pinned
   `disk_cnib2_smoke`) — only the literal `.nib2`/`.app` extensions are
   still missing from `classifyDiskForSlot` / `accept525`.
 - 🟢 **Floppy Emu Dual-5.25" + Smartport-Unit-2 modes** — out of scope
@@ -802,8 +1219,11 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   is the source MAME lacks.
 
 
-- 🟡 **Apple II Workstation Card — the card boots; the host handshake does
-  not.** *(~2-4 d to finish)*
+- 🧊 **Apple II Workstation Card — it boots, it is identified, and there is no
+  network on the other end.** *(Frozen by the [scope ruling](#the-scope-ruling);
+  steps 2 and 3 below are closed as won't-do. The title used to say the host
+  handshake did not work — it does, see sub-item 1, which is why this item
+  contradicted itself for a week.)*
   <a id="apple-ii-workstation-card"></a>The card that put a IIe on LocalTalk,
   so it could netboot from an AppleShare server and reach the LaserWriters on
   the same net. Emulated as `WorkstationCard` (catalog `workstation`), pinned
@@ -854,12 +1274,12 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
      boots in POM2, its ATINIT passes the card's power-up diagnostics and
      the workstation software reaches its menu.
 
-  2. ❌ **Why lapACK does not move the node.** Answering the card's lapENQ
+  2. 🧊 **Why lapACK does not move the node.** Answering the card's lapENQ
      with lapACK is accepted by the chip — the FIFO fills, the interrupt fires
      — and the driver enquires again anyway rather than picking another
      address. Timing window, a status bit that is not set, or simply what this
      firmware does on a dead network. Worth an hour before (3). *~0.5 d.*
-  3. ❌ **A host-side LocalTalk endpoint** — bridge the card's frames to a
+  3. 🧊 **A host-side LocalTalk endpoint** — bridge the card's frames to a
      real or emulated AppleTalk network. `setFrameCallback` and
      `receiveFrame` are the seam and both work; note the card **disables its
      receiver while transmitting**, so an endpoint must wait for WR3 D0 to
@@ -925,33 +1345,29 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   is that accepting a write with write-back off loses it silently. Both are
   defensible — one card doing both is not. **Needs a ruling, then ~1 h.**
 
-- 🟡 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
+- 🧊 **EchoPlusTMS5220Card (real Echo+)** — catalog scaffold
   `echoplus_tms`: SlotPeripheral + stub register decode at
-  $Cs00-$Cs0F, enough for detection (`EchoPlusTMS5220Card.h:15-17`).
+  $Cs00-$Cs0F, enough for detection.
   Remaining: TMS5220 LPC10 decoder (chirp ROM + K-parameter
   interpolation) and AY-3-8913 audio synth — the shared AY core it
   needs already exists (`src/AyPsgSynth.h`, extracted 2026-08-01,
   see [Audio]). *~3-5 d.*
-  Architect **P3**: hide from the catalog until the chip exists, or ship
-  it — a detect-only stub is the wrong third option.
-- 🟢 **SSC IRQ gate SW2:6 DIP** not implemented (MAME `a2ssc.cpp:373`).
-- 🟢 **Nothing asserts the real ClockCard ROM path is taken** when the dump
+  **Ruling [R2](#standing-rulings) is answered by the scope ruling: hide.**
+  Taking it out of the README table and the picker is a
+  [G3](#g3--make-the-words-true-) item; the chip itself is closed as won't-do.
+- 🟡 **Nothing asserts the real ClockCard ROM path is taken** when the dump
   is present — `clock_card_smoke` tolerates its absence so CI stays
   ROM-free, so a regression that silently routed back to the synthetic ROM
   would fail nothing. Same silent-degradation hole as every other
   ROM-driven L path (Disk II P6, mouse MCU, Grappler EPROM); →
   [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md) § Keeping a level once you
-  have it. The DOS 3.3 / Applesoft tools that pull the driver from
-  `$C800` are still untested.
-- 🟠 **Real Liron / UniDisk 3.5 (IWM in a slot)** — folded into the single
-  3.5"-boot campaign under [Storage](#storage-disks--images), because it shares
-  its one unknown: whether the GCR read path feeds the firmware a clean
-  address field. Build the harness before the card.
-
-- 🟢 **[P3] Apple II SCSI / High-Speed SCSI + CHD** — MAME
+  have it. **Folded into [G5-15](#g5--the-donut-policy-without-a-test-)**, with
+  Disk II P6, the mouse MCU and the Grappler EPROM. The DOS 3.3 / Applesoft
+  tools that pull the driver from `$C800` are still untested.
+- 🧊 **Apple II SCSI / High-Speed SCSI + CHD** — MAME
   `a2scsi.cpp` (NCR 5380) / `a2hsscsi.cpp` (53C80). Big lift for a
   niche need (CFFA suffices). *~30-50 h.*
-- 🟢 **Apple II VGA / Second Sight (VGA video card)** — slot card that
+- 🧊 **Apple II VGA / Second Sight (VGA video card)** — slot card that
   shadows the Apple II framebuffer and outputs a clean VGA signal
   (scanline mode + text/HGR/DHGR/lo-res modes). Two incarnations: the
   open-hardware project **markadev/AppleII-VGA** (RP2040, free firmware +
@@ -965,14 +1381,14 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   - <https://downloads.reactivemicro.com/Apple%20II%20Items/Hardware/SecondSite_VGA/> (ReactiveMicro dumps/ROMs)
   - <https://www.apple2history.org/history/ah13/#05> (historical context)
   *~5-10 d (register sourcing + integration mode to be decided).*
-- 🟢 **UDC (Apple 1991)** — 4 heterogeneous bays (3.5"/5.25"/HDV).
-- 🟢 **Slinky / RamFAST RAM disk** — limited utility vs RamWorks III.
-- 🟢 **Apple 3.5" Controller IWM-level** — refactor IWMDevice attached
+- 🧊 **UDC (Apple 1991)** — 4 heterogeneous bays (3.5"/5.25"/HDV).
+- 🧊 **Slinky / RamFAST RAM disk** — limited utility vs RamWorks III.
+- 🧊 **Apple 3.5" Controller IWM-level** — refactor IWMDevice attached
   to a slot card (rare).
 
 ### [Cassette]
 
-- 🟢 **Enriched WAV record/playback** — POM2 supports .wav; missing
+- 🧊 **Enriched WAV record/playback** — POM2 supports .wav; missing
   analog tape filtering (hiss, drop-out), VU-meter, timecode.
   MAME refs `apple2.cpp` cassette. *2 d.*
 
@@ -1059,7 +1475,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   text. Revisit only if "having to install a second program" turns out to
   be the real blocker.
 
-- 🟡 **Uthernet I has no host transport on Windows** — libslirp is the
+- 🧊 **Uthernet I has no host transport on Windows** — libslirp is the
   only backend that moves raw frames, and CMake deliberately does not
   look for it on WIN32. vcpkg *does* carry a libslirp port (4.9.1), so
   the library is obtainable; what is missing is POM2's side —
@@ -1068,20 +1484,21 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   libslirp build to test against. Note the vcpkg port pulls **glib**,
   which is a heavy addition to the Windows CI job. Uthernet II is
   unaffected (hardware TCP/IP on host sockets). *1-2 d + CI budget.*
-- 🟡 **Uthernet II inbound (`LISTEN`)** — the W5100 `LISTEN` command is
+- 🧊 **Uthernet II inbound (`LISTEN`)** — the W5100 `LISTEN` command is
   decoded but unimplemented: neither transport can route an inbound
   connection to the guest (libslirp is outbound-only without explicit
   port forwarding). Needs a user-configured host port to bind plus a
   slirp `hostfwd`-style mapping. *1 d.*
-- 🟢 **Uthernet I on WASM** — the CS8900A model is browser-safe but has
+- 🧊 **Uthernet I on WASM** — the CS8900A model is browser-safe but has
   no transport there (no raw sockets, and libslirp isn't in the
   Emscripten build). A websocket-proxied backend would fix both cards'
   raw modes in the browser. *2-3 d.*
 
 ### [Input] joystick / paddles / mouse
 
-- 🟡 **PADL(2)/PADL(3) host binding** — second stick centered at 127
-  (`JoystickInput.cpp:65-75`).
+- 🟡 **PADL(2)/PADL(3) host binding** — no host axes are bound to the second
+  stick; `JoystickInput.cpp:60-75` is the NaN-guarded `[-1,+1] → [0,255]`
+  mapper it would feed.
 - 🟡 **Mouse → paddles mapping** — paddle 0/1 on host mouse X/Y axes
   (alternative to pads).
 
@@ -1104,7 +1521,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   undone (`wozRaw` is a separate store; WOZ originals usually write-protected);
   "redo" (replay an undone future) not implemented. Detail → `DEV.md`
   § Rewind / time-travel.
-- 🟡 **MicroM8-style 3D voxel view ("Voxel Cube")** — screen **stood up**
+- 🧊 **MicroM8-style 3D voxel view ("Voxel Cube")** — screen **stood up**
   (monitor, XY plane) as a 4:3 slab of **uniform-depth** cubes + per-color "pop"
   relief, orbital camera. NB: the initial luminance extrusion gave flat
   stalactites — fixed after scraping MicroM8 (cf. `CHANGELOG.md` + `DEV.md` § 3D
@@ -1127,7 +1544,7 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   `SetNextWindowPos` adaptive cascade.
 - 🟢 **`isDuplicate` flags cffa/smartport35 duplicates** in the Slot
   Config assignment column — cosmetic.
-- 🟢 **On-screen touchscreen / virtual joystick** — ImGui virtual
+- 🧊 **On-screen touchscreen / virtual joystick** — ImGui virtual
   joystick for mobile WASM builds (separate from raw touch routing). Two
   thumb-sticks + Open/Solid Apple buttons. Inspired by microM8 / A2TS.
   *2 d.*
@@ -1143,29 +1560,31 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   a heartbeat; and the shell's populate had to hold up `run()`, which is a
   boot hang if its callback never fires — hence the watchdog. Verified in
   headless Chrome over CDP, three visits. → `CHANGELOG.md`
-- 🟡 **File picker / drop-zone disks** — build-time bundling
+- 🧊 **File picker / drop-zone disks** — build-time bundling
   only. HTML5 drop-zone → `FS.writeFile('/uploads/…')` →
   `DiskIICard::insert`. *~1 d.*
-- 🟢 **Mobile touch input** — GLFW3 under Emscripten does not map
+- 🧊 **Mobile touch input** — GLFW3 under Emscripten does not map
   touch → mouse off-canvas. JS wrapper `touchstart/move/end` →
   `Module._inject_mouse_*`.
-- 🟢 **Audio worklet tuning** — miniaudio Web Audio works but
+- 🧊 **Audio worklet tuning** — miniaudio Web Audio works but
   latency ~150 ms is audible on speaker click. Explore a custom
   `AudioWorkletNode` or shrink the buffer.
-- 🟡 **"Zero-friction" web demo — the licensing call** *(commercial audit
-  2026-05-31; premises re-checked 2026-08-19)* — the technical side is done:
-  `roms/` is baked into `POM2.data` (`CMakeLists.txt:489-491`), `disks_3.5`
-  can be bundled (`POM2_WASM_BUNDLE_DISKS`, `:539`) and `wasm/shell.html`
-  auto-boots Total Replay from the bundled `floppyemu/`. What remains is
-  **licensing**: shipping Apple ROM dumps + non-free media in a public web
-  demo vs sourcing royalty-free replacements. A marketing prerequisite
-  before pushing to r/apple2 + Hacker News; aim in parallel for a
-  **stable 1.0**. *decision + media sourcing.*
+- 🔴 **The licensing call — moved to [G1](#g1--what-we-are-allowed-to-ship-),
+  and it was scoped wrongly here.** This item read as prospective, "a marketing
+  prerequisite before pushing to r/apple2". It is not. The technical side
+  really is done — `roms/` is baked into `POM2.data`, `POM2_WASM_BUNDLE_DISKS`
+  bundles `disks_3.5`, and `wasm/shell.html` auto-boots Total Replay from the
+  bundled `floppyemu/` (`CMakeLists.txt:965-1001`) — and `ci.yml:437-460` has
+  been deploying exactly that to `habib256.github.io/pom2/wasm/` **on every
+  push to main**, linked five times from the README. The demo this decision was
+  meant to gate has been live for months, so the decision is a 1.0 blocker
+  rather than a marketing one.
 
 ### [Arch] refactor & tooling
 
-- 🟠 **Two ceilings were raised instead of splitting — the debt.** *(~1 d for
-  ImageWriter, less for Memory)* <a id="file-size-debt"></a>The file-size
+- 🟡 **Two ceilings were raised instead of splitting — the debt.** *(~1 d for
+  ImageWriter, less for Memory; post-1.0, ruling
+  [R4](#standing-rulings))* <a id="file-size-debt"></a>The file-size
   ratchet had been failing on `main` since **2026-08-29**, in 15 s, before the
   Linux job compiled anything — so it was also hiding that job's build and its
   GLES tier behind a red X nobody could see past. On 2026-08-31 the two
@@ -1201,10 +1620,11 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   offset LUT; drop the per-instruction `mem_` null tests in the dmaRun hot
   loop (guard once at entry). Boot test could also pump a public
   controller slice hook instead of re-implementing arbitration.
-- 🟠 **ThreadSanitizer pass over `EmulationController` / `stateMutex` / the
-  audio thread** *(2026-08-02 bug-hunt follow-up)* — architect **P2**
-  ([Priority order](#priority-order)). The highest-yield gap we
-  know of. That sweep's ASan+UBSan build (156 test binaries, ~24 000
+- 🟡 **ThreadSanitizer — the GUI half** *(2026-08-02 bug-hunt follow-up)*.
+  Gated on [G5-10](#g5--the-donut-policy-without-a-test-), which is what makes
+  a GUI harness possible at all. The controller half is done and clean; the
+  analysis is kept in
+  [Open, and known to be open](#open-and-known-to-be-open). That sweep's ASan+UBSan build (156 test binaries, ~24 000
   hostile-input cases, ~6 M random instructions) returned **zero**
   diagnostics, yet code reading found a UI deadlock, two use-after-frees and
   three unlocked cross-thread reads in the same tree. ASan cannot see data
@@ -1225,16 +1645,10 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     so the CPU manages only ~400-1 400 emulated cycles/s — the *lock protocol*
     is covered thoroughly, *emulated execution* thinly. What remains is the GUI
     half: ImGui panels, `demodMutex`, slot re-plug under load.
-- 🟡 **Consolidate the atomic file-write helper** *(2026-08-02)* — three
-  divergent copies still: `DiskImage.cpp`'s `writeFileAtomic` (anonymous
-  namespace), `Disk35Image.cpp:264-310` (added 2026-08-02) and
-  `ProDOSVolume.cpp:667-710` — the temp-file naming, the permission carry-over
-  and the error strings are hand-repeated in each. `DiskImage`'s copy caught
-  up on permission preservation 2026-08-08 (it was silently resetting the
-  image's mode to the umask default on every write-back); `ProDOSVolume`'s
-  still hasn't. The home for the extracted helper is the header the three
-  already share for the COMMIT step — `AtomicFileReplace.h`, next to
-  `pom2::replaceFileAtomic` — not a new file. Architect **P4**.
+- 🟡 **Consolidate the atomic file-write helper** — moved to
+  [Open, and known to be open](#open-and-known-to-be-open), where it now sits
+  next to the `ImageWriterPdf` divergence found on 2026-09-05. The three copies
+  are `DiskImage.cpp:2311`, `Disk35Image.cpp:329` and `ProDOSVolume.cpp:709`.
 - 🟡 **`hgrpaint/` has no headless harness** *(2026-08-14)* — the editor's
   state (mode flags, shadow buffer, tools) is private and only reachable
   through `render()`, i.e. through an ImGui frame, so nothing in `ctest`
@@ -1253,22 +1667,9 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
     clipping moved into (`dhgrExportRowBytes`, `extractDhgrPlanes`) — but
     `HgrSpriteEditor` itself is still only reachable through an ImGui frame,
     exactly like `HgrPaintEditor`. One seam would serve both.
-- 🟠 **`MainWindow.cpp` god-object (8 319 lines)** — architect **P1-3**
-  ([Priority order](#priority-order)). 111 includes, ~290 declarations in the
-  header; it is where rendering, input, media, profiles, panels and coordinator
-  wiring all cross. The panel registry and the eleven coordinators did the hard
-  part — what is left is **movement, not redesign**.
-  **Left**: (a) the storage panels (Disk, Library, SmartPort, FujiNet,
-  FloppyEmu, HDV) — they reference the `kProDOSHostSentinel` / `freePoNameFor`
-  anonymous-namespace helpers, which must move with them; (b) the keyboard and
-  welcome panels, which stay put deliberately (they load a texture through the
-  `STB_IMAGE_STATIC` instance defined in `MainWindow.cpp`, whose symbols are
-  internal to that TU); (c) `renderScreenWindow`, tightly coupled to the GL
-  upload. Target &lt; 2 000 lines, ratchet lowered in the same commit. *2-3 d.*
-  → [DEV](DEV.md#panel-registry-panelcataloghpanelregistry-mainwindow_panelscpp)
-
 - 🟠 **No test drives the ImGui panels, so a UI-thread deadlock fails nothing**
-  *(found the hard way 2026-08-27)* — a coordinator capture placed inside an
+  *(found the hard way 2026-08-27; gated on
+  [G5-10](#g5--the-donut-policy-without-a-test-))* — a coordinator capture placed inside an
   existing `lock_guard(stateMutex())` scope would have hung the UI thread and
   the emulator together, while the full suite stayed green, because nothing
   drives the panels. `stateMutex` is non-recursive and every coordinator
@@ -1283,24 +1684,26 @@ rework. Full reasoning → `CHANGELOG.md`; abstraction rationale →
   left in `W5100Device` when the socket seam landed: an async mailbox with an
   in-flight cap, a bounded wait and its own cache, wired to register reads.
   Its own pass, and not on anything's critical path.
-- 🟡 **Scattered config** — `POM2_*` env vars + CLI flags + `Settings`
-  to centralize into a `Config` (env → CLI → Settings → defaults),
-  list env vars in `--help`. *1 d.* Architect **P4**.
-- 🟡 **`stateMutex` shared CPU+UI** (`EmulationController.h:229`) —
-  `MainWindow_Slots` takes this lock during plug/unplug, audio jitter
-  risk. Partition long-term. Architect **P1** grain (GUI TSan first).
-- 🟡 **CI `ctest -L rom` + ROM Status « degraded »** — architect **P3**.
-  Tests SKIP when a dump is absent, so the L0 path can rot behind a
-  green suite. ROM Status reports missing, not « running the synthetic
-  fallback ». Detail → [`docs/lle_vs_hle.md`](docs/lle_vs_hle.md)
-  § Keeping a level once you have it.
-- 🟡 **Inconsistent `pom2::` namespace** — 163/233 top-level files,
-  `tests/` does not use it. Mechanical migration. Architect **P4**.
+- 🟡 **Scattered config** — ruling [R3](#standing-rulings): one `Config`
+  (env → CLI → Settings → defaults), env vars listed in `--help`. *1 d.*
+  Post-1.0.
+- 🟡 **`stateMutex` shared CPU+UI** — `MainWindow_Slots` takes this lock
+  during plug/unplug, an audio-jitter risk. Partition long-term, and only
+  after the GUI TSan half above.
+- 🟡 **CI `ctest -L rom` + ROM Status "degraded"** — now
+  [G5-15](#g5--the-donut-policy-without-a-test-). Re-verified 2026-09-05: no
+  `LABELS rom` exists anywhere in `tests/CMakeLists.txt`, only `slow`.
+- 🟢 **Inconsistent `pom2::` namespace** — 255/336 top-level files (was
+  163/233 when this was written); `tests/` does not use it. Mechanical
+  migration, ruling [R3](#standing-rulings). Post-1.0.
 - 🟢 **Legacy M6502 style** — FR/EN comments, C-style casts,
   `void(void)`. Targeted `clang-format` + `clang-tidy modernize-*`.
-- 🟢 **`*Card` raw pointers in MainWindow** (`MainWindow.h:320-358`) —
-  no notification when SlotBus replugs. Observer pattern or
-  `controller.slotBus().peripheral(N)`.
+- ✅ **`*Card` raw pointers in MainWindow** — *closed 2026-09-05, the premise
+  was wrong.* The `*Card` entries in the header are accessor **functions**
+  (`MainWindow.h:1211-1215`), and `MainWindow_Media.cpp:347-351`'s
+  `primaryDiskII()` already resolves live through
+  `storageCoordinator_->topology(controller->memory().slotBus())` — which is
+  exactly the remedy the item proposed.
 
 ## Edge-case test corpus
 
@@ -1313,25 +1716,31 @@ unit `ctest`s. Curated list + POM2 status + cross-refs to the dashboard's
   anthology**. **Priority reference** for emulation perfection: chains vapor
   lock, mid-scanline, Mockingboard, 128 KB aux, Unidisk/Liron. Validate DIX
   first before any other corpus title. Full description → `docs/test_corpus.md`.
-  - ⚠️ **French Touch demos expect the Mockingboard in slot 4** — MAD EFFECT
-    (`disks_5.4/demo/madef/Sources/main.a:176-218`) and the DIX productions
-    address the 6522 in hard-coded `$C4xx` with no slot scan; the whole
-    frame sync is the T1 IRQ. With the card anywhere else (or a Mouse Card in
-    slot 4) the demo arms a timer that never fires and waits forever — a
-    frozen screen after the loader, no code regression. Diagnosed 2026-08-20
-    from a `slot_4_card=mouse` / `slot_7_card=mockingboard` config; the
-    `madef_phase_probe` shows 0 page-flips/frame in slot 7 vs ~191 in slot
-    4. Slot 3 is no alternative: the //e's internal 80-column firmware owns
-    `$C300-$C3FF` (SLOTC3ROM off) so a Mockingboard there is silent. Open
-    idea: a Slot Config hint ("DIX / French Touch → MB in slot 4") next to
-    the existing slot-3 warnings in `MainWindow_Slots.cpp`.
+  - ⚠️ **Some French Touch titles hard-code the Mockingboard at slot 4 — DIX
+    itself does not.** DIX **scans** `$C7→$C1` for its 6522 (`boot_unidisk.a`
+    `bdet`), so it finds the card wherever it sits. **MAD EFFECT**
+    (`disks_5.4/demo/madef/Sources/main.a:176-218`) addresses `$C4xx` with no
+    scan, and its whole frame sync is the T1 IRQ — with the card anywhere else
+    it arms a timer that never fires and waits forever: a frozen screen after
+    the loader, and no code regression. `madef_phase_probe` shows 0 page-flips
+    per frame in slot 7 against ~191 in slot 4. Slot 3 is no alternative: the
+    //e's internal 80-column firmware owns `$C300-$C3FF` (SLOTC3ROM off), so a
+    Mockingboard there is silent. **The fresh-install map is mouse@4,
+    Mockingboard@2** (CLAUDE.md § Fresh-install defaults — swapped 2026-09-02
+    because Extasie's self-modified `JSR $C4xx` needs the mouse there and DIX
+    scans anyway), so a title of MAD EFFECT's kind needs the two swapped by
+    hand. `MainWindow_Slots.cpp:428-438` already warns about the **mouse** side
+    of this; 🟢 the Mockingboard side has no hint yet.
 - 🟡 **Spiradisc / RWTS18** (*Captain Goodnight*, *Prince of Persia*) — spiral
   tracking + weak bits to validate on real WOZ images. → `Gap #9/#10`.
 
 ## Parked — wanted, not scheduled
 
-Things we intend to do and are not queueing. Distinct from *Out of scope*
-below: these have a clear shape and a reason, they just have no slot.
+Things with a clear shape and a reason that have no slot. Under the
+[scope ruling](#the-scope-ruling) everything here is **frozen**: it leaves this
+section when a named piece of software needs it, and not before. The estimate
+below is kept because it was done properly and re-costing it would be waste —
+not because the work is queued.
 
 ### E-Z Color Graphics Interface — a TMS9918 in an Apple II slot
 
@@ -1430,8 +1839,8 @@ Things we will not do unless explicitly requested + clear ROI.
 - **Apple ///** + SOS — niche, *20-40 d*.
 - **Clones** Franklin / Laser / Pravetz / Basis 108 — *2-5 d/clone*,
   low demand.
-- **CFFA CompactFlash** — HDV + host folder suffices; MAME-faithful
-  port already covered by P1 (CFFA done).
+- **CFFA CompactFlash** — HDV + host folder suffices; the MAME-faithful port
+  is done (`CffaCard`).
 
 ## Changelog
 

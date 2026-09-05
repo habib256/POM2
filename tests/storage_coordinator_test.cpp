@@ -30,6 +30,7 @@
 #include "SmartPort35Unit.h"
 #include "SmartPortCard.h"
 #include "StorageCoordinator.h"
+#include "Woz35Fixture.h"
 
 #include <cassert>
 #include <cstdint>
@@ -550,23 +551,21 @@ int main()
         assert(!disk35Storage.captureDisk35(
             disk35Controller).drives[0].loaded);
 
-        // Exercise the complete WOZ -> writable PO transaction on a private
-        // temporary copy. The archival source and repository asset remain
-        // untouched.
-        const auto sourceWoz = std::filesystem::path(POM2_TEST_SOURCE_DIR) /
-            "disks_3.5" / "The Oregon Trail 800K.woz";
-        const auto tempWoz = std::filesystem::temp_directory_path() /
-            "pom2_storage_convert.woz";
+        // Exercise the complete WOZ -> writable PO transaction on a SYNTHETIC
+        // 800K WOZ2. It used to copy `disks_3.5/The Oregon Trail 800K.woz`;
+        // that disk is commercial and left the repository on 2026-09-05
+        // (TODO.md § G1), and its absence aborted this test rather than
+        // skipping it. A core test must not rest on a disk POM2 is not
+        // allowed to redistribute — and the fixture is strictly better here,
+        // because it pins the transaction against a known payload instead of
+        // whatever one particular image happens to contain.
+        const auto tempWoz =
+            pom2::test::writeSyntheticWoz35("pom2_storage_convert.woz");
         const auto tempPo = std::filesystem::temp_directory_path() /
             "pom2_storage_convert.po";
         std::error_code fileError;
-        std::filesystem::remove(tempWoz, fileError);
-        fileError.clear();
         std::filesystem::remove(tempPo, fileError);
         fileError.clear();
-        assert(std::filesystem::copy_file(
-            sourceWoz, tempWoz,
-            std::filesystem::copy_options::overwrite_existing, fileError));
         assert(disk35Storage.mountDisk35(
             disk35Controller, disk35Settings, 0, tempWoz.string()).ok);
         disk35 = disk35Storage.captureDisk35(disk35Controller);

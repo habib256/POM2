@@ -4,7 +4,12 @@ Orientation **always-loaded index** — keep terse, defer detail to other docs.
 
 - `README.md` — user walkthrough (build, profiles, ROM/disk placement, keys, CLI).
 - `DEV.md` — implementation deep-dives (MAME-parity ports, internals, gotchas, pinned tests).
-- `TODO.md` — active backlog + MAME↔POM2 parity dashboard.
+- `TODO.md` — **the road to 1.0**: six ordered gates (legal payload, the
+  defects that reach user data, honesty, release repeatability, the untested
+  host side, the platforms we claim), the **scope ruling** that puts every
+  subsystem in core / supported / frozen, the MAME↔POM2 parity dashboard, and
+  the post-1.0 backlog. Re-verify a `file:line` before acting on it — a 2026-09-05
+  audit found ~20 items describing a tree that no longer existed.
 - `docs/test_corpus.md` — edge-case integration corpus; **[DIX](https://github.com/Fr3nchT0uch/DIX/)** (French Touch anthology) is the priority gold-standard benchmark.
 - `docs/lle_vs_hle.md` — abstraction level per subsystem (silicon vs contract), the HLE seams, and the rule POM2 follows when picking a level.
 - `docs/printer_plan.md` — dot-matrix printer gap analysis vs `web-a2e` + phased plan (character ROMs, screen dump, more heads).
