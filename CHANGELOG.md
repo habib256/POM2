@@ -5,6 +5,43 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-05 — The v0.9.0 release run stopped on a moving tag, so the tag stopped moving
+
+The release build for v0.9.0 lost all three aarch64 jobs 35 seconds in, while
+x86_64, macOS, Windows and WASM had already gone green. Not the code:
+
+```
+appimagetool.AppImage: OK
+sha256sum: WARNING: 1 computed checksum did NOT match
+linuxdeploy.AppImage: FAILED
+```
+
+`packaging/linux/fetch_appimage_tools.sh` took appimagetool and the ET_EXEC
+runtime from AppImageKit release **12** — its own header says why: "both are
+immutable release assets rather than a moving `continuous` tag" — but took
+linuxdeploy from `linuxdeploy/releases/download/continuous/`. Upstream
+re-uploaded that asset on 2026-09-01 under the same tag, so the pin stopped
+matching. The pin did exactly its job; the URL was the defect.
+
+**The pin was not simply bumped to whatever the URL now serves.** A checksum
+mismatch on a downloaded binary is the one signal that separates upstream churn
+from a substituted one, and re-pinning without a second source throws that
+away. The candidate was downloaded independently and hashed, and the result
+compared against the digest GitHub computes server-side for the asset; the
+asset's `updated_at` was checked against the release's publication time.
+
+That verification also found the better fix. Upstream does publish immutable
+dated releases, so linuxdeploy now comes from `1-alpha-20251107-1`
+(`620095110d69…`, `updated_at` equal to its publication time, never rewritten)
+and is held to the same rule as the other two. The failure mode is structural,
+not bad luck: a moving tag can only ever break at fetch time, and this script
+is only ever fetched by a release — the worst moment to learn a dependency
+moved. For the record, `continuous` as of 2026-09-01 was `556ab80baa98…`,
+verified the same way.
+
+The v0.9.0 tag was moved onto the fix rather than a v0.9.1 cut: no Release
+object had been created and no asset published, so the tag had no consumers.
+
 ## 2026-09-04 — StorageCoordinator gets its first tests, and a resync gap closes
 
 A bug hunt, reported with its uncertainty intact.

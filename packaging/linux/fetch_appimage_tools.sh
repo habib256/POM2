@@ -56,10 +56,38 @@ download_verified \
   "https://github.com/AppImage/AppImageKit/releases/download/12/appimagetool-aarch64.AppImage" \
   appimagetool.AppImage \
   c9d058310a4e04b9fbbd81340fff2b5fb44943a630b31881e321719f271bd41a
+# linuxdeploy, pinned to the IMMUTABLE dated release, not `continuous`.
+#
+# It used to come from `continuous`, and on 2026-09-01 upstream re-uploaded that
+# asset under the same tag. The digest stopped matching, `sha256sum -c` failed
+# as designed — and it did so during the v0.9.0 release run, taking all three
+# aarch64 jobs down 35 seconds in while x86_64, macOS, Windows and WASM had
+# already gone green. That is the worst moment to learn a dependency moved, and
+# it is structural: a moving tag can only ever break at fetch time, and this
+# script is only ever fetched by a release.
+#
+# The header above already says why appimagetool and the runtime take release
+# 12 — "both are immutable release assets rather than a moving `continuous`
+# tag". linuxdeploy simply had not been held to it. It is now: upstream does
+# publish dated releases, whose assets carry an `updated_at` equal to their
+# publication time and have never been rewritten.
+#
+# Verified before pinning, rather than copied from whatever the URL served:
+# downloaded independently and hashed, and the result compared against the
+# digest GitHub computes server-side for the asset — both
+# 620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff. A checksum
+# mismatch is the one signal that distinguishes upstream churn from a
+# substituted binary, so re-pinning to "whatever is there now" without that
+# second source would throw away the only protection the pin provides.
+#
+# If a newer linuxdeploy is ever needed, take the next dated release, not
+# `continuous`. For the record, `continuous` as of 2026-09-01 was
+# 556ab80baa98e600aa80f0dcedfb70bca0e1ce7e9f147fb345be3fcc3e91b2b1 (19 048 968
+# bytes) — verified the same way on the day this pin moved.
 download_verified \
-  "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-aarch64.AppImage" \
+  "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-aarch64.AppImage" \
   linuxdeploy.AppImage \
-  9f04c4c2a8b69c392c4bbcc1a88bdd4d0a8ac03f587cf5242814cb7ae47b78e5
+  620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
 # The ET_EXEC runtime, pinned to AppImageKit release **12**. This is not the
 # `continuous` one: upstream never rebuilt the old-style runtime for ARM, so
 #   continuous/runtime-x86_64  -> ET_EXEC
