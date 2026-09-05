@@ -23,7 +23,9 @@
 #include "ResourcePaths.h"
 #include "CharRomCatalog.h"
 #include "RomCatalog.h"
+#include "RomFetch.h"
 #include "SystemProfile.h"
+#include "ThreadGuard.h"
 
 #include "imgui.h"
 
@@ -73,6 +75,57 @@ std::string humanSize(std::uint64_t n)
 }
 
 }  // namespace
+
+RomStatus_ImGui::~RomStatus_ImGui()
+{
+    if (fetchThread_.joinable()) fetchThread_.join();
+}
+
+void RomStatus_ImGui::startRetroBiosFetch()
+{
+    if (fetchRunning_.load()) return;
+    if (fetchThread_.joinable()) {
+        fetchThread_.join();
+        fetchJoin_.store(false);
+        rescan();
+    }
+    fetchDone_.store(0);
+    fetchTotal_.store(0);
+    fetchJoin_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(fetchMutex_);
+        fetchLine_    = "Starting RetroBIOS download…";
+        fetchSummary_.clear();
+    }
+    fetchRunning_.store(true);
+    const fs::path dest = pom2::writableRomsDir();
+    fetchThread_ = pom2::guardedThread("RomFetch", [this, dest] {
+        const auto result = pom2::fetchMissingRoms(
+            dest,
+            [this](int done, int total, const char* label) {
+                fetchDone_.store(done);
+                fetchTotal_.store(total);
+                std::lock_guard<std::mutex> lk(fetchMutex_);
+                if (label && *label)
+                    fetchLine_ = std::string(label);
+            });
+        {
+            std::lock_guard<std::mutex> lk(fetchMutex_);
+            fetchSummary_ = result.summary;
+            fetchLine_.clear();
+        }
+        fetchRunning_.store(false);
+        fetchJoin_.store(true);
+    });
+}
+
+void RomStatus_ImGui::pollFetchJoin()
+{
+    if (!fetchJoin_.load()) return;
+    if (fetchThread_.joinable()) fetchThread_.join();
+    fetchJoin_.store(false);
+    rescan();
+}
 
 std::uint32_t RomStatus_ImGui::crc32File(const std::string& path,
                                          std::uint64_t& sizeOut)
@@ -374,6 +427,7 @@ void RomStatus_ImGui::render(bool* open, const std::string& activeProfileName)
 {
     if (!open || !*open) return;
     if (!scanned_) rescan();
+    pollFetchJoin();
 
     ImGui::SetNextWindowSize(ImVec2(760, 560), ImGuiCond_FirstUseEver);
     if (!ImGui::Begin("ROM Status", open)) {
@@ -413,8 +467,62 @@ void RomStatus_ImGui::render(bool* open, const std::string& activeProfileName)
     ImGui::Spacing();
     if (ImGui::Button(ICON_FA_ARROW_ROTATE_RIGHT " Rescan")) rescan();
     ImGui::SameLine();
-    ImGui::TextDisabled("POM2 ships no ROMs — drop your dumps in roms/ and "
-                        "rescan.");
+#if defined(__EMSCRIPTEN__)
+    ImGui::BeginDisabled();
+    ImGui::Button(ICON_FA_DOWNLOAD " Download missing from RetroBIOS");
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("ROM download is not available in the browser build.");
+#else
+    {
+        const bool busy = fetchRunning_.load();
+        ImGui::BeginDisabled(busy);
+        if (ImGui::Button(ICON_FA_DOWNLOAD " Download missing from RetroBIOS"))
+            startRetroBiosFetch();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+            ImGui::TextUnformatted(
+                "Fetches Apple II firmware POM2 knows how to use from the "
+                "RetroBIOS collection (github.com/Abdess/retrobios). Files "
+                "already present are left alone. The collection has no //c / "
+                "//c+, Liron or TransWarp dump.");
+            ImGui::TextDisabled("Saving into: %s",
+                                pom2::writableRomsDir().string().c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+    }
+#endif
+    if (fetchRunning_.load()) {
+        const int done  = fetchDone_.load();
+        const int total = fetchTotal_.load();
+        std::string line;
+        {
+            std::lock_guard<std::mutex> lk(fetchMutex_);
+            line = fetchLine_;
+        }
+        ImGui::SameLine();
+        if (total > 0)
+            ImGui::TextDisabled("%d / %d  %s", done, total, line.c_str());
+        else
+            ImGui::TextDisabled("%s", line.c_str());
+        if (total > 0)
+            ImGui::ProgressBar(static_cast<float>(done) /
+                               static_cast<float>(total),
+                               ImVec2(-1.0f, 0.0f), "");
+    } else {
+        std::lock_guard<std::mutex> lk(fetchMutex_);
+        if (!fetchSummary_.empty()) {
+            ImGui::SameLine();
+            ImGui::TextWrapped("%s", fetchSummary_.c_str());
+        } else {
+            ImGui::SameLine();
+            ImGui::TextDisabled("Drop dumps into roms/ or fetch the missing "
+                                "ones from RetroBIOS.");
+        }
+    }
     ImGui::Separator();
 
     ImGui::BeginChild("##romlist", ImVec2(0, 0));

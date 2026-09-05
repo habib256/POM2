@@ -17,8 +17,8 @@
 // RomStatus_ImGui — "which ROMs do I have, which am I missing, and what
 // breaks without them".
 //
-// POM2 ships no ROMs, so the single most common failure mode is a dump that
-// is absent, mis-named or the wrong variant — and every symptom it produces
+// A dump that is absent, mis-named or the wrong variant is the common
+// failure mode — and every symptom it produces
 // (a profile that boots the wrong firmware, a card that silently refuses to
 // plug, a Grappler+ that prints but isn't recognised by AppleWorks) shows up
 // far from the cause. This panel puts the whole picture in one window:
@@ -41,8 +41,11 @@
 #ifndef POM2_ROM_STATUS_IMGUI_H
 #define POM2_ROM_STATUS_IMGUI_H
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -51,6 +54,12 @@ namespace pom2 {
 class RomStatus_ImGui
 {
 public:
+    RomStatus_ImGui() = default;
+    ~RomStatus_ImGui();
+
+    RomStatus_ImGui(const RomStatus_ImGui&)            = delete;
+    RomStatus_ImGui& operator=(const RomStatus_ImGui&) = delete;
+
     /// Re-stat and re-hash everything. Called on first render and from the
     /// Rescan button; also worth calling after a profile switch, since the
     /// "used by the active profile" marks move.
@@ -113,6 +122,19 @@ private:
     int                missingRequired_ = 0;
     int                missingOptional_ = 0;
 
+    // RetroBIOS fetch — worker owned by this panel. The UI thread only
+    // reads the atomics / the mutex-guarded line; it never calls curl.
+    std::thread        fetchThread_;
+    std::atomic<bool>  fetchRunning_{false};
+    std::atomic<bool>  fetchJoin_{false};
+    std::atomic<int>   fetchDone_{0};
+    std::atomic<int>   fetchTotal_{0};
+    std::mutex         fetchMutex_;
+    std::string        fetchLine_;
+    std::string        fetchSummary_;
+
+    void   startRetroBiosFetch();
+    void   pollFetchJoin();
     void   scanProbe(Probe& p);
     void   renderTable(const char* id, std::vector<Probe>& rows,
                        const std::string& highlight);

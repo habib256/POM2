@@ -6596,6 +6596,31 @@ add_test(NAME char_rom_catalog
          WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 set_tests_properties(char_rom_catalog PROPERTIES TIMEOUT 10)
 
+# RetroBIOS fetch table: every destRel must be a path POM2 already probes,
+# and the planner must skip a dest the predicate says is present. No
+# network — the download path is the system curl helper, pinned here only
+# as a mapping + skip contract.
+add_executable(test_rom_fetch
+    rom_fetch_test.cpp
+    ${CMAKE_SOURCE_DIR}/src/RomFetch.cpp
+    ${CMAKE_SOURCE_DIR}/src/ChildProcess.cpp
+    ${CMAKE_SOURCE_DIR}/src/CharRomCatalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/ResourcePaths.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
+)
+target_include_directories(test_rom_fetch PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(UNIX AND NOT APPLE)
+    target_link_libraries(test_rom_fetch PRIVATE
+        ${CMAKE_DL_LIBS} Threads::Threads)
+endif()
+if(WIN32)
+    target_link_libraries(test_rom_fetch PRIVATE)
+endif()
+add_test(NAME rom_fetch
+         COMMAND test_rom_fetch
+         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+set_tests_properties(rom_fetch PROPERTIES TIMEOUT 10)
+
 
 add_executable(test_slot_rom_asm slot_rom_asm_test.cpp)
 target_include_directories(test_slot_rom_asm PRIVATE ${CMAKE_SOURCE_DIR}/src)

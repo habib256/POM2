@@ -6062,10 +6062,23 @@ the left arrow's code, which is what a II/II+ had instead of a DELETE key).
 
 ### ROM Status panel
 
-`RomStatus_ImGui.{h,cpp}` + `RomCatalog.h` (Help → ROM Status,
-`show_rom_status`, palette `panel.romstatus`). Host-side only: stats
-files, hashes bytes, takes no lock, and rescans on demand (open /
-Rescan) rather than per frame.
+`RomStatus_ImGui.{h,cpp}` + `RomCatalog.h` + `RomFetch.{h,cpp}`
+(Help → ROM Status, `show_rom_status`, palette `panel.romstatus`).
+Host-side only: stats files, hashes bytes, takes no lock, and rescans
+on demand (open / Rescan) rather than per frame.
+
+**Download missing from RetroBIOS.** The button fetches the Apple II
+dumps POM2 actually probes from
+[Abdess/retrobios](https://github.com/Abdess/retrobios/tree/main/bios)
+(`bios/Apple/Apple II` plus the MAME card zips under
+`bios/Arcade/MAME`). The mapping lives in `romFetchCatalog()` — every
+`destRel` is a path `SystemProfile` / `RomCatalog` / `CharRomCatalog`
+already looks for (pinned by `rom_fetch`). Existing files are skipped
+(`findResource`); new ones land in `writableRomsDir()` (the first
+writable `roms/` on the search path, else the per-user data dir).
+HTTPS is the system `curl`; MAME zips go through `unzip` or `tar`.
+The collection has no //c / //c+, Liron or TransWarp dump — those
+rows stay missing. Disabled under Emscripten (no helper processes).
 
 **Two sources, neither duplicated.** Machine firmware and character
 generators are read from `profileConfig()` (`romProbeOrder` /
