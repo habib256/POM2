@@ -33,6 +33,7 @@
 #include "MouseCardAppleWin.h"
 #include "SlotBus.h"
 #include "SnapshotIO.h"
+#include "SystemProfile.h"
 
 #include <cctype>
 #include <cerrno>
@@ -44,6 +45,7 @@
 #include <filesystem>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #if POM2_HAS_SOCKETS
 // POSIX socket stack — the HTTP control endpoint is desktop-only. In a
 // WASM build the listener loop and every socket call are compiled out,
@@ -1275,7 +1277,7 @@ void AiControlServer::handleSnapshotSave(socket_t fd, const Request& req)
     std::vector<uint8_t> blob;
     bool captured = false;
     {
-        SnapshotWriter mem(blob);
+        SnapshotWriter mem(blob, ctrl_->machineId());
         auto st = ctrl_->lockState();
         pom2::captureMachineState(mem, st.cpu(), st.memory());
         captured = mem.finish();
@@ -1326,6 +1328,26 @@ void AiControlServer::handleSnapshotLoad(socket_t fd, const Request& req)
     }
     SnapshotReader r(blob.data(), blob.size());
     if (!r.good()) { sendJsonError(fd, 400, "cannot read " + *safe + ": " + r.error()); return; }
+    // Machine identity before any state is touched — see the same guard in
+    // CliRunner. CPU/MEM/MEX restore unconditionally, so a snapshot from a
+    // different Apple puts PC and RAM against a foreign ROM and memory map;
+    // an agent driving this endpoint gets a named 400 instead of a machine
+    // that freezes or quietly runs the wrong code. Identity 0 = written
+    // before the field existed, and still loads.
+    {
+        const std::uint32_t want = ctrl_->machineId();
+        if (want != 0 && r.machineId() != 0 && r.machineId() != want) {
+            const std::string_view from =
+                pom2::profileNameForMachineId(r.machineId());
+            sendJsonError(fd, 400,
+                "snapshot refused: taken on " +
+                (from.empty() ? std::string("another machine")
+                              : std::string(from)) +
+                ", this session is " +
+                std::string(pom2::profileNameForMachineId(want)));
+            return;
+        }
+    }
     auto st = ctrl_->lockState();
     // Shared with the rewind ring buffer. Preserves the CPU-section length
     // gate (crafted-snapshot over-read hardening) and the MEX size cap; an

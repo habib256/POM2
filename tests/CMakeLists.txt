@@ -4762,6 +4762,7 @@ set_tests_properties(ssc_acia_smoke PROPERTIES TIMEOUT 5)
 add_executable(test_ai_control_server
     ai_control_server_smoke_test.cpp
     ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp
@@ -5020,6 +5021,7 @@ set_tests_properties(hdv_status_driver PROPERTIES TIMEOUT 10)
 add_executable(test_ai_mouse_hle_probe
     ai_mouse_hle_probe_test.cpp
     ${CMAKE_SOURCE_DIR}/src/AiControlServer.cpp
+    ${CMAKE_SOURCE_DIR}/src/SystemProfile.cpp
     ${CMAKE_SOURCE_DIR}/src/MachineSnapshot.cpp
     ${CMAKE_SOURCE_DIR}/src/RewindBuffer.cpp
     ${CMAKE_SOURCE_DIR}/src/Apple2Display.cpp

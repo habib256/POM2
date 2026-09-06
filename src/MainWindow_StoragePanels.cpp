@@ -69,6 +69,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -567,19 +568,33 @@ void MainWindow::renderDiskLibraryWindow()
     // image. Match by path so multi-instance DiskII setups (the same
     // image plugged into two slots) all clear together.
     if (!r.request525EjectPath.empty()) {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
+        // Two phases, for the same reason the 3.5" branch below delegates:
+        // match under the lock, then eject through the coordinator with the
+        // lock RELEASED. The hand-rolled loop this replaces ejected the
+        // medium but cleared no settings key at all, so the image was
+        // remounted on the next launch unless a clean quit happened to
+        // rewrite the key from live state first. It also held `stateMutex`
+        // across an eject that can commit a write-back to disk.
+        std::vector<std::pair<int, int>> targets;   // (slot, drive)
+        {
+            std::lock_guard<std::mutex> lk(controller->stateMutex());
+            for (auto* c : diskIICards()) {
+                if (!c) continue;
+                for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
+                    if (c->isDiskLoaded(d) &&
+                        c->getDiskPath(d) == r.request525EjectPath)
+                        targets.emplace_back(c->getSlot(), d);
+                }
+            }
+        }
         bool ok = true;
         std::string err;
-        for (auto* c : diskIICards()) {
-            if (!c) continue;
-            for (int d = 0; d < DiskIICard::kDriveCount; ++d) {
-                if (c->isDiskLoaded(d) &&
-                    c->getDiskPath(d) == r.request525EjectPath) {
-                    if (!c->ejectDisk(d)) {
-                        ok = false;
-                        err = c->getLastError(d);
-                    }
-                }
+        for (const auto& [slot, drive] : targets) {
+            const auto e = storageCoordinator_->ejectDiskII(
+                *controller, *settings, slot, drive);
+            if (!e.ok) {
+                ok  = false;
+                err = e.error;
             }
         }
         tapeStatusMessage = ok ? "Library: 5.25\" disk ejected"
@@ -792,10 +807,16 @@ void MainWindow::renderFloppyEmuWindow()
         std::string err;
         switch (m) {
             case Mode::Disk525: {
-                std::lock_guard<std::mutex> lk(controller->stateMutex());
-                if (primaryDiskII()) {
-                    ok = primaryDiskII()->ejectDisk();
-                    if (!ok) err = primaryDiskII()->getLastError();
+                // Through the coordinator, like the 3.5" cases below: the
+                // direct `ejectDisk()` this replaces cleared no settings key,
+                // so the ejected image came back on the next launch. Note the
+                // default argument was drive 1 only, which is the drive this
+                // button means.
+                if (auto* d2 = primaryDiskII()) {
+                    const auto e = storageCoordinator_->ejectDiskII(
+                        *controller, *settings, d2->getSlot(), 0);
+                    ok = e.ok;
+                    if (!ok) err = e.error;
                 }
                 break;
             }

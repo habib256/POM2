@@ -26,6 +26,7 @@
 #include "EmulationController.h"
 #include "MachineSnapshot.h"
 #include "SnapshotIO.h"
+#include "SystemProfile.h"
 #include "Logger.h"
 
 #include <cstdint>
@@ -34,6 +35,7 @@
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -162,7 +164,7 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                 std::vector<uint8_t> blob;
                 bool captured = false;
                 {
-                    pom2::SnapshotWriter w(blob);
+                    pom2::SnapshotWriter w(blob, emu.machineId());
                     auto st = emu.lockState();
                     pom2::captureMachineState(w, st.cpu(), st.memory());
                     captured = w.finish();
@@ -211,6 +213,28 @@ void runDeferredActions(const std::vector<CliAction>& actions,
                     pom2::log().error("CLI",
                         "--snapshot-load: cannot read " + a.pathS +
                         ": " + r.error());
+                    break;
+                }
+                // Machine identity BEFORE any state is touched. CPU, MEM and
+                // MEX all restore unconditionally, so a snapshot taken on
+                // another Apple lands PC and 64 KB of RAM against a different
+                // ROM and memory map — a freeze or silent wrong execution
+                // with no diagnostic. A snapshot file is also the one thing
+                // users hand to each other, so the mismatch is not
+                // hypothetical. Legacy files (identity 0) still load: they
+                // predate the field and refusing them would break every
+                // snapshot taken before this build.
+                const std::uint32_t want = emu.machineId();
+                if (want != 0 && r.machineId() != 0 &&
+                    r.machineId() != want) {
+                    const std::string_view from =
+                        pom2::profileNameForMachineId(r.machineId());
+                    pom2::log().error("CLI",
+                        "--snapshot-load: refused " + a.pathS + " — taken on " +
+                        (from.empty() ? std::string("another machine")
+                                      : std::string(from)) +
+                        ", this session is " +
+                        std::string(pom2::profileNameForMachineId(want)));
                     break;
                 }
                 auto st = emu.lockState();

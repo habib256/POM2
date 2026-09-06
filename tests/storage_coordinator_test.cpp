@@ -371,10 +371,28 @@ int main()
             mediaController, commandSettings, 4, true);
         assert(command.ok);
         assert(commandSettings.getBool("disk_writeback_slot4"));
+        // Ejecting drive 2 clears drive 2's key AND LEAVES DRIVE 1's ALONE.
+        // The second half is the regression that matters: every hand-rolled
+        // eject in the frontend built `disk_path_slot<N>` for both drives, so
+        // ejecting drive 2 cleared the path of the disk still sitting in
+        // drive 1 while leaving `_drive2` set — after a crash or a kill (a
+        // clean quit rewrites both keys from live state and hides it), drive 1
+        // came back empty and the disk the user had just ejected came back
+        // mounted. Those call sites now delegate here; this asserts the
+        // contract they depend on.
+        command = mediaStorage.mountDiskII(
+            mediaController, commandSettings, 4, 0, diskPath, true);
+        assert(command.ok);
+        assert(commandSettings.getString("disk_path_slot4") == diskPath);
         command = mediaStorage.ejectDiskII(
             mediaController, commandSettings, 4, 1);
         assert(command.ok);
         assert(commandSettings.getString("disk_path_slot4_drive2").empty());
+        assert(commandSettings.getString("disk_path_slot4") == diskPath);
+        command = mediaStorage.ejectDiskII(
+            mediaController, commandSettings, 4, 0);
+        assert(command.ok);
+        assert(commandSettings.getString("disk_path_slot4").empty());
         command = mediaStorage.mountDiskII(
             mediaController, commandSettings, 1, 0, diskPath);
         assert(!command.ok);

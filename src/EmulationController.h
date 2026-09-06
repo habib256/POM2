@@ -280,6 +280,18 @@ public:
     void          setVideoStandard(VideoStandard s);
     VideoStandard getVideoStandard() const { return videoStandard_.load(); }
 
+    // Identity of the machine currently configured, as
+    // `pom2::snapshotMachineId(profile)`. Set by applyProfile alongside the
+    // video standard; read by the snapshot FILE and AI-server paths so a
+    // capture is stamped and a load can refuse a snapshot taken on a
+    // different Apple. 0 means "no profile applied yet", which those paths
+    // treat as "cannot verify" rather than as a mismatch.
+    //
+    // Atomic and not under `stateMutex` on purpose: it is configuration, not
+    // emulated state, and the AI server reads it while answering a request.
+    void          setMachineId(uint32_t id) { machineId_.store(id); }
+    uint32_t      machineId() const { return machineId_.load(); }
+
     // Block for up to `timeoutMs` until the CPU is paused at an
     // instruction boundary. Cheap: the worker holds `stateMutex` only
     // while running a slice, releases it on every iteration.
@@ -348,6 +360,7 @@ private:
 
     std::mutex              stateMtx;
     std::condition_variable wakeCv;
+    std::atomic<uint32_t>   machineId_{0};
     std::thread             worker;
 
     /// One CPU budget slice under stateMutex: normally M6502::run, but

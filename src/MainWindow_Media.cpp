@@ -101,66 +101,65 @@ bool MainWindow::ejectMediaBay(int slot, int index, bool diskII)
     // builds its rows from a value snapshot taken under the lock and released
     // before drawing, so by the time the user clicks, any pointer captured
     // back then could belong to a card a Slot-Config Apply has since deleted.
-    // Re-resolving through the bus here is what makes the click safe.
+    // Re-resolving through the bus is what makes the click safe — and the
+    // coordinator re-resolves under its OWN lock, which is why delegating
+    // keeps that property instead of losing it.
+    //
+    // DELEGATED, not hand-rolled. The duplicate this replaces was the
+    // most-clicked eject in the UI and got persistence wrong three ways the
+    // coordinator already has covered:
+    //   * it built `disk_path_slot<N>` for BOTH drives, so ejecting drive 2
+    //     cleared drive 1's path and left `_drive2` set — after a crash or a
+    //     kill, drive 1 came back empty and the disk the user had just
+    //     ejected came back mounted (`diskIIPathSettingKey` appends
+    //     `_drive2` for drive 1, and `restoreMediaFromSettings` reads both).
+    //   * it had no `genericMediaCard` branch, so ejecting a Liron 3.5" left
+    //     `media_slot<N>_bay<B>_path` set — verbatim the bug
+    //     tests/storage_coordinator_test.cpp records as fixed in the
+    //     coordinator.
+    //   * it skipped the auto-provision / host-folder guards.
+    // The eject itself is also a whole-file settings write plus a possible
+    // write-back commit; the coordinator splits that into three critical
+    // sections so neither runs under `stateMutex` (this file's own header
+    // rule, and CLAUDE.md's).
     std::string label;
-    bool ok = false;
-    {
-        std::lock_guard<std::mutex> lk(controller->stateMutex());
-        SlotPeripheral* per = controller->memory().slotBus().peripheral(slot);
-        if (!per) return false;
-
-        if (diskII) {
-            auto* d2 = dynamic_cast<DiskIICard*>(per);
-            if (!d2) return false;
-            // ejectDisk() saves dirty tracks first when write-back is on and
-            // returns false if that save failed — in which case the medium
-            // deliberately stays mounted rather than losing the writes.
-            ok = d2->ejectDisk(index);
-            label = "slot " + std::to_string(slot) + " drive " +
-                    std::to_string(index + 1);
-            if (ok) {
-                // Match the shutdown-persist keys so the disk does not come
-                // back on the next launch (the same pair `restartEmulation
-                // FromSettings` snapshots).
-                const std::string k = "_slot" + std::to_string(slot);
-                settings->setString("disk_path" + k, "");
-                if (index == 0 && d2 == primaryDiskII()) settings->setString("disk_path", "");
-            }
-        } else {
-            auto* media = dynamic_cast<pom2::MountableMediaCard*>(per);
+    if (diskII) {
+        label = "slot " + std::to_string(slot) + " drive " +
+                std::to_string(index + 1);
+    } else {
+        label = "slot " + std::to_string(slot);
+        // Topology-only read for the label. Taken under the lock because the
+        // card can be deleted by a Slot-Config Apply, released before the
+        // command runs: `lockState()` is non-recursive and the coordinator
+        // takes it itself.
+        int bays = 1;
+        {
+            auto state = controller->lockState();
+            auto* media = dynamic_cast<pom2::MountableMediaCard*>(
+                state.memory().slotBus().peripheral(slot));
             if (!media) return false;
-            ok = media->ejectBay(index);
-            label = "slot " + std::to_string(slot);
-            if (media->bayCount() > 1)
-                label += " bay " + std::to_string(index + 1);
-            if (ok) {
-                // SmartPort units persist their own per-unit key, and it is
-                // written eagerly on mount (not at shutdown), so an eject that
-                // did not clear it would remount the image on the next launch.
-                if (auto* sp = dynamic_cast<pom2::SmartPortCard*>(per)) {
-                    settings->setString(
-                        "smartport_slot" + std::to_string(sp->getSlot()) +
-                        "_unit" + std::to_string(index) + "_path", "");
-                }
-                if (dynamic_cast<ProDOSHardDiskCard*>(per))
-                    settings->setString("hdv_path", "");
-                if (auto* cffa = dynamic_cast<pom2::CffaCard*>(per)) {
-                    settings->setString(
-                        "cffa_slot" + std::to_string(cffa->getSlot()) + "_path",
-                        "");
-                }
-            }
+            bays = media->bayCount();
         }
+        if (bays > 1) label += " bay " + std::to_string(index + 1);
     }
-    if (ok) settings->save();
 
-    tapeStatusMessage = ok ? ("Ejected " + label)
-                           : ("Eject refused for " + label +
-                              " — the image could not be saved, so it stays "
-                              "mounted");
-    tapeStatusUntil = lastFrameTime + (ok ? 3.0 : 8.0);
-    if (!ok) pom2::log().warn("Media", tapeStatusMessage);
-    return ok;
+    const auto r =
+        diskII ? storageCoordinator_->ejectDiskII(*controller, *settings,
+                                                  slot, index)
+               : storageCoordinator_->ejectMediaBay(*controller, *settings,
+                                                    slot, index);
+
+    // A refused eject leaves the medium MOUNTED on purpose: the write-back
+    // failed, so dropping it would lose the only copy of the writes.
+    tapeStatusMessage = r.ok
+        ? ("Ejected " + label)
+        : ("Eject refused for " + label + " — " +
+           (r.error.empty() ? std::string("the image could not be saved")
+                            : r.error) +
+           ", so it stays mounted");
+    tapeStatusUntil = lastFrameTime + (r.ok ? 3.0 : 8.0);
+    if (!r.ok) pom2::log().warn("Media", tapeStatusMessage);
+    return r.ok;
 }
 
 void MainWindow::ejectAllDisks()

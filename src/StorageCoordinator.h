@@ -42,6 +42,14 @@ class ProDOSBlockCard;
 class Settings;
 class SmartPortCard;
 
+/// The ONE definition of a Disk II path settings key: `disk_path_slot<N>`
+/// for drive 1, `disk_path_slot<N>_drive2` for drive 2. Exported because the
+/// profile-switch remount has to build it inline — it runs inside the
+/// stateMutex scope that keeps the SlotBus rebuild atomic, so it cannot call
+/// a coordinator command (those take the lock themselves). Every hand-rolled
+/// copy of the "_drive2" rule so far has been a bug.
+std::string diskIIPathSettingKey(int slot, std::size_t drive);
+
 class StorageCoordinator
 {
 public:

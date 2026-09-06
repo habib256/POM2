@@ -943,43 +943,44 @@ void MainWindow::renderMediaPanel()
                     ImGui::SameLine();
                     ImGui::BeginDisabled(buf[0] == '\0');
                     if (ImGui::Button("Insert")) {
-                        std::string mountErr;
-                        const bool ok = pom2::mountDiskII(
-                            *controller, *d2, drv, buf, mountErr,
-                            /*seekTrack0=*/true);
-                        // Only drive 1 has a persisted path key (disk_path_slotN);
-                        // drive 2 mounts are session-only (matches legacy scheme).
-                        if (ok && drv == 0) {
-                            settings->setString(
-                                "disk_path_slot" + std::to_string(s), std::string(buf));
-                            settings->save();
-                        }
+                        // Through the coordinator so this panel persists the
+                        // SAME keys the File menu and the restore path use.
+                        // The hand-rolled version wrote `disk_path_slot<N>`
+                        // and skipped drive 2 entirely, on a comment claiming
+                        // "drive 2 mounts are session-only" — untrue since
+                        // `diskIIPathSettingKey` gained the `_drive2` suffix
+                        // and `restoreMediaFromSettings` began looping BOTH
+                        // drives. A drive-2 insert here was therefore lost on
+                        // restart while the same insert from the File menu
+                        // survived.
+                        const auto r = storageCoordinator_->mountDiskII(
+                            *controller, *settings, s, drv, buf,
+                            /*seekTrackZero=*/true);
+                        const bool ok = r.ok;
                         tapeStatusMessage = ok
                             ? ("Slot " + std::to_string(s) + " drive " +
                                std::to_string(drv + 1) + ": inserted")
                             : ("Slot " + std::to_string(s) + ": insert failed: " +
-                               d2->getLastError(drv));
+                               r.error);
                         tapeStatusUntil = lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
                     ImGui::SameLine();
                     ImGui::BeginDisabled(!loaded);
                     if (ImGui::Button("Eject")) {
-                        bool ok = false;
-                        {
-                            std::lock_guard<std::mutex> lk(controller->stateMutex());
-                            ok = d2->ejectDisk(drv);
-                        }
-                        if (ok && drv == 0) {
-                            settings->setString(
-                                "disk_path_slot" + std::to_string(s), std::string());
-                            settings->save();
-                        }
+                        // Same reason as the Insert button above: the
+                        // coordinator clears the key that MATCHES the drive
+                        // (`_drive2` for drive 2). The hand-rolled version
+                        // cleared nothing for drive 2, so a disk ejected here
+                        // was remounted on the next launch unless a clean quit
+                        // happened to rewrite the key from live state first.
+                        const auto r = storageCoordinator_->ejectDiskII(
+                            *controller, *settings, s, drv);
+                        const bool ok = r.ok;
                         if (ok) dPrimed[s][drv] = false;
                         tapeStatusMessage = "Slot " + std::to_string(s) +
                             " drive " + std::to_string(drv + 1) +
-                            (ok ? ": ejected" : ": eject failed: " +
-                                  d2->getLastError(drv));
+                            (ok ? ": ejected" : ": eject failed: " + r.error);
                         tapeStatusUntil = lastFrameTime + 4.0;
                     }
                     ImGui::EndDisabled();
@@ -1374,6 +1375,11 @@ void MainWindow::applyProfile(pom2::SystemProfile p)
     //     50/60 Hz pacing and propagates the 262/312-line geometry to Memory.
     controller->setCyclesPerFrame(cfg.defaultCyclesPerFrame);
     controller->setVideoStandard(cfg.videoStandard);
+    // Same step, same reason: this is the machine's identity, and every
+    // snapshot taken from here on is stamped with it so a load onto a
+    // different Apple can be refused instead of landing PC and RAM against
+    // the wrong ROM.
+    controller->setMachineId(pom2::snapshotMachineId(p));
     // Re-seed the disk-turbo restore value: it defaults to the NTSC 17045 at
     // construction, and restoring that onto a PAL (or //c+ 4×) profile after
     // a turbo burst would silently underclock the machine.
@@ -1510,12 +1516,23 @@ bool MainWindow::restartEmulationFromSettings()
             "disk_writeback" + slotKey,
             isPrimary ? settings->getBool("disk_writeback", false) : false);
         c->setWriteBackEnabled(wb);
-        const std::string diskPath = settings->getString(
-            "disk_path" + slotKey,
-            isPrimary ? settings->getString("disk_path", "") : std::string());
-        std::error_code ec;
-        if (!diskPath.empty() &&
-            std::filesystem::is_regular_file(diskPath, ec)) {
+        // BOTH drives, through the canonical key builder. This used to read
+        // one key and call `insertDisk(diskPath)` with its default argument,
+        // so an Apply / profile switch silently emptied drive 2 while its
+        // `_drive2` key stayed set — the same "default argument = drive 1
+        // only" mistake ~MainWindow's exit loop was fixed for, in the last
+        // place still making it. Keys come from `diskIIPathSettingKey` rather
+        // than being spelled out here: every hand-rolled copy of the
+        // `_drive2` rule in this frontend has turned out to be a bug.
+        for (std::size_t drive = 0; drive < DiskIICard::kDriveCount; ++drive) {
+            const std::string diskPath = settings->getString(
+                pom2::diskIIPathSettingKey(c->getSlot(), drive),
+                (drive == 0 && isPrimary) ? settings->getString("disk_path", "")
+                                          : std::string());
+            std::error_code ec;
+            if (diskPath.empty() ||
+                !std::filesystem::is_regular_file(diskPath, ec))
+                continue;
             // Deliberately the INLINE insert, not the two-phase mount every
             // other call site now uses: the block comment above is the reason
             // — the SlotBus rebuild and these remounts have to be one atomic
@@ -1523,7 +1540,7 @@ bool MainWindow::restartEmulationFromSettings()
             // would have to drop the lock between them. The stall it costs is
             // bounded and invisible here: this runs on a profile switch, with
             // the CPU worker already stopped and a cold boot to follow.
-            (void)c->insertDisk(diskPath);
+            (void)c->insertDisk(static_cast<int>(drive), diskPath);
         }
     }
 

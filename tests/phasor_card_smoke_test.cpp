@@ -425,6 +425,46 @@ void testTelemetry()
     std::printf("  ok: per-AY + per-VIA telemetry counters\n");
 }
 
+// Contract: onReset() BUMPS ayResetCount_, it does not zero it.
+//
+// The audio thread re-seeds a chip's tone/noise/envelope generators only
+// when this counter CHANGES against its own `lastSeenResetCount`. The
+// pre-fix onReset assigned 0, which is a no-op on every reset that is not
+// preceded by an AY reset strobe — a second F12, or a cold boot on a driver
+// that never strobes PB2 low. The CPU-side ay_[i]->reset() then cleared the
+// register bank while the audio thread kept the old tone, and the card held
+// its last note through the reset: verbatim the symptom
+// MockingboardCard::onReset was fixed for, reintroduced in the sibling.
+//
+// Asserted from a counter that is ALREADY 0, because that is precisely the
+// state in which zeroing was invisible.
+void testResetBumpsAyResetCount()
+{
+    // The constructor resets the card, so a fresh one is already at 1 with
+    // the fix and would sit at 0 forever without it. What the audio thread
+    // needs is not a particular value but a CHANGE on every reset, so assert
+    // exactly that — and assert it twice, since the pre-fix assignment was
+    // stable at 0 and would satisfy no step of this.
+    PhasorCard card(4);
+    std::uint32_t before[4];
+    for (int chip = 0; chip < 4; ++chip) {
+        before[chip] = card.getAyResetCount(chip);
+        assert(before[chip] != 0);       // ctor's own onReset already counted
+    }
+
+    card.onReset();
+    for (int chip = 0; chip < 4; ++chip)
+        assert(card.getAyResetCount(chip) == before[chip] + 1);
+
+    // Monotonic across further resets: a second reset with no AY strobe in
+    // between is exactly the case the pre-fix zeroing made invisible.
+    card.onReset();
+    for (int chip = 0; chip < 4; ++chip)
+        assert(card.getAyResetCount(chip) == before[chip] + 2);
+
+    std::printf("  ok: onReset bumps ayResetCount (never zeroes it)\n");
+}
+
 // Regression for the end-of-step overshoot. Memory::advanceCycles folds
 // the slice into cycleCounter BEFORE dispatching to the card, yet
 // M6502::step() still holds cpu->cycles == that slice, so
@@ -509,6 +549,7 @@ int main()
     testClockScaleDoublesPitch();
     testTelemetry();
     testNoEndOfStepOvershoot();
+    testResetBumpsAyResetCount();
     std::printf("PASS\n");
     return 0;
 }

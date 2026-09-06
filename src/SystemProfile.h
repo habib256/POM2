@@ -144,6 +144,21 @@ bool slotKeyIsUserChoice(const ProfileConfig& cfg, int slot,
 /// how the machine list reads.
 const std::array<SystemProfile, 9>& allProfiles();
 
+/// Stable machine identity stamped into a snapshot header's `flags` word,
+/// so a snapshot taken on one machine cannot be silently restored onto
+/// another. Derived from the profile's canonical PERSISTENCE KEY rather than
+/// from the enum's numeric value: the key is already contractually stable
+/// (it is written to state.cfg and accepted on the command line), whereas
+/// the enum is appended to and its order is deliberately not the display
+/// order. Never returns 0 — 0 is reserved on the wire to mean "written
+/// before this field existed", which must keep loading.
+std::uint32_t snapshotMachineId(SystemProfile p);
+
+/// Reverse lookup for the refusal message. Returns an empty view when the
+/// id belongs to no profile this build knows (a snapshot from a newer POM2),
+/// which the caller should report as "another machine" rather than guess.
+std::string_view profileNameForMachineId(std::uint32_t id);
+
 }  // namespace pom2
 
 #endif // POM2_SYSTEM_PROFILE_H
