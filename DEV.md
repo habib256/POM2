@@ -2646,6 +2646,35 @@ with POM1. Captures CPU + RAM + soft-switch display state. **Disk II
 deliberately excluded** — would need mounted-image identity + head
 position + dirty bits per track.
 
+**The header carries a machine identity** (2026-09-06). The 32-bit word
+after `version` was written as a reserved 0 and read back with
+`(void)readU32()`, so nothing in a snapshot said WHICH Apple it came
+from — while CPU/MEM/MEX all restore unconditionally and
+`Memory::loadSnapshotState` never checks `iieMode`. Save on //e
+Enhanced PAL, switch to //c, load: PC and 64 KB of RAM land against a
+different ROM and memory map, freezing or silently running the wrong
+code with no diagnostic. Live rewind was already defended (`applyProfile`
+clears the ring), but `--snapshot-load` and the AI server's `/snapshot`
+endpoints were not — and a snapshot file is the one artefact users hand
+to each other.
+
+The word now holds `pom2::snapshotMachineId(profile)`, an FNV-1a hash of
+the profile's canonical PERSISTENCE KEY (stable by contract — state.cfg
+and `--preset` both carry it — where the enum is appended to and its
+order is deliberately not the display order). `EmulationController::
+machineId()` carries the live value, set by `applyProfile` next to
+`setVideoStandard`; the CLI and AI-server load paths compare it before
+touching any state and refuse a mismatch with a message that NAMES both
+machines. **0 stays legal on the wire** and means "not recorded": every
+snapshot written before this build still loads, and rewind frames record
+no identity on purpose (the ring is cleared on a profile switch, so the
+check would be dead weight on the hot capture path). This generalises the
+targeted mitigation already in `MachineSnapshot.cpp`, where the CPU-mode
+byte is read and deliberately discarded because an NMOS blob forcing a
+//c's 65C02 ROM onto an NMOS core hits a KIL. Pinned by `snapshot_io`
+(identity round-trip, legacy 0, tampered word) and `system_profile`
+(ids unique, non-zero, reversible).
+
 Two backends share one wire format: the original file backend
 (`SnapshotWriter(path)` / `SnapshotReader(path)`) and an in-memory
 backend (`SnapshotWriter(std::vector<uint8_t>&)` /

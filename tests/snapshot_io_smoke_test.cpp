@@ -150,8 +150,56 @@ int main()
 
     fs::remove(bad);
 
+    // ── Machine identity in the header ────────────────────────────────────
+    // The word after `version` used to be written as a reserved 0 and read
+    // back with `(void)readU32()`. Nothing in the file said WHICH Apple the
+    // state came from, while CPU/MEM/MEX all restore unconditionally — so a
+    // //e snapshot loaded on a //c put PC and 64 KB of RAM against a
+    // different ROM and memory map, freezing or silently running the wrong
+    // code with no diagnostic. Snapshots are also the one artefact users
+    // hand to each other, which is what made this worth a format field.
+    {
+        const std::uint32_t kId = 0xC0FFEEu;
+        std::vector<std::uint8_t> blob;
+        {
+            pom2::SnapshotWriter w(blob, kId);
+            w.writeSection("ID", nullptr, 0);
+            assert(w.finish());
+        }
+        pom2::SnapshotReader r(blob.data(), blob.size());
+        assert(r.good());
+        assert(r.machineId() == kId);
+
+        // A writer given no identity records 0, and 0 must keep loading:
+        // that is every snapshot taken before this field existed, plus the
+        // rewind ring's in-memory frames (the ring is cleared on a profile
+        // switch, so it needs no stamp).
+        std::vector<std::uint8_t> legacy;
+        {
+            pom2::SnapshotWriter w(legacy);
+            w.writeSection("ID", nullptr, 0);
+            assert(w.finish());
+        }
+        pom2::SnapshotReader lr(legacy.data(), legacy.size());
+        assert(lr.good());
+        assert(lr.machineId() == 0);
+
+        // Mutating the word in a valid file is seen by the reader — this is
+        // the value the CLI and AI-server guards compare, so a snapshot
+        // whose identity was altered is refused rather than applied.
+        std::vector<std::uint8_t> tampered = blob;
+        assert(tampered.size() >= 16);
+        tampered[12] = 0x21; tampered[13] = 0x43;
+        tampered[14] = 0x65; tampered[15] = 0x87;
+        pom2::SnapshotReader tr(tampered.data(), tampered.size());
+        assert(tr.good());                       // still a valid container…
+        assert(tr.machineId() == 0x87654321u);   // …with a different machine.
+        assert(tr.machineId() != kId);
+    }
+
     // Cleanup.
     fs::remove(tmp);
-    std::printf("SnapshotIO smoke: OK (round-trip + malformed-file hardening)\n");
+    std::printf("SnapshotIO smoke: OK (round-trip + malformed-file hardening"
+                " + machine identity)\n");
     return 0;
 }

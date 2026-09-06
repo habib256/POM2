@@ -132,11 +132,13 @@ std::string readFixedName(std::istream& in)
 // Both ctors bind `out` to the live backing buffer (file rdbuf or the
 // vector streambuf), then emit the shared header. The backend members are
 // declared before `out`, so its buffer is fully constructed first.
-SnapshotWriter::SnapshotWriter(const std::string& path)
+SnapshotWriter::SnapshotWriter(const std::string& path,
+                               std::uint32_t machineId)
     : out(nullptr)
     , targetPath_(path)
     , tempPath_(path + ".tmp")
     , fileBacked_(true)
+    , machineId_(machineId)
 {
     // Clear the temp path BEFORE opening it. Callers vet the target — the
     // AI control server refuses a path outside the working directory, refuses
@@ -154,9 +156,11 @@ SnapshotWriter::SnapshotWriter(const std::string& path)
     emitHeader();
 }
 
-SnapshotWriter::SnapshotWriter(std::vector<uint8_t>& sink)
+SnapshotWriter::SnapshotWriter(std::vector<uint8_t>& sink,
+                               std::uint32_t machineId)
     : memBuf_(std::make_unique<VectorOutBuf>(sink))
     , out(memBuf_.get())
+    , machineId_(machineId)
 {
     emitHeader();
 }
@@ -193,7 +197,12 @@ void SnapshotWriter::emitHeader()
 {
     out.write(kSnapshotMagic, sizeof(kSnapshotMagic));
     writeU32(kSnapshotVersion);
-    writeU32(0);  // flags reserved
+    // Machine identity, not a reserved zero. The version number alone says
+    // nothing about WHICH Apple this state came from, and every section
+    // restores unconditionally, so without this a //e snapshot loaded on a
+    // //c puts PC and 64 KB of RAM against a different ROM and memory map.
+    // 0 stays legal on the wire and means "not recorded".
+    writeU32(machineId_);
 }
 
 void SnapshotWriter::writeU8(uint8_t v) { out.put(static_cast<char>(v)); }
@@ -293,7 +302,7 @@ void SnapshotReader::parseHeader()
     }
 
     ver = readU32();
-    (void)readU32();
+    machineId_ = readU32();
     if (ver == 0 || ver > kSnapshotVersion) {
         errorMsg = "unsupported snapshot version " + std::to_string(ver);
         return;

@@ -323,9 +323,21 @@ void PhasorCard::onReset()
     viaWriteCount_[0] = viaWriteCount_[1] = 0;
     for (int i = 0; i < 4; ++i) {
         ayWriteCount_[i]    = 0;
-        ayResetCount_[i]    = 0;
         ayEnvWriteCount_[i] = 0;
     }
+    // BUMP, don't zero — the same contract MockingboardCard::onReset
+    // documents, and for the same reason. The audio thread re-seeds a chip's
+    // generators only when `ayResetCount_[ci]` CHANGES against its own
+    // `lastSeenResetCount` (the compare at the top of this file); assigning 0
+    // is a no-op whenever the counter is already 0, which is every reset that
+    // is not preceded by an AY reset strobe (a second F12, or a cold boot on
+    // a driver that never strobes). The CPU-side `ay_[i]->reset()` above then
+    // cleared the register bank while the audio thread kept the old tone and
+    // the card held its last note through the reset — verbatim the symptom
+    // the Mockingboard fix was written to remove, reintroduced here in the
+    // sibling. Zeroing also made the counter non-monotonic, which is what let
+    // the two implementations diverge silently.
+    for (int i = 0; i < 4; ++i) ++ayResetCount_[i];
 }
 
 AudioSource* PhasorCard::audioSource() { return audio_.get(); }

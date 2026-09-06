@@ -5,6 +5,106 @@ canonical source for the exact mechanics; this file captures the **"why"**
 and the pitfalls we don't want to rediscover. Active backlog → `TODO.md`.
 Current implementation → `DEV.md`.
 
+## 2026-09-06 — Four ejects, one coordinator: the settings keys that outlived the disk
+
+`TODO.md` G2 named three defects that reach a user's data. All three are fixed,
+and the first turned out to be three times larger than the entry recorded.
+
+**The eject that cleared the wrong drive.** `StorageCoordinator` owns Disk II
+persistence: `diskIIPathSettingKey` writes `disk_path_slot<N>` for drive 1 and
+`disk_path_slot<N>_drive2` for drive 2, and `restoreMediaFromSettings` loops
+BOTH drives on the way back in. The status-bar eject — the most-clicked eject
+in the UI — built `"disk_path_slot" + N` for *both* drives. Eject drive 2 and
+it cleared **drive 1's** path while leaving `_drive2` set, then committed that
+with an eager `settings->save()`. Next launch: drive 1 empty, and the disk you
+had just ejected back in drive 2.
+
+A clean quit self-heals it (`persistSessionSettings` rewrites both keys from
+live card state), which is exactly why it survived — the corruption is only
+visible after a crash, a `kill`, or a kiosk session. That also made it worth
+fixing rather than shrugging at: the window is precisely the case where the
+user has no chance to intervene.
+
+**The audit found four such paths, not two.** G2 described "two eject paths ...
+in the same file". Enumerating every `ejectDisk` / `ejectBay` call site outside
+the coordinator turned up two more, both undocumented:
+
+* `MainWindow_Slots.cpp` (Slot Config) skipped drive 2 on both Insert and
+  Eject, justified by a comment — *"Only drive 1 has a persisted path key;
+  drive 2 mounts are session-only (matches legacy scheme)"* — that had been
+  false since `diskIIPathSettingKey` grew the `_drive2` suffix. A drive-2
+  insert from this panel was lost on restart while the same insert from the
+  File menu survived; a drive-2 eject here left the image to be remounted.
+* `MainWindow_StoragePanels.cpp` (Disk Library) ejected 5.25" media in two
+  places and cleared **no** settings key at all. The telling detail: the 3.5"
+  branch twelve lines below the first one had already been routed through the
+  coordinator, with a comment explaining why the direct call was wrong. The
+  5.25" sibling next to it was left hand-rolled — the failure mode is not "one
+  function drifts", it is "whichever path is convenient gets written by hand".
+
+A **fifth** site was the mirror image, on the read side: the profile-switch /
+Slot-Config-Apply remount (`MainWindow_Slots.cpp`) read one key and called
+`insertDisk(diskPath)` with its default argument, so an Apply silently emptied
+drive 2 while its `_drive2` key stayed set. That is the same "default argument
+= drive 1 only" mistake `MainWindow_Session.cpp`'s comment claimed to have
+fixed in "the last of the five places" — it was the last but one. It cannot
+delegate: it runs inside the `stateMutex` scope that makes the SlotBus rebuild
+atomic against the AI server, and a coordinator command takes that lock itself.
+So `diskIIPathSettingKey` is now **exported** from `StorageCoordinator.h` and
+used inline instead: one definition of the key, no sixth copy of the `_drive2`
+rule.
+
+All four ejects now delegate. The fix *moves the call into already-covered
+code*, so
+the interesting part is the test: `storage_coordinator` asserted that ejecting
+drive 2 clears `_drive2`, but never that it leaves drive 1's key alone — the
+half that was actually broken. It does now.
+
+One sub-claim in G2 was already **stale** when re-verified: the status-bar
+save was no longer under `stateMutex`; that lock scope had been closed. Worth
+recording, because CLAUDE.md's standing warning about re-verifying a `file:line`
+before acting on it earned itself again.
+
+**A snapshot now says which Apple it came from.** The 32-bit word after
+`version` was written as a reserved 0 and read back with `(void)readU32()`.
+Nothing in the file identified the machine, while CPU, MEM and MEX all restore
+unconditionally and `Memory::loadSnapshotState` never checks `iieMode`. Save on
+//e Enhanced PAL, switch to //c, load: PC and 64 KB of RAM land against a
+different ROM and memory map — freeze, or silent wrong execution, with no
+diagnostic. Live rewind was already defended (`applyProfile` clears the ring);
+`--snapshot-load` and the AI server's `/snapshot` were not, and a snapshot file
+is the one artefact users hand to each other.
+
+The word now carries `pom2::snapshotMachineId(profile)` — FNV-1a over the
+profile's canonical **persistence key**, not the enum's numeric value: the key
+is stable by contract (state.cfg and `--preset` both carry it) whereas the enum
+is appended to and its order is deliberately not the display order. Both load
+paths compare before touching any state and refuse with a message naming both
+machines. **0 stays legal** and means "not recorded", so every snapshot written
+before this build still loads; rewind frames record none on purpose, since the
+ring is cleared on a profile switch and the check would be dead weight on the
+hot capture path. This is the general form of a mitigation already in the tree:
+`MachineSnapshot.cpp` reads the CPU-mode byte and deliberately discards it,
+because an NMOS blob forcing a //c's 65C02 ROM onto an NMOS core hits a KIL and
+freezes. That comment was the argument for doing the whole thing.
+
+**`PhasorCard::onReset` zeroed the counter its sibling bumps.** The audio thread
+re-seeds a chip's tone/noise/envelope generators only when `ayResetCount_[ci]`
+*changes* against its own `lastSeenResetCount`. `Mockingboard::onReset` bumps
+it, under six lines of comment naming the bug — *"BUMP, don't zero… zeroing it
+was a no-op whenever it was already 0… the card droned on forever"*. The Phasor
+assigned 0, which is a no-op on every reset not preceded by an AY reset strobe
+(a second F12; a cold boot on a driver that never strobes PB2 low). The
+CPU-side `ay_[i]->reset()` then cleared the register bank while the audio thread
+kept the old tone, so the card held its last note through the reset: the exact
+symptom the Mockingboard fix removed, reintroduced in the sibling. Zeroing also
+made the counter non-monotonic, which is what let the two implementations
+diverge without anything noticing.
+
+The new `phasor_card_smoke` case was checked the only way a regression test is
+worth anything — the old assignment was restored and the test failed, then the
+fix was put back and it passed.
+
 ## 2026-09-05 — The v0.9.0 release run stopped on a moving tag, so the tag stopped moving
 
 The release build for v0.9.0 lost all three aarch64 jobs 35 seconds in, while

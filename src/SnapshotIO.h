@@ -21,7 +21,7 @@
 //
 //   "POM2SNAP" (8 bytes)               magic
 //   uint32_t  version                  format version (current = 2)
-//   uint32_t  flags                    reserved, 0 for now
+//   uint32_t  flags                    machine identity (0 = not recorded)
 //
 //   Section: 8-byte fixed name (NUL-padded) + uint32_t length + payload
 //
@@ -81,13 +81,22 @@ inline constexpr std::size_t kSectionNameLen = 8;
 class SnapshotWriter
 {
 public:
+    /// `machineId` is stamped into the header's identity word — pass
+    /// `pom2::snapshotMachineId(profile)` so a later load can refuse a
+    /// snapshot taken on a different machine. 0 (the default) records no
+    /// identity and is what an in-memory rewind frame wants: the ring is
+    /// already cleared on every profile switch, so the check would be dead
+    /// weight on the hot capture path.
+    ///
     /// File-backed: writes the snapshot straight to `path` (truncating any
     /// existing file). `good()` is false if the file could not be opened.
-    explicit SnapshotWriter(const std::string& path);
+    explicit SnapshotWriter(const std::string& path,
+                            std::uint32_t machineId = 0);
     /// Memory-backed: appends the snapshot straight into `sink` as it is
     /// written (no intermediate copy). `sink` must outlive the writer.
     /// Always `good()`.
-    explicit SnapshotWriter(std::vector<uint8_t>& sink);
+    explicit SnapshotWriter(std::vector<uint8_t>& sink,
+                            std::uint32_t machineId = 0);
     ~SnapshotWriter();
 
     bool good() const { return finished_ ? committed_ : out.good(); }
@@ -118,7 +127,7 @@ public:
     void writeSection(std::string_view name, const void* data, std::size_t length);
 
 private:
-    void emitHeader();   // magic + version + flags
+    void emitHeader();   // magic + version + machine identity
 
     std::ofstream                   fileStream_;   // engaged for the file ctor
     std::unique_ptr<std::streambuf> memBuf_;       // engaged for the memory ctor
@@ -128,6 +137,7 @@ private:
     bool                            fileBacked_ = false;
     bool                            finished_ = false;
     bool                            committed_ = false;
+    std::uint32_t                   machineId_ = 0;
 };
 
 class SnapshotReader
@@ -147,6 +157,13 @@ public:
     /// sections is normal — nextSection returns false at EOF.
     bool     good()    const { return ok && !in.fail(); }
     uint32_t version() const { return ver; }
+    /// Machine identity recorded in the header, or 0 when the snapshot was
+    /// written before the field existed (v1/v2 files, and rewind frames,
+    /// which deliberately record none). Compare against
+    /// `pom2::snapshotMachineId(currentProfile)` and refuse a mismatch —
+    /// the CPU/MEM/MEX sections restore PC and RAM unconditionally, so a
+    /// cross-machine load lands them against a different ROM and memory map.
+    uint32_t machineId() const { return machineId_; }
     const std::string& error() const { return errorMsg; }
 
     uint8_t  readU8();
@@ -172,6 +189,7 @@ private:
     std::istream   in;               // bound to whichever buffer is live
     bool           ok = false;
     uint32_t       ver = 0;
+    uint32_t       machineId_ = 0;
     std::string    errorMsg;
     std::streampos cursor{};
     std::streampos sectionEnd{};

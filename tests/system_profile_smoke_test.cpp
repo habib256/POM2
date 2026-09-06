@@ -725,6 +725,33 @@ void testIoudisStateMachine()
 
 }  // namespace
 
+// A snapshot's machine identity has to be UNIQUE per profile (a collision
+// would let a //c snapshot load on a //e, which is the whole point of the
+// field) and never 0 (0 is reserved on the wire for "written before the
+// field existed", which must keep loading). Derived from the canonical
+// persistence key rather than the enum value, because the enum is appended
+// to and its order is deliberately not the display order.
+void testSnapshotMachineId()
+{
+    const auto& all = pom2::allProfiles();
+    for (std::size_t i = 0; i < all.size(); ++i) {
+        const std::uint32_t id = pom2::snapshotMachineId(all[i]);
+        assert(id != 0);
+        // Stable: same profile, same id.
+        assert(id == pom2::snapshotMachineId(all[i]));
+        // Reversible, so a refusal can NAME the machine the file came from.
+        assert(pom2::profileNameForMachineId(id) ==
+               pom2::profileConfig(all[i]).displayName);
+        for (std::size_t j = i + 1; j < all.size(); ++j)
+            assert(id != pom2::snapshotMachineId(all[j]));
+    }
+    // An id this build knows nothing about (a snapshot from a newer POM2)
+    // reverses to nothing, and the caller reports "another machine" rather
+    // than guessing.
+    assert(pom2::profileNameForMachineId(0).empty());
+    assert(pom2::profileNameForMachineId(0xDEADBEEFu).empty());
+}
+
 int main()
 {
     testAllProfilesEnumerated();
@@ -775,6 +802,9 @@ int main()
 
     testSlotKeyIsUserChoice();
     std::printf("  ok: slotKeyIsUserChoice (chatmauve removal persists)\n");
+
+    testSnapshotMachineId();
+    std::printf("  ok: snapshotMachineId is unique, non-zero and reversible\n");
 
     std::printf("OK system_profile_smoke\n");
     return 0;

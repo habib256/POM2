@@ -393,4 +393,26 @@ const std::array<SystemProfile, 9>& allProfiles()
     return all;
 }
 
+std::uint32_t snapshotMachineId(SystemProfile p)
+{
+    // FNV-1a over the canonical persistence key. Any non-trivial hash would
+    // do; what matters is that the input is the KEY (stable by contract,
+    // since state.cfg and `--preset` both carry it) and that the result is
+    // forced non-zero, because 0 means "no identity recorded" on the wire.
+    std::uint32_t h = 2166136261u;
+    for (const char c : profileConfig(p).key) {
+        h ^= static_cast<std::uint8_t>(c);
+        h *= 16777619u;
+    }
+    return h ? h : 1u;
+}
+
+std::string_view profileNameForMachineId(std::uint32_t id)
+{
+    if (id == 0) return {};
+    for (const SystemProfile p : allProfiles())
+        if (snapshotMachineId(p) == id) return profileConfig(p).displayName;
+    return {};
+}
+
 }  // namespace pom2

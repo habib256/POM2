@@ -40,6 +40,20 @@
 #include <utility>
 
 namespace pom2 {
+
+// Exported deliberately: this is the ONE definition of a Disk II path key,
+// and the profile-switch remount in MainWindow_Slots.cpp has to build the
+// same key inline (it runs inside the stateMutex scope that makes the
+// SlotBus rebuild atomic, so it cannot call a coordinator command, which
+// takes that lock itself). Duplicating the "_drive2" rule there is what
+// produced the family of drive-2 bugs this function now prevents.
+std::string diskIIPathSettingKey(int slot, std::size_t drive)
+{
+    std::string key = "disk_path_slot" + std::to_string(slot);
+    if (drive > 0) key += "_drive" + std::to_string(drive + 1);
+    return key;
+}
+
 namespace {
 
 SmartPortCard* smartPortAt(SlotBus& bus, int requestedSlot = -1)
@@ -59,13 +73,6 @@ struct SettingUpdate {
     bool boolValue = false;
     bool isBool = false;
 };
-
-std::string diskIIPathSettingKey(int slot, std::size_t drive)
-{
-    std::string key = "disk_path_slot" + std::to_string(slot);
-    if (drive > 0) key += "_drive" + std::to_string(drive + 1);
-    return key;
-}
 
 void appendStringSetting(std::vector<SettingUpdate>& updates,
                          std::string key, std::string value)

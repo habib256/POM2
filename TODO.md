@@ -59,8 +59,9 @@ construction. 1.0 is four claims, and each is falsifiable:
    tag, and everything inside the package may be redistributed.
 4. **No known defect silently destroys or corrupts a user's data.** Media
    write-back, settings persistence and snapshots are the only three paths that
-   can lose something the user cannot regenerate. All three currently have a
-   named defect ([G2](#g2--the-three-defects-that-reach-a-users-data-)).
+   can lose something the user cannot regenerate. All three had a named defect;
+   all three are fixed ([G2](#g2--the-three-defects-that-reach-a-users-data--2026-09-06),
+   2026-09-06).
 
 **Explicit non-goals for 1.0**, so they stop competing for the same hours: the
 MAME `a2bus` port backlog (Videx, Mountain Music, E-Z Color, SCSI, The Mill, PC
@@ -85,7 +86,7 @@ G1+G2 is under three.
 | Gate | What it is | Cost | Blocks 1.0? |
 |---|---|---|---|
 | [G1](#g1--what-we-are-allowed-to-ship-) | What we are allowed to ship | 1-2 d + one decision | **yes** |
-| [G2](#g2--the-three-defects-that-reach-a-users-data-) | Three defects that reach a user's data | ½ d | **yes** |
+| [G2](#g2--the-three-defects-that-reach-a-users-data--2026-09-06) | Three defects that reach a user's data | ✅ done | done |
 | [G3](#g3--make-the-words-true-) | Make the words true | 1-2 d | **yes** |
 | [G4](#g4--a-release-that-can-be-rehearsed-) | A release that can be rehearsed | 1 d | **yes** |
 | [G5](#g5--the-donut-policy-without-a-test-) | The donut: policy without a test | 4-6 d | partly |
@@ -162,66 +163,57 @@ months.**
   licensing is otherwise **clean** — every port is GPL-2.0-or-later, which
   upgrades to POM2's GPL-3.0 without friction. *~3 h.*
 
-### G2 · The three defects that reach a user's data 🔴
+### G2 · The three defects that reach a user's data ✅ (2026-09-06)
 
-*Found by measurement on 2026-09-05, not by report. Half a day for all three,
-and each is the only kind of defect 1.0 must not have: it takes something the
-user cannot make again.*
+*Found by measurement on 2026-09-05, fixed on 2026-09-06. Each was the only
+kind of defect 1.0 must not have: it takes something the user cannot make
+again. Details and rationale in CHANGELOG.md.*
 
-- 🔴 **The status-bar eject is a hand-rolled duplicate that writes the wrong
-  settings key.** `MainWindow_Media.cpp:98-164` vs the covered
-  `StorageCoordinator::ejectMediaBay`. Two eject paths exist **in the same
-  file**: the File menu (`MainWindow_Chrome.cpp:328`) delegates to the
-  coordinator; the status-bar chip (`:998`, the most-clicked eject in the UI)
-  does not. Four divergences, one of them deterministic corruption:
-  * `MainWindow_Media.cpp:125` builds `"disk_path_slot" + N` for **both**
-    drives, while the canonical `diskIIPathSettingKey`
-    (`StorageCoordinator.cpp:63-68`) appends `_drive2` for drive 1. Eject
-    drive 2 from the status bar and you clear **drive 1's** path while leaving
-    drive 2's set — committed to `state.cfg` by the `settings->save()` on line
-    155. A clean quit self-heals it; a crash, a kill or a kiosk session does
-    not. The comment on line 122 claims it matches the shutdown keys.
-  * no `genericMediaCard` branch, so ejecting a **Liron** 3.5" leaves
-    `media_slot<N>_bay<B>_path` set and the image comes back next launch —
-    verbatim the bug `tests/storage_coordinator_test.cpp:439-441` records as
-    fixed in the coordinator.
-  * no auto-provision / host-folder guards (`StorageCoordinator.cpp:160-167`).
-  * a whole-file write-back under `stateMutex`, breaking the rule stated in
-    this file's own header (`MainWindow_Media.cpp:28-31`) and the reason
-    `StorageCoordinator.cpp:709-726` spends seventeen lines splitting the eject
-    into three critical sections.
-  **Fix: delete the body and delegate.** ~12 lines, and the fix *moves the call
-  into already-covered code*. Then one assertion that drive-2 eject clears the
-  `_drive2` key. *~1 h 15.*
-- 🔴 **A snapshot carries no machine identity, so a cross-profile load runs the
-  wrong ROM.** The header is magic + format version only
-  (`SnapshotIO.h:60-79`, validated `SnapshotIO.cpp:287-297`); the `uint32_t
-  flags` word is *"reserved, 0 for now"* (`SnapshotIO.h:24`). PC/A/X/Y/SP/RAM
-  restore unconditionally (`MachineSnapshot.cpp:161-170`) and `Memory::
-  loadSnapshotState` never checks `iieMode`. Live rewind **is** defended —
-  `applyProfile` clears the ring (`MainWindow_Slots.cpp:1153`) — but
-  `--snapshot-load` (`CliRunner.cpp:184-215`) and the AI server's `/snapshot`
-  endpoints are not. Save on //e Enhanced PAL, switch to //c, load: PC and RAM
-  land against a different ROM and memory map. Freeze or silent wrong
-  execution, no diagnostic. It also affects any snapshot shared between users,
-  which is the whole point of a snapshot file.
-  There is already a targeted mitigation for one instance of this — the CPU-mode
-  byte is read and **deliberately discarded** (`MachineSnapshot.cpp:145-155`)
-  because an NMOS blob forcing a //c's 65C02 ROM onto an NMOS core hits a KIL
-  and freezes. That comment is the argument for doing the general form.
-  **Fix: write the profile into the reserved `flags` word; refuse a mismatch
-  with a named error.** Test: capture, mutate the word, assert refusal.
-  *~2-3 h.*
-- 🔴 **`PhasorCard::onReset` zeroes the counter its sibling bumps.**
-  `PhasorCard.cpp:325-328` does `ayResetCount_[i] = 0`;
-  `Mockingboard.cpp:772-773` does `++ayResetCount_[...]`, with six lines of
-  comment naming the bug: *"BUMP, don't zero… zeroing it was a no-op whenever
-  it was already 0… the card droned on forever."* Both use the identical
-  change-detection compare (`PhasorCard.cpp:164`). On a Phasor, F12 / cold boot
-  / profile switch can therefore fail to reseed the AY generators and **the
-  card holds its last note through the reset** — the exact symptom the
-  Mockingboard fix was written to remove, reintroduced in the sibling.
-  *~30 min including the two-line contract assertion.*
+- ✅ **The status-bar eject wrote the wrong settings key.** Fixed, and the
+  scope was WIDER than this entry recorded: it described "two eject paths
+  ... in the same file", but an audit of every `ejectDisk`/`ejectBay` call
+  site found **four** hand-rolled ejects across three files, three of them
+  never written down here:
+  * `MainWindow_Media.cpp:98` (status bar) — built `disk_path_slot<N>` for
+    BOTH drives, so ejecting drive 2 cleared drive 1's path and left
+    `_drive2` set. The documented one.
+  * `MainWindow_Slots.cpp:971` (Slot Config) — skipped drive 2 entirely on a
+    comment claiming "drive 2 mounts are session-only", untrue since
+    `diskIIPathSettingKey` gained `_drive2` and `restoreMediaFromSettings`
+    began looping both drives. Its Insert button had the same gap, so a
+    drive-2 insert here was lost on restart while the same insert from the
+    File menu survived.
+  * `MainWindow_StoragePanels.cpp:578` (Library, eject-by-path) and `:797`
+    (Library, eject current) — cleared no settings key at all. The 3.5"
+    branch twelve lines below `:578` had already been routed through the
+    coordinator, with a comment explaining why; the 5.25" sibling was left
+    hand-rolled.
+  A fifth site was the read-side mirror: the profile-switch remount
+  (`MainWindow_Slots.cpp`) restored drive 1 only, so an Apply emptied drive 2
+  while its key stayed set. It cannot delegate (it runs inside the `stateMutex`
+  scope that keeps the SlotBus rebuild atomic), so `diskIIPathSettingKey` is
+  now exported from `StorageCoordinator.h` and used inline — one definition of
+  the key instead of a sixth hand-rolled copy.
+  All four ejects now delegate to `StorageCoordinator::ejectDiskII` /
+  `ejectMediaBay`. Pinned by `storage_coordinator`, which now asserts the
+  half that was missing: ejecting drive 2 clears `_drive2` **and leaves
+  drive 1's key alone**.
+  One sub-claim above was already STALE when re-verified: the status-bar
+  save was no longer under `stateMutex` (the lock scope closed on the line
+  before it).
+- ✅ **A snapshot now carries a machine identity.** The reserved `flags` word
+  holds `pom2::snapshotMachineId(profile)` (FNV-1a over the canonical
+  persistence key); `--snapshot-load` and the AI server's `/snapshot`
+  refuse a mismatch with a message naming both machines. Identity 0 =
+  "written before the field existed" and still loads, so no existing
+  snapshot is invalidated; rewind frames record none on purpose (the ring
+  is already cleared on a profile switch). → [DEV § Snapshot](DEV.md#snapshot).
+  Pinned by `snapshot_io` + `system_profile`.
+- ✅ **`PhasorCard::onReset` bumps the counter instead of zeroing it.** Now
+  matches `Mockingboard.cpp:772`'s documented BUMP-don't-zero contract, so
+  a reset always re-seeds the audio thread's generators instead of being a
+  no-op whenever the counter was already 0. Pinned by `phasor_card_smoke`
+  (verified to fail with the old assignment restored).
 
 ### G3 · Make the words true 🔴
 
